@@ -3621,7 +3621,7 @@ void Sidebar::update_presets(Preset::Type preset_type)
             p->label_nozzle_type->SetLabel(nozzle_type);
             p->label_nozzle_type->SetToolTip(nozzle_type == "-" ? "" : nozzle_type);
 
-            const auto *device_manager = wxGetApp().getDeviceManager();
+            auto *device_manager = wxGetApp().getDeviceManager();
             const MachineObject *connected_machine = device_manager ? device_manager->get_selected_machine() : nullptr;
             const bool hardware_controls_flow = connected_machine != nullptr &&
                                                 connected_machine->is_info_ready() &&
@@ -7304,7 +7304,7 @@ std::vector<size_t> Plater::priv::load_files(const std::vector<fs::path>& input_
                             color_dialog_in_out.input_type = ObjDialogInOut::FormatType::Standard3mf;
                             color_dialog_in_out.volume_colors = volume_color_data;
                             color_dialog_in_out.filament_available_on_device = std::move(filament_available_on_device);
-                            ObjColorDialog color_dlg(nullptr, color_dialog_in_out, extruder_colours);
+                            ObjColorDialog color_dlg(nullptr, color_dialog_in_out, extruder_colours, Sidebar::should_show_SEMM_buttons());
                             if (color_dlg.ShowModal() != wxID_OK)
                                 color_dialog_in_out.filament_ids.clear();
                         }

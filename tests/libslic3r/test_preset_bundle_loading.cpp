@@ -463,6 +463,8 @@ TEST_CASE("Profile validator flags dangling and renamed preset references", "[Pr
         compatible_list(bundle.filaments, "User Filament", "compatible_printers") = { "Ghost Printer" };
         CHECK_FALSE(bundle.check_preset_references());
     }
+}
+
 TEST_CASE("Project printers are activated only when configured locally", "[Preset][ProjectPrinter]")
 {
     PresetBundle bundle;
