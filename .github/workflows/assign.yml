@@ -9,6 +9,9 @@ on:
 
 jobs:
   assign:
+    # Upstream issue ownership must not assign QuackSlicer issues to Orca
+    # maintainers.
+    if: github.repository == 'OrcaSlicer/OrcaSlicer'
     permissions:
       issues: write
     runs-on: ubuntu-latest

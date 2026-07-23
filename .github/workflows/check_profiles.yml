@@ -22,6 +22,10 @@ jobs:
   check_profiles:
     name: Check profiles
     runs-on: ubuntu-24.04
+    env:
+      # Override this repository variable when QuackSlicer starts changing the
+      # profile schema independently from upstream.
+      PROFILE_VALIDATOR_URL: ${{ vars.PROFILE_VALIDATOR_URL || 'https://github.com/OrcaSlicer/OrcaSlicer/releases/download/nightly-builds/OrcaSlicer_profile_validator_Linux_Ubuntu2404_nightly' }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
@@ -38,7 +42,7 @@ jobs:
       - name: Download
         working-directory: ${{ github.workspace }}
         run: |
-          curl -L -o OrcaSlicer_profile_validator https://github.com/OrcaSlicer/OrcaSlicer/releases/download/nightly-builds/OrcaSlicer_profile_validator_Linux_Ubuntu2404_nightly
+          curl --fail --location --retry 3 -o OrcaSlicer_profile_validator "$PROFILE_VALIDATOR_URL"
           chmod +x ./OrcaSlicer_profile_validator
 
       # Validate all system profiles.

@@ -1,5 +1,5 @@
 name: Auto-close duplicate issues
-description: Auto-closes issues that are duplicates of existing issues
+# Auto-closes issues that are duplicates of existing issues.
 on:
   schedule:
     - cron: "0 9 * * *"
@@ -7,6 +7,8 @@ on:
 
 jobs:
   auto-close-duplicates:
+    # Part of OrcaSlicer's issue-deduplication service.
+    if: github.repository == 'OrcaSlicer/OrcaSlicer'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:

@@ -4,6 +4,9 @@ on:
     types: [ released ]
 jobs:
   publish:
+    # This is the upstream OrcaSlicer package. QuackSlicer needs its own WinGet
+    # identifier and token before a fork may publish anything here.
+    if: github.repository == 'OrcaSlicer/OrcaSlicer'
     runs-on: windows-latest
     steps:
       - uses: vedantmgoyal9/winget-releaser@main

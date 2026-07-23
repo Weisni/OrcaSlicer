@@ -76,9 +76,8 @@ jobs:
           # Windows_V* (not Windows_*) keeps the MSIX Store artifact out: it goes to Partner Center, not GitHub releases.
           gh run download "$RUN_ID" --repo "$GITHUB_REPOSITORY" --dir artifacts \
             -p 'QuackSlicer_Windows_V*' \
-            -p 'OrcaSlicer_Mac_universal_*' \
-            -p 'OrcaSlicer_Linux_ubuntu_*' \
-            -p 'OrcaSlicer-Linux-flatpak_*' \
+            -p 'QuackSlicer_Mac_universal_*' \
+            -p 'QuackSlicer_Linux_ubuntu_*' \
             -p 'PDB'
           echo "Downloaded artifact folders:"
           ls -1 artifacts
@@ -98,11 +97,9 @@ jobs:
           # copy them straight through.
           find artifacts -type f \( -name '*.exe' -o -name '*.exe.sha256' \) -path '*QuackSlicer_Windows_*' ! -path '*_portable*' -exec cp -v {} upload/ \;
           # macOS universal DMG (profile-validator DMG isn't downloaded).
-          find artifacts -type f -name '*.dmg' -path '*OrcaSlicer_Mac_universal_*' -exec cp -v {} upload/ \;
+          find artifacts -type f -name '*.dmg' -path '*QuackSlicer_Mac_universal_*' -exec cp -v {} upload/ \;
           # Linux AppImage.
           find artifacts -type f -name '*.AppImage' -exec cp -v {} upload/ \;
-          # Flatpak bundles (x86_64 + aarch64).
-          find artifacts -type f -name '*.flatpak' -exec cp -v {} upload/ \;
           # Windows debug symbols (PDB archive, for developers).
           find artifacts -type f -name 'Debug_PDB_*.7z' -exec cp -v {} upload/ \;
 

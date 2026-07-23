@@ -1,5 +1,5 @@
 name: Orca Issue Dedupe
-description: Automatically dedupe GitHub issues using AI
+# Automatically deduplicates GitHub issues using AI.
 on:
   issues:
     types: [opened]
@@ -12,6 +12,8 @@ on:
 
 jobs:
   dedupe-issues:
+    # Uses OrcaSlicer's Claude and Statsig accounts.
+    if: github.repository == 'OrcaSlicer/OrcaSlicer'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:

@@ -20,7 +20,7 @@ on:
 
 jobs:
   build_orca:
-    name: Build OrcaSlicer
+    name: Build QuackSlicer
     runs-on: ${{ inputs.os }}
     env:
       date:
@@ -28,7 +28,10 @@ jobs:
       ver_pure:
       ubuntu-ver: '2404'
       ubuntu-ver-str: '_Ubuntu2404'
-      ORCA_UPDATER_SIG_KEY: ${{ secrets.ORCA_UPDATER_SIG_KEY }}
+      artifact_prefix: ${{ github.repository == 'OrcaSlicer/OrcaSlicer' && 'OrcaSlicer' || 'QuackSlicer' }}
+      # Keep the CMake variable name for upstream compatibility, but source the
+      # key from a QuackSlicer-owned repository secret.
+      ORCA_UPDATER_SIG_KEY: ${{ github.repository == 'OrcaSlicer/OrcaSlicer' && secrets.ORCA_UPDATER_SIG_KEY || secrets.QUACK_UPDATER_SIG_KEY }}
       # Branches whose builds are published to the nightly release. The
       # belt-printer branch ships alongside main but its assets carry a `_belt`
       # suffix (nightly_suffix) so they never overwrite the main nightly assets.
@@ -166,20 +169,20 @@ jobs:
         if: runner.os == 'macOS' && !inputs.macos-combine-only
         working-directory: ${{ github.workspace }}
         run: |
-          tar -czvf OrcaSlicer_Mac_bundle_${{ inputs.arch }}_${{ github.sha }}.tar.gz -C build/${{ inputs.arch }} OrcaSlicer
+          tar -czvf ${{ env.artifact_prefix }}_Mac_bundle_${{ inputs.arch }}_${{ github.sha }}.tar.gz -C build/${{ inputs.arch }} OrcaSlicer
 
       - name: Upload macOS app bundle ${{ inputs.arch }}
         if: runner.os == 'macOS' && !inputs.macos-combine-only
         uses: actions/upload-artifact@v7
         with:
-          name: OrcaSlicer_Mac_bundle_${{ inputs.arch }}_${{ github.sha }}
-          path: ${{ github.workspace }}/OrcaSlicer_Mac_bundle_${{ inputs.arch }}_${{ github.sha }}.tar.gz
+          name: ${{ env.artifact_prefix }}_Mac_bundle_${{ inputs.arch }}_${{ github.sha }}
+          path: ${{ github.workspace }}/${{ env.artifact_prefix }}_Mac_bundle_${{ inputs.arch }}_${{ github.sha }}.tar.gz
 
       - name: Download macOS app bundles
         if: runner.os == 'macOS' && inputs.macos-combine-only
         uses: actions/download-artifact@v8
         with:
-          pattern: OrcaSlicer_Mac_bundle_*_${{ github.sha }}
+          pattern: ${{ env.artifact_prefix }}_Mac_bundle_*_${{ github.sha }}
           path: ${{ github.workspace }}/mac_bundles
 
       - name: Extract macOS app bundles
@@ -187,8 +190,8 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: |
           mkdir -p build/arm64 build/x86_64
-          arm_bundle=$(find "${{ github.workspace }}/mac_bundles/OrcaSlicer_Mac_bundle_arm64_${{ github.sha }}" -name '*.tar.gz' -print -quit)
-          x86_bundle=$(find "${{ github.workspace }}/mac_bundles/OrcaSlicer_Mac_bundle_x86_64_${{ github.sha }}" -name '*.tar.gz' -print -quit)
+          arm_bundle=$(find "${{ github.workspace }}/mac_bundles/${{ env.artifact_prefix }}_Mac_bundle_arm64_${{ github.sha }}" -name '*.tar.gz' -print -quit)
+          x86_bundle=$(find "${{ github.workspace }}/mac_bundles/${{ env.artifact_prefix }}_Mac_bundle_x86_64_${{ github.sha }}" -name '*.tar.gz' -print -quit)
           tar -xzvf "$arm_bundle" -C "${{ github.workspace }}/build/arm64"
           tar -xzvf "$x86_bundle" -C "${{ github.workspace }}/build/x86_64"
 
@@ -263,8 +266,8 @@ jobs:
           rm -rf ${{ github.workspace }}/build/universal/OrcaSlicer_dmg/*
           cp -R ${{ github.workspace }}/build/universal/OrcaSlicer/OrcaSlicer.app ${{ github.workspace }}/build/universal/OrcaSlicer_dmg/
           ln -sfn /Applications ${{ github.workspace }}/build/universal/OrcaSlicer_dmg/Applications
-          retry hdiutil create -volname "OrcaSlicer" -srcfolder ${{ github.workspace }}/build/universal/OrcaSlicer_dmg -ov -format UDZO OrcaSlicer_Mac_universal_${{ env.ver }}.dmg
-          codesign --deep --force --verbose --options runtime --timestamp --entitlements "$ENTITLEMENTS" --sign "$CERTIFICATE_ID" OrcaSlicer_Mac_universal_${{ env.ver }}.dmg
+          retry hdiutil create -volname "${{ env.artifact_prefix }}" -srcfolder ${{ github.workspace }}/build/universal/OrcaSlicer_dmg -ov -format UDZO ${{ env.artifact_prefix }}_Mac_universal_${{ env.ver }}.dmg
+          codesign --deep --force --verbose --options runtime --timestamp --entitlements "$ENTITLEMENTS" --sign "$CERTIFICATE_ID" ${{ env.artifact_prefix }}_Mac_universal_${{ env.ver }}.dmg
           
           # Create separate OrcaSlicer_profile_validator DMG if the app exists
           if [ -f "${{ github.workspace }}/build/universal/OrcaSlicer/OrcaSlicer_profile_validator.app/Contents/MacOS/OrcaSlicer_profile_validator" ]; then
@@ -277,8 +280,8 @@ jobs:
           fi
           
           # Notarize main DMG
-          xcrun notarytool submit "OrcaSlicer_Mac_universal_${{ env.ver }}.dmg" --apple-id "${{ secrets.APPLE_DEV_ACCOUNT }}" --team-id "${{ secrets.TEAM_ID }}" --password "${{ secrets.APP_PWD }}" --wait
-          xcrun stapler staple OrcaSlicer_Mac_universal_${{ env.ver }}.dmg
+          xcrun notarytool submit "${{ env.artifact_prefix }}_Mac_universal_${{ env.ver }}.dmg" --apple-id "${{ secrets.APPLE_DEV_ACCOUNT }}" --team-id "${{ secrets.TEAM_ID }}" --password "${{ secrets.APP_PWD }}" --wait
+          xcrun stapler staple ${{ env.artifact_prefix }}_Mac_universal_${{ env.ver }}.dmg
 
           # Notarize profile validator DMG if it exists
           if [ -f "OrcaSlicer_profile_validator_Mac_universal_${{ env.ver }}.dmg" ]; then
@@ -287,7 +290,7 @@ jobs:
           fi
 
       - name: Create DMG without notary
-        if: github.ref != 'refs/heads/main' && github.ref != 'refs/heads/belt-printer' && runner.os == 'macOS' && inputs.macos-combine-only
+        if: runner.os == 'macOS' && inputs.macos-combine-only && (github.repository != 'OrcaSlicer/OrcaSlicer' || (github.ref != 'refs/heads/main' && github.ref != 'refs/heads/belt-printer'))
         working-directory: ${{ github.workspace }}
         run: |
           # Load the `retry` helper (retries flaky commands such as `hdiutil create`).
@@ -296,7 +299,7 @@ jobs:
           rm -rf ${{ github.workspace }}/build/universal/OrcaSlicer_dmg/*
           cp -R ${{ github.workspace }}/build/universal/OrcaSlicer/OrcaSlicer.app ${{ github.workspace }}/build/universal/OrcaSlicer_dmg/
           ln -sfn /Applications ${{ github.workspace }}/build/universal/OrcaSlicer_dmg/Applications
-          retry hdiutil create -volname "OrcaSlicer" -srcfolder ${{ github.workspace }}/build/universal/OrcaSlicer_dmg -ov -format UDZO OrcaSlicer_Mac_universal_${{ env.ver }}.dmg
+          retry hdiutil create -volname "${{ env.artifact_prefix }}" -srcfolder ${{ github.workspace }}/build/universal/OrcaSlicer_dmg -ov -format UDZO ${{ env.artifact_prefix }}_Mac_universal_${{ env.ver }}.dmg
           
           # Create separate OrcaSlicer_profile_validator DMG if the app exists
           if [ -f "${{ github.workspace }}/build/universal/OrcaSlicer/OrcaSlicer_profile_validator.app/Contents/MacOS/OrcaSlicer_profile_validator" ]; then
@@ -314,15 +317,15 @@ jobs:
         uses: geekyeggo/delete-artifact@v6
         with:
           name: |
-            OrcaSlicer_Mac_bundle_arm64_${{ github.sha }}
-            OrcaSlicer_Mac_bundle_x86_64_${{ github.sha }}
+            ${{ env.artifact_prefix }}_Mac_bundle_arm64_${{ github.sha }}
+            ${{ env.artifact_prefix }}_Mac_bundle_x86_64_${{ github.sha }}
 
       - name: Upload artifacts mac
         if: runner.os == 'macOS' && inputs.macos-combine-only
         uses: actions/upload-artifact@v7
         with:
-          name: OrcaSlicer_Mac_universal_${{ env.ver }}
-          path: ${{ github.workspace }}/OrcaSlicer_Mac_universal_${{ env.ver }}.dmg
+          name: ${{ env.artifact_prefix }}_Mac_universal_${{ env.ver }}
+          path: ${{ github.workspace }}/${{ env.artifact_prefix }}_Mac_universal_${{ env.ver }}.dmg
 
       - name: Upload OrcaSlicer_profile_validator DMG mac
         if: runner.os == 'macOS' && inputs.macos-combine-only && !vars.SELF_HOSTED
@@ -338,8 +341,8 @@ jobs:
         with:
           upload_url: https://uploads.github.com/repos/OrcaSlicer/OrcaSlicer/releases/137995723/assets{?name,label}
           release_id: 137995723
-          asset_path: ${{ github.workspace }}/OrcaSlicer_Mac_universal_${{ env.ver }}.dmg
-          asset_name: OrcaSlicer_Mac_universal_nightly${{ env.nightly_suffix }}.dmg
+          asset_path: ${{ github.workspace }}/${{ env.artifact_prefix }}_Mac_universal_${{ env.ver }}.dmg
+          asset_name: ${{ env.artifact_prefix }}_Mac_universal_nightly${{ env.nightly_suffix }}.dmg
           asset_content_type: application/octet-stream
           max_releases: 1 # optional, if there are more releases than this matching the asset_name, the oldest ones are going to be deleted
 
@@ -418,7 +421,7 @@ jobs:
         if: runner.os == 'Windows'
         working-directory: ${{ github.workspace }}/${{ env.BUILD_DIR }}
         shell: cmd
-        run: '"C:/Program Files/7-Zip/7z.exe" a -tzip QuackSlicer_Windows_${{ env.ver }}${{ env.ARCH_SUFFIX }}_portable.zip ${{ github.workspace }}/${{ env.BUILD_DIR }}/OrcaSlicer'
+        run: '"C:/Program Files/7-Zip/7z.exe" a -tzip ${{ env.artifact_prefix }}_Windows_${{ env.ver }}${{ env.ARCH_SUFFIX }}_portable.zip ${{ github.workspace }}/${{ env.BUILD_DIR }}/OrcaSlicer'
 
       - name: Pack PDB
         if: runner.os == 'Windows' && inputs.arch != 'arm64' && !vars.SELF_HOSTED
@@ -430,17 +433,17 @@ jobs:
         if: runner.os == 'Windows'
         uses: actions/upload-artifact@v7
         with:
-          name: QuackSlicer_Windows_${{ env.ver }}${{ env.ARCH_SUFFIX }}_portable
+          name: ${{ env.artifact_prefix }}_Windows_${{ env.ver }}${{ env.ARCH_SUFFIX }}_portable
           path: ${{ github.workspace }}/${{ env.BUILD_DIR }}/OrcaSlicer
 
       - name: Upload artifacts Win installer
         if: runner.os == 'Windows' && !vars.SELF_HOSTED
         uses: actions/upload-artifact@v7
         with:
-          name: QuackSlicer_Windows_${{ env.ver }}${{ env.ARCH_SUFFIX }}
+          name: ${{ env.artifact_prefix }}_Windows_${{ env.ver }}${{ env.ARCH_SUFFIX }}
           path: |
-            ${{ github.workspace }}/${{ env.BUILD_DIR }}/QuackSlicer*.exe
-            ${{ github.workspace }}/${{ env.BUILD_DIR }}/QuackSlicer*.exe.sha256
+            ${{ github.workspace }}/${{ env.BUILD_DIR }}/${{ env.artifact_prefix }}*.exe
+            ${{ github.workspace }}/${{ env.BUILD_DIR }}/${{ env.artifact_prefix }}*.exe.sha256
 
       - name: Upload artifacts Win PDB
         if: runner.os == 'Windows' && inputs.arch != 'arm64' && !vars.SELF_HOSTED
@@ -462,8 +465,8 @@ jobs:
         with:
           upload_url: https://uploads.github.com/repos/OrcaSlicer/OrcaSlicer/releases/137995723/assets{?name,label}
           release_id: 137995723
-          asset_path: ${{ github.workspace }}/${{ env.BUILD_DIR }}/QuackSlicer_Windows_${{ env.ver }}${{ env.ARCH_SUFFIX }}_portable.zip
-          asset_name: QuackSlicer_Windows${{ env.ARCH_SUFFIX }}_nightly${{ env.nightly_suffix }}_portable.zip
+          asset_path: ${{ github.workspace }}/${{ env.BUILD_DIR }}/${{ env.artifact_prefix }}_Windows_${{ env.ver }}${{ env.ARCH_SUFFIX }}_portable.zip
+          asset_name: ${{ env.artifact_prefix }}_Windows${{ env.ARCH_SUFFIX }}_nightly${{ env.nightly_suffix }}_portable.zip
           asset_content_type: application/x-zip-compressed
           max_releases: 1
 
@@ -473,8 +476,8 @@ jobs:
         with:
           upload_url: https://uploads.github.com/repos/OrcaSlicer/OrcaSlicer/releases/137995723/assets{?name,label}
           release_id: 137995723
-          asset_path: ${{ github.workspace }}/${{ env.BUILD_DIR }}/QuackSlicer_Windows_Installer_${{ env.ver }}${{ env.ARCH_SUFFIX }}.exe
-          asset_name: QuackSlicer_Windows_Installer${{ env.ARCH_SUFFIX }}_nightly${{ env.nightly_suffix }}.exe
+          asset_path: ${{ github.workspace }}/${{ env.BUILD_DIR }}/${{ env.artifact_prefix }}_Windows_Installer_${{ env.ver }}${{ env.ARCH_SUFFIX }}.exe
+          asset_name: ${{ env.artifact_prefix }}_Windows_Installer${{ env.ARCH_SUFFIX }}_nightly${{ env.nightly_suffix }}.exe
           asset_content_type: application/x-msdownload
           max_releases: 1
 
@@ -496,18 +499,18 @@ jobs:
         run: |
           ./scripts/msix/build_msix.ps1 `
             -InstallDir "${{ github.workspace }}/${{ env.BUILD_DIR }}/OrcaSlicer" `
-            -OutputPath "${{ github.workspace }}/${{ env.BUILD_DIR }}/QuackSlicer_Windows_MSIX_${{ env.ver }}${{ env.ARCH_SUFFIX }}.msix" `
+            -OutputPath "${{ github.workspace }}/${{ env.BUILD_DIR }}/${{ env.artifact_prefix }}_Windows_MSIX_${{ env.ver }}${{ env.ARCH_SUFFIX }}.msix" `
             -Architecture "${{ inputs.arch }}" `
-            -IdentityName "${{ vars.QUACK_MSIX_IDENTITY_NAME || 'QuackSlicer.QuackSlicer' }}" `
-            -Publisher "${{ vars.QUACK_MSIX_PUBLISHER || 'CN=38F7EA55-C73B-4072-B3B2-C8E0EA15BB82' }}" `
-            -PublisherDisplayName "${{ vars.QUACK_MSIX_PUBLISHER_DISPLAY_NAME || 'QuackSlicer' }}"
+            -IdentityName "${{ github.repository == 'OrcaSlicer/OrcaSlicer' && (vars.ORCA_MSIX_IDENTITY_NAME || 'OrcaSlicer.OrcaSlicer') || (vars.QUACK_MSIX_IDENTITY_NAME || 'QuackSlicer.QuackSlicer') }}" `
+            -Publisher "${{ github.repository == 'OrcaSlicer/OrcaSlicer' && (vars.ORCA_MSIX_PUBLISHER || 'CN=38F7EA55-C73B-4072-B3B2-C8E0EA15BB82') || (vars.QUACK_MSIX_PUBLISHER || 'CN=38F7EA55-C73B-4072-B3B2-C8E0EA15BB82') }}" `
+            -PublisherDisplayName "${{ github.repository == 'OrcaSlicer/OrcaSlicer' && (vars.ORCA_MSIX_PUBLISHER_DISPLAY_NAME || 'OrcaSlicer') || (vars.QUACK_MSIX_PUBLISHER_DISPLAY_NAME || 'QuackSlicer') }}"
 
       - name: Upload artifacts Win MSIX
         if: runner.os == 'Windows' && !vars.SELF_HOSTED
         uses: actions/upload-artifact@v7
         with:
-          name: QuackSlicer_Windows_MSIX_${{ env.ver }}${{ env.ARCH_SUFFIX }}
-          path: ${{ github.workspace }}/${{ env.BUILD_DIR }}/QuackSlicer_Windows_MSIX_${{ env.ver }}${{ env.ARCH_SUFFIX }}.msix
+          name: ${{ env.artifact_prefix }}_Windows_MSIX_${{ env.ver }}${{ env.ARCH_SUFFIX }}
+          path: ${{ github.workspace }}/${{ env.BUILD_DIR }}/${{ env.artifact_prefix }}_Windows_MSIX_${{ env.ver }}${{ env.ARCH_SUFFIX }}.msix
 
 # Ubuntu
       - name: Apt-Install Dependencies
@@ -524,7 +527,7 @@ jobs:
           # (x86_64 + aarch64) gets tested by its own unit_tests_linux_* job.
           ./build_linux.sh -istrlL
           ./scripts/check_appimage_libs.sh ./build/package ./build/package/bin/orca-slicer
-          appimage=./build/OrcaSlicer_Linux_AppImage${{ env.ubuntu-ver-str }}${{ env.arch_suffix }}_${{ env.ver }}.AppImage
+          appimage=./build/${{ env.artifact_prefix }}_Linux_AppImage${{ env.ubuntu-ver-str }}${{ env.arch_suffix }}_${{ env.ver }}.AppImage
           mv -n ./build/OrcaSlicer_Linux_V${{ env.ver_pure }}.AppImage "$appimage"
           chmod +x "$appimage"
           tar -cvf build_tests.tar build/tests
@@ -578,8 +581,8 @@ jobs:
         if: ${{ ! env.ACT && runner.os == 'Linux' }}
         uses: actions/upload-artifact@v7
         with:
-          name: OrcaSlicer_Linux_ubuntu_${{ env.ubuntu-ver }}${{ env.arch_suffix }}_${{ env.ver }}
-          path: "./build/OrcaSlicer_Linux_AppImage${{ env.ubuntu-ver-str }}${{ env.arch_suffix }}_${{ env.ver }}.AppImage"
+          name: ${{ env.artifact_prefix }}_Linux_ubuntu_${{ env.ubuntu-ver }}${{ env.arch_suffix }}_${{ env.ver }}
+          path: "./build/${{ env.artifact_prefix }}_Linux_AppImage${{ env.ubuntu-ver-str }}${{ env.arch_suffix }}_${{ env.ver }}.AppImage"
 
       - name: Upload OrcaSlicer_profile_validator Ubuntu
         if: ${{ ! env.ACT && runner.os == 'Linux' && !vars.SELF_HOSTED && inputs.arch != 'aarch64' }}
@@ -594,8 +597,8 @@ jobs:
         with:
           upload_url: https://uploads.github.com/repos/OrcaSlicer/OrcaSlicer/releases/137995723/assets{?name,label}
           release_id: 137995723
-          asset_path: ./build/OrcaSlicer_Linux_AppImage${{ env.ubuntu-ver-str }}${{ env.arch_suffix }}_${{ env.ver }}.AppImage
-          asset_name: OrcaSlicer_Linux_AppImage${{ env.ubuntu-ver-str }}${{ env.arch_suffix }}_nightly${{ env.nightly_suffix }}.AppImage
+          asset_path: ./build/${{ env.artifact_prefix }}_Linux_AppImage${{ env.ubuntu-ver-str }}${{ env.arch_suffix }}_${{ env.ver }}.AppImage
+          asset_name: ${{ env.artifact_prefix }}_Linux_AppImage${{ env.ubuntu-ver-str }}${{ env.arch_suffix }}_nightly${{ env.nightly_suffix }}.AppImage
           asset_content_type: application/octet-stream
           max_releases: 1 # optional, if there are more releases than this matching the asset_name, the oldest ones are going to be deleted
       - name: Deploy Ubuntu release
