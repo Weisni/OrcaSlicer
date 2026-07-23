@@ -313,7 +313,7 @@ public:
 
     std::vector<int> get_used_tpu_filaments(const std::vector<int> &used_filaments);
     // Orca: update selected filament and print
-    void           update_selections(AppConfig &config);
+    void           update_selections(AppConfig &config, bool preserve_project_filament_colors = false);
     void set_calibrate_printer(std::string name);
 
     void set_is_validation_mode(bool mode) { validation_mode = mode; }
@@ -414,8 +414,12 @@ public:
 
     // Load configuration that comes from a model file containing configuration, such as 3MF et al.
     // This method is called by the Plater.
-    void                        load_config_model(const std::string &name, DynamicPrintConfig config, Semver file_version = Semver())
-        { this->load_config_file_config(name, true, std::move(config), file_version); }
+    void                        load_config_model(const std::string &name, DynamicPrintConfig config, Semver file_version = Semver(), bool load_printer_preset = true)
+        { this->load_config_file_config(name, true, std::move(config), file_version, false, load_printer_preset); }
+
+    // A project printer may only become active when an equivalent printer was
+    // already configured locally before opening the project.
+    bool                        has_configured_printer_for_project(const DynamicPrintConfig &config) const;
 
     // Load an external config file containing the print, filament and printer presets.
     // Instead of a config file, a G-code may be loaded containing the full set of parameters.
@@ -544,7 +548,7 @@ private:
     // Load print, filament & printer presets from a config. If it is an external config, then the name is extracted from the external path.
     // and the external config is just referenced, not stored into user profile directory.
     // If it is not an external config, then the config will be stored into the user profile directory.
-    void                        load_config_file_config(const std::string &name_or_path, bool is_external, DynamicPrintConfig &&config, Semver file_version = Semver(), bool selected = false);
+    void                        load_config_file_config(const std::string &name_or_path, bool is_external, DynamicPrintConfig &&config, Semver file_version = Semver(), bool selected = false, bool load_printer_preset = true);
     /*ConfigSubstitutions         load_config_file_config_bundle(
         const std::string &path, const boost::property_tree::ptree &tree, ForwardCompatibilitySubstitutionRule compatibility_rule);*/
 

@@ -2,6 +2,7 @@
 
 #include <boost/filesystem.hpp>
 
+#include "libslic3r/AppConfig.hpp"
 #include "libslic3r/PresetBundle.hpp"
 #include "libslic3r/AppConfig.hpp"
 
@@ -462,5 +463,66 @@ TEST_CASE("Profile validator flags dangling and renamed preset references", "[Pr
         compatible_list(bundle.filaments, "User Filament", "compatible_printers") = { "Ghost Printer" };
         CHECK_FALSE(bundle.check_preset_references());
     }
+TEST_CASE("Project printers are activated only when configured locally", "[Preset][ProjectPrinter]")
+{
+    PresetBundle bundle;
+
+    DynamicPrintConfig configured_config(bundle.printers.default_preset().config);
+    configured_config.set_key_value("printer_model", new ConfigOptionString("Configured Model"));
+    configured_config.set_key_value("printer_variant", new ConfigOptionString("0.4"));
+    Preset &configured = bundle.printers.load_preset({}, "Configured Printer", configured_config, false);
+    configured.is_visible = true;
+
+    DynamicPrintConfig project_config(configured_config);
+    project_config.set_key_value("printer_settings_id", new ConfigOptionString("Project Printer"));
+    project_config.set_key_value("filament_colour", new ConfigOptionStrings({"#FFFFFF"}));
+
+    CHECK(bundle.has_configured_printer_for_project(project_config));
+
+    configured.is_visible = false;
+    CHECK_FALSE(bundle.has_configured_printer_for_project(project_config));
+
+    configured.is_visible = true;
+    configured.is_external = true;
+    CHECK_FALSE(bundle.has_configured_printer_for_project(project_config));
+
+    configured.is_external = false;
+    project_config.set_key_value("printer_variant", new ConfigOptionString("0.6"));
+    CHECK_FALSE(bundle.has_configured_printer_for_project(project_config));
+
+    project_config.set_key_value("printer_settings_id", new ConfigOptionString("Configured Printer"));
+    CHECK(bundle.has_configured_printer_for_project(project_config));
+}
+
+TEST_CASE("Switching printers preserves project filament colors", "[Preset][ProjectColors]")
+{
+    PresetBundle bundle;
+    AppConfig    app_config;
+
+    const std::string printer_name = bundle.printers.get_selected_preset_name();
+    REQUIRE_FALSE(printer_name.empty());
+
+    app_config.set_printer_setting(printer_name, PRESET_PRINT_NAME, bundle.prints.get_selected_preset_name());
+    app_config.set_printer_setting(printer_name, PRESET_FILAMENT_NAME, bundle.filaments.get_selected_preset_name());
+    app_config.set_printer_setting(printer_name, "filament_colors", "#AAAAAA");
+    app_config.set_printer_setting(printer_name, "filament_multi_colors", "#BBBBBB");
+    app_config.set_printer_setting(printer_name, "filament_color_types", "9");
+
+    const std::vector<std::string> colors       = {"#112233", "#445566", "#778899"};
+    const std::vector<std::string> multi_colors = {"#111111", "#444444", "#777777"};
+    const std::vector<std::string> color_types  = {"1", "2", "3"};
+    const std::vector<int>         maps         = {3, 2, 1};
+    bundle.project_config.option<ConfigOptionStrings>("filament_colour")->values       = colors;
+    bundle.project_config.option<ConfigOptionStrings>("filament_multi_colour")->values = multi_colors;
+    bundle.project_config.option<ConfigOptionStrings>("filament_colour_type")->values  = color_types;
+    bundle.project_config.option<ConfigOptionInts>("filament_map")->values              = maps;
+
+    bundle.update_selections(app_config, true);
+
+    CHECK(bundle.filament_presets.size() >= colors.size());
+    CHECK(bundle.project_config.option<ConfigOptionStrings>("filament_colour")->values == colors);
+    CHECK(bundle.project_config.option<ConfigOptionStrings>("filament_multi_colour")->values == multi_colors);
+    CHECK(bundle.project_config.option<ConfigOptionStrings>("filament_colour_type")->values == color_types);
+    CHECK(bundle.project_config.option<ConfigOptionInts>("filament_map")->values == maps);
 }
 

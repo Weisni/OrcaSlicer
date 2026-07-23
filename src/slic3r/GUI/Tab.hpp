@@ -670,6 +670,7 @@ public:
 
 	void		set_extruder_volume_type(int extruder_id, NozzleVolumeType type);
 	void		on_value_change(const std::string& opt_key, const boost::any& value) override;
+	void		set_extruder_nozzle_type(int extruder_id, NozzleType type);
 
 	wxSizer*	create_bed_shape_widget(wxWindow* parent);
 	void		cache_extruder_cnt(const DynamicPrintConfig* config = nullptr);

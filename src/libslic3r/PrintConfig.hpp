@@ -570,6 +570,26 @@ static std::string bed_type_to_gcode_string(const BedType type)
     return type_str;
 }
 
+static std::string bed_type_to_bambu_task_string(const BedType type)
+{
+    switch (type) {
+    case btPC:
+        return "pc";
+    case btEP:
+        return "pe";
+    case btPEI:
+        return "pei";
+    case btPTE:
+        return "pte";
+    case btPCT:
+        return "pct";
+    case btSuperTack:
+        return "suprtack";
+    default:
+        return "auto";
+    }
+}
+
 static std::string get_bed_temp_key(const BedType type)
 {
     if (type == btSuperTack)
@@ -1092,6 +1112,7 @@ PRINT_CONFIG_CLASS_DEFINE(
     ((ConfigOptionFloat,               layer_height))
     ((ConfigOptionFloat,               mmu_segmented_region_max_width))
     ((ConfigOptionFloat,               mmu_segmented_region_interlocking_depth))
+    ((ConfigOptionFloat,               mmu_surface_normal_penetration_depth))
     ((ConfigOptionFloat,               raft_contact_distance))
     ((ConfigOptionFloat,               raft_expansion))
     ((ConfigOptionPercent,             raft_first_layer_density))
@@ -1233,6 +1254,7 @@ PRINT_CONFIG_CLASS_DEFINE(
     ((ConfigOptionInts,  print_extruder_id))
     ((ConfigOptionStrings,  print_extruder_variant))
     ((ConfigOptionInt,                  bottom_shell_layers))
+    ((ConfigOptionInt,                  bottom_color_penetration_layers))
     ((ConfigOptionFloat,                bottom_shell_thickness))
     ((ConfigOptionFloat,                bridge_angle))
     ((ConfigOptionFloat,                internal_bridge_angle)) // ORCA: Internal bridge angle override
@@ -1335,6 +1357,7 @@ PRINT_CONFIG_CLASS_DEFINE(
     ((ConfigOptionBool, detect_thin_wall))
     ((ConfigOptionFloatOrPercent, top_surface_line_width))
     ((ConfigOptionInt, top_shell_layers))
+    ((ConfigOptionInt, top_color_penetration_layers))
     ((ConfigOptionFloat, top_shell_thickness))
     ((ConfigOptionFloat, top_surface_expansion))
     ((ConfigOptionFloat, top_surface_expansion_margin))
@@ -1347,6 +1370,10 @@ PRINT_CONFIG_CLASS_DEFINE(
     ((ConfigOptionFloatsOrPercentsNullable, overhang_3_4_speed))
     ((ConfigOptionFloatsOrPercentsNullable, overhang_4_4_speed))
     ((ConfigOptionBool,                 only_one_wall_top))
+
+    // Orca: Ignore small upper-layer features when determining top surfaces (e.g. embossed / raised text).
+    ((ConfigOptionBool,                 top_surface_ignore_small_features))
+    ((ConfigOptionFloat,                top_surface_ignore_small_features_area))
 
     //SoftFever
     ((ConfigOptionFloatOrPercent,       min_width_top_surface))

@@ -2753,6 +2753,8 @@ void TabPrint::build()
         optgroup->append_single_option_line("only_one_wall_first_layer", "quality_settings_wall_and_surfaces#only-one-wall");
         optgroup->append_single_option_line("only_one_wall_top", "quality_settings_wall_and_surfaces#only-one-wall");
         optgroup->append_single_option_line("min_width_top_surface", "quality_settings_wall_and_surfaces#threshold");
+        optgroup->append_single_option_line("top_surface_ignore_small_features", "quality_settings_wall_and_surfaces#threshold");
+        optgroup->append_single_option_line("top_surface_ignore_small_features_area", "quality_settings_wall_and_surfaces#threshold");
         optgroup->append_single_option_line("reduce_crossing_wall", "quality_settings_wall_and_surfaces#avoid-crossing-walls");
         optgroup->append_single_option_line("max_travel_detour_distance", "quality_settings_wall_and_surfaces#max-detour-length");
 
@@ -2793,6 +2795,7 @@ void TabPrint::build()
         optgroup = page->new_optgroup(L("Top/bottom shells"), L"param_shell");
 
         optgroup->append_single_option_line("top_shell_layers", "strength_settings_top_bottom_shells#shell-layers");
+        optgroup->append_single_option_line("top_color_penetration_layers");
         optgroup->append_single_option_line("top_shell_thickness", "strength_settings_top_bottom_shells#shell-thickness");
         optgroup->append_single_option_line("top_surface_density", "strength_settings_top_bottom_shells#surface-density");
         optgroup->append_single_option_line("top_surface_pattern", "strength_settings_top_bottom_shells#surface-pattern");
@@ -2802,6 +2805,7 @@ void TabPrint::build()
         optgroup->append_single_option_line("top_surface_expansion_margin", "strength_settings_top_bottom_shells#surface-expansion-margin");
         optgroup->append_single_option_line("top_surface_expansion_direction", "strength_settings_top_bottom_shells#surface-expansion-direction");
         optgroup->append_single_option_line("bottom_shell_layers", "strength_settings_top_bottom_shells#shell-layers");
+        optgroup->append_single_option_line("bottom_color_penetration_layers");
         optgroup->append_single_option_line("bottom_shell_thickness", "strength_settings_top_bottom_shells#shell-thickness");
         optgroup->append_single_option_line("bottom_surface_density", "strength_settings_top_bottom_shells#surface-density");
         optgroup->append_single_option_line("bottom_surface_pattern", "strength_settings_top_bottom_shells#surface-pattern");
@@ -3039,6 +3043,7 @@ void TabPrint::build()
         optgroup->append_single_option_line("interlocking_beam", "multimaterial_settings_advanced#interlocking-beam");
         optgroup->append_single_option_line("toolchange_ordering", "multimaterial_settings_advanced#toolchange-ordering");
         optgroup->append_single_option_line("interface_shells", "multimaterial_settings_advanced#interface-shells");
+        optgroup->append_single_option_line("mmu_surface_normal_penetration_depth");
         optgroup->append_single_option_line("mmu_segmented_region_max_width", "multimaterial_settings_advanced#maximum-width-of-segmented-region");
         optgroup->append_single_option_line("mmu_segmented_region_interlocking_depth", "multimaterial_settings_advanced#interlocking-depth-of-segmented-region");
         optgroup->append_single_option_line("interlocking_beam_width", "multimaterial_settings_advanced#interlocking-beam-width");
@@ -6852,7 +6857,7 @@ bool Tab::select_preset(
 
         // Orca: update presets for the selected printer
         if (m_type == Preset::TYPE_PRINTER && wxGetApp().app_config->get_bool("remember_printer_config")) {
-            m_preset_bundle->update_selections(*wxGetApp().app_config);
+            m_preset_bundle->update_selections(*wxGetApp().app_config, true);
             wxGetApp().plater()->sidebar().on_filament_count_change(m_preset_bundle->filament_presets.size());
         }
         load_current_preset();
@@ -7776,6 +7781,30 @@ void TabPrinter::set_extruder_volume_type(int extruder_id, NozzleVolumeType type
 
 }
 
+void TabPrinter::set_extruder_nozzle_type(int extruder_id, NozzleType type)
+{
+    // -1 means single extruder, so we should default use extruder id 0
+    if (extruder_id == -1)
+        extruder_id = 0;
+
+    auto nozzle_types = m_config->option<ConfigOptionEnumsGenericNullable>("nozzle_type");
+    if (!nozzle_types)
+        return;
+
+    if (nozzle_types->values.size() <= size_t(extruder_id))
+        nozzle_types->values.resize(size_t(extruder_id) + 1, int(NozzleType::ntUndefine));
+
+    if (nozzle_types->values[extruder_id] == int(type))
+        return;
+
+    nozzle_types->values[extruder_id] = int(type);
+    on_value_change((boost::format("nozzle_type#%1%") % extruder_id).str(), int(type));
+    if (m_presets_choice)
+        m_presets_choice->update_dirty();
+    on_presets_changed();
+    update();
+}
+
 // Return a callback to create a TabPrinter widget to edit bed shape
 wxSizer* TabPrinter::create_bed_shape_widget(wxWindow* parent)
 {
@@ -8022,10 +8051,19 @@ void Tab::update_extruder_variants(int extruder_id, bool reload)
             m_extruder_sync->Enable(false);
         }
     } else if (m_variant_combo) {
-        if (extruder_id >= 0)
-            return;
+        int selection = m_variant_combo->GetSelection();
+        int target_extruder = extruder_id >= 0 ? extruder_id : 0;
+        Preset &printer_preset = m_preset_bundle->printers.get_edited_preset();
+        auto nozzle_volumes = m_preset_bundle->project_config.option<ConfigOptionEnumsGeneric>("nozzle_volume_type");
+        auto extruders      = printer_preset.config.option<ConfigOptionEnumsGeneric>("extruder_type");
+        if (nozzle_volumes && extruders && target_extruder < int(nozzle_volumes->values.size()) && target_extruder < int(extruders->values.size())) {
+            const int variant_index = m_config->get_index_for_extruder(target_extruder + 1, "",
+                ExtruderType(extruders->values[target_extruder]), NozzleVolumeType(nozzle_volumes->values[target_extruder]),
+                "filament_extruder_variant");
+            if (variant_index >= 0)
+                selection = variant_index;
+        }
 
-        const int selection = m_variant_combo->GetSelection();
         auto      options   = generate_extruder_options();
         m_variant_combo->SetOptions(options);
 
@@ -8033,6 +8071,7 @@ void Tab::update_extruder_variants(int extruder_id, bool reload)
             m_variant_combo->SetSelection(selection < 0 || selection >= (int) options.size() ? 0 : selection);
 
         m_variant_combo->Enable(options.size() > 1);
+        extruder_id = m_variant_combo->GetSelection();
     }
     switch_excluder(extruder_id, reload);
     if (m_type == Preset::TYPE_PRINT) {

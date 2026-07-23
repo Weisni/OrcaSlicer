@@ -122,6 +122,7 @@
 #include "KBShortcutsDialog.hpp"
 #include "DownloadProgressDialog.hpp"
 #include "TroubleshootDialog.hpp"
+#include "WindowsShellIntegration.hpp"
 
 #include "BitmapCache.hpp"
 #include "Notebook.hpp"
@@ -266,27 +267,19 @@ std::string VersionInfo::convert_short_version(std::string full_version)
 }
 
 #ifdef _WIN32
+static constexpr const wchar_t* QUACKSLICER_PROG_ID = L"QuackSlicer.File.1";
+static constexpr const wchar_t* QUACKSLICER_EXE_NAME = L"quack-slicer.exe";
+
 bool is_associate_files(std::wstring extend)
 {
-    wchar_t app_path[MAX_PATH];
-    ::GetModuleFileNameW(nullptr, app_path, sizeof(app_path));
+    const std::wstring reg_open_with = L"Software\\Classes\\." + extend + L"\\OpenWithProgids";
+    HKEY               key = nullptr;
+    if (::RegOpenKeyExW(HKEY_CURRENT_USER, reg_open_with.c_str(), 0, KEY_QUERY_VALUE, &key) != ERROR_SUCCESS)
+        return false;
 
-    std::wstring prog_id             = L" Orca.Slicer.1";
-    std::wstring reg_base            = L"Software\\Classes";
-    std::wstring reg_extension       = reg_base + L"\\." + extend;
-
-    wchar_t szValueCurrent[1000];
-    DWORD   dwType;
-    DWORD   dwSize = sizeof(szValueCurrent);
-
-    int iRC = ::RegGetValueW(HKEY_CURRENT_USER, reg_extension.c_str(), nullptr, RRF_RT_ANY, &dwType, szValueCurrent, &dwSize);
-
-    bool bDidntExist = iRC == ERROR_FILE_NOT_FOUND;
-
-    if (!bDidntExist && ::wcscmp(szValueCurrent, prog_id.c_str()) == 0)
-        return true;
-
-    return false;
+    const bool registered = ::RegQueryValueExW(key, QUACKSLICER_PROG_ID, nullptr, nullptr, nullptr, nullptr) == ERROR_SUCCESS;
+    ::RegCloseKey(key);
+    return registered;
 }
 #endif
 
@@ -319,7 +312,7 @@ public:
         bool dark_mode = m_fg_color != wxColour("#6B6A6A");
         wxSize sz  = m_window->GetClientSize();
         BitmapCache bmp_cache;
-        m_logo_bmp = *bmp_cache.load_svg(dark_mode ? "splash_logo_dark" : "splash_logo", sz.GetWidth(), sz.GetHeight());
+        m_logo_bmp = *bmp_cache.load_png(dark_mode ? "splash_logo_dark" : "splash_logo", sz.GetWidth(), sz.GetHeight());
 
         m_window->Bind(wxEVT_PAINT, &SplashScreen::OnPaint, this);
         m_window->Refresh();
@@ -420,6 +413,58 @@ private:
     wxFont m_font_version = Label::Body_16;
     wxFont m_font_action  = Label::Body_16;
 };
+
+static void migrate_orcaslicer_settings(const boost::filesystem::path &target_data_dir)
+{
+    namespace fs = boost::filesystem;
+
+    const fs::path migration_marker = target_data_dir / ".orcaslicer_settings_imported";
+    if (fs::exists(migration_marker))
+        return;
+
+    const fs::path source_data_dir = target_data_dir.parent_path() / SLIC3R_ORCA_COMPATIBILITY_NAME;
+    if (source_data_dir == target_data_dir || !fs::is_directory(source_data_dir))
+        return;
+
+    try {
+        fs::create_directories(target_data_dir);
+
+        const std::string source_config_base = SLIC3R_ORCA_COMPATIBILITY_NAME;
+        for (const fs::directory_entry &entry : fs::directory_iterator(source_data_dir)) {
+            const std::string name = entry.path().filename().string();
+            if (name == "cache" || name == "log" ||
+                name == source_config_base + ".conf" || name == source_config_base + ".conf.bak" ||
+                name == source_config_base + ".ini" || name == source_config_base + ".ini.bak")
+                continue;
+
+            const fs::path target = target_data_dir / entry.path().filename();
+            if (fs::is_directory(entry.path())) {
+                copy_directory_recursively(entry.path(), target, nullptr, true);
+            } else {
+                std::string error_message;
+                if (copy_file(entry.path().string(), target.string(), error_message, false) != CopyFileResult::SUCCESS)
+                    throw std::runtime_error(error_message);
+            }
+        }
+
+        for (const char *suffix : { ".conf", ".conf.bak", ".ini", ".ini.bak" }) {
+            const fs::path source = source_data_dir / (source_config_base + suffix);
+            if (!fs::is_regular_file(source))
+                continue;
+
+            const fs::path target = target_data_dir / (std::string(SLIC3R_APP_KEY) + suffix);
+            std::string    error_message;
+            if (copy_file(source.string(), target.string(), error_message, false) != CopyFileResult::SUCCESS)
+                throw std::runtime_error(error_message);
+        }
+
+        save_string_file(migration_marker, source_data_dir.string());
+        std::cerr << "Imported OrcaSlicer settings from " << source_data_dir << " to " << target_data_dir << std::endl;
+    } catch (const std::exception &ex) {
+        std::cerr << "Failed to import OrcaSlicer settings from " << source_data_dir << " to " << target_data_dir
+                  << ": " << ex.what() << std::endl;
+    }
+}
 
 #ifdef __linux__
 static void migrate_flatpak_legacy_datadir(const boost::filesystem::path &data_dir_path)
@@ -2497,7 +2542,7 @@ void GUI_App::init_app_config()
     SetAppName(SLIC3R_APP_KEY);
 //	SetAppName(SLIC3R_APP_KEY "-alpha");
 //  SetAppName(SLIC3R_APP_KEY "-beta");
-//	SetAppDisplayName(SLIC3R_APP_NAME);
+	SetAppDisplayName(SLIC3R_APP_NAME);
 
 	// Set the Slic3r data directory at the Slic3r XS module.
 	// Unix: ~/ .Slic3r
@@ -2537,6 +2582,7 @@ void GUI_App::init_app_config()
                 migrate_flatpak_legacy_datadir(data_dir_path);
                 set_data_dir(data_dir_path.string());
             #endif
+            migrate_orcaslicer_settings(data_dir_path);
             if (!boost::filesystem::exists(data_dir_path)){
                 boost::filesystem::create_directory(data_dir_path);
             }
@@ -2592,6 +2638,9 @@ void GUI_App::init_app_config()
         // update associate files from registry information
         if (is_associate_files(L"3mf")) {
             app_config->set("associate_3mf", "true");
+        }
+        if (is_associate_files(L"drc")) {
+            app_config->set("associate_drc", "true");
         }
         if (is_associate_files(L"stl")) {
             app_config->set("associate_stl", "true");
@@ -2824,6 +2873,10 @@ void GUI_App::init_plugin_gui_wiring()
 bool GUI_App::on_init_inner()
 {
     wxLog::SetActiveTarget(new wxBoostLog());
+
+#ifdef _WIN32
+    WindowsShellIntegration::repair_shortcuts();
+#endif
 
 #ifdef __APPLE__
     // Override wxWidgets' kAEGetURL handler so orcaslicer:// deep links keep
@@ -3069,6 +3122,8 @@ bool GUI_App::on_init_inner()
 #ifdef __WXMSW__
         if (app_config->get("associate_3mf") == "true")
             associate_files(L"3mf");
+        if (app_config->get("associate_drc") == "true")
+            associate_files(L"drc");
         if (app_config->get("associate_stl") == "true")
             associate_files(L"stl");
         if (app_config->get("associate_step") == "true") {
@@ -7751,7 +7806,7 @@ int GUI_App::GetSingleChoiceIndex(const wxString& message,
 // select language from the list of installed languages
 bool GUI_App::select_language()
 {
-	wxArrayString translations = wxTranslations::Get()->GetAvailableTranslations(SLIC3R_APP_KEY);
+	wxArrayString translations = wxTranslations::Get()->GetAvailableTranslations(SLIC3R_TRANSLATION_CATALOG);
     std::vector<const wxLanguageInfo*> language_infos;
     language_infos.emplace_back(wxLocale::GetLanguageInfo(wxLANGUAGE_ENGLISH));
     for (size_t i = 0; i < translations.GetCount(); ++ i) {
@@ -7855,7 +7910,7 @@ bool GUI_App::load_language(wxString language, bool initial)
                     // There seems to be a support for that on Windows and OSX, while on Linuxes the code just returns wxLocale::GetSystemLanguage().
                     // The last parameter gets added to the list of detected dictionaries. This is a workaround
                     // for not having the English dictionary. Let's hope wxWidgets of various versions process this call the same way.
-                    wxString best_language = wxTranslations::Get()->GetBestTranslation(SLIC3R_APP_KEY, wxLANGUAGE_ENGLISH);
+                    wxString best_language = wxTranslations::Get()->GetBestTranslation(SLIC3R_TRANSLATION_CATALOG, wxLANGUAGE_ENGLISH);
                     if (!best_language.IsEmpty()) {
                         m_language_info_best = wxLocale::FindLanguageInfo(best_language);
                         BOOST_LOG_TRIVIAL(info) << boost::format("Best translation language detected (may be different from user locales): %1%") %
@@ -8024,7 +8079,7 @@ bool GUI_App::load_language(wxString language, bool initial)
     // Override language at the active wxTranslations class (which is stored in the active m_wxLocale)
     // to load possibly different dictionary, for example, load Czech dictionary for Slovak language.
     wxTranslations::Get()->SetLanguage(language_dict);
-    m_wxLocale->AddCatalog(SLIC3R_APP_KEY);
+    m_wxLocale->AddCatalog(SLIC3R_TRANSLATION_CATALOG);
     m_active_language_code = requested_language_code;
     m_imgui->set_language(into_u8(requested_language_code));
 
@@ -8494,6 +8549,8 @@ void GUI_App::open_preferences(size_t open_on_tab, const std::string& highlight_
             if (is_editor()) {
                 if (app_config->get("associate_3mf") == "true")
                     associate_files(L"3mf");
+                if (app_config->get("associate_drc") == "true")
+                    associate_files(L"drc");
                 if (app_config->get("associate_stl") == "true")
                     associate_files(L"stl");
                 if (app_config->get("associate_step") == "true") {
@@ -9642,7 +9699,7 @@ static bool set_into_win_registry(HKEY hkeyHive, const wchar_t* pszVar, const wc
     }
 
     DWORD dwDisposition;
-    HKEY hkey;
+    HKEY hkey = nullptr;
     iRC = ::RegCreateKeyExW(hkeyHive, pszVar, 0, 0, 0, KEY_ALL_ACCESS, nullptr, &hkey, &dwDisposition);
     bool ret = false;
     if (iRC == ERROR_SUCCESS) {
@@ -9651,31 +9708,42 @@ static bool set_into_win_registry(HKEY hkeyHive, const wchar_t* pszVar, const wc
             ret = true;
     }
 
-    RegCloseKey(hkey);
+    if (hkey != nullptr)
+        RegCloseKey(hkey);
     return ret;
 }
 
-static bool del_win_registry(HKEY hkeyHive, const wchar_t *pszVar, const wchar_t *pszValue)
+static bool set_empty_win_registry_value(HKEY hkey_hive, const wchar_t* key_path, const wchar_t* value_name)
 {
-    wchar_t szValueCurrent[1000];
-    DWORD   dwType;
-    DWORD   dwSize = sizeof(szValueCurrent);
-
-    int iRC = ::RegGetValueW(hkeyHive, pszVar, nullptr, RRF_RT_ANY, &dwType, szValueCurrent, &dwSize);
-
-    bool bDidntExist = iRC == ERROR_FILE_NOT_FOUND;
-
-    if ((iRC != ERROR_SUCCESS) && !bDidntExist)
+    HKEY  key = nullptr;
+    DWORD disposition;
+    if (::RegCreateKeyExW(hkey_hive, key_path, 0, nullptr, 0, KEY_QUERY_VALUE | KEY_SET_VALUE, nullptr, &key, &disposition) != ERROR_SUCCESS)
         return false;
 
-    if (!bDidntExist) {
-        iRC      = ::RegDeleteKeyExW(hkeyHive, pszVar, KEY_ALL_ACCESS, 0);
-        if (iRC == ERROR_SUCCESS) {
-            return true;
-        }
+    if (::RegQueryValueExW(key, value_name, nullptr, nullptr, nullptr, nullptr) == ERROR_SUCCESS) {
+        ::RegCloseKey(key);
+        return false;
     }
 
-    return false;
+    const bool changed = ::RegSetValueExW(key, value_name, 0, REG_NONE, nullptr, 0) == ERROR_SUCCESS;
+    ::RegCloseKey(key);
+    return changed;
+}
+
+static bool del_win_registry_value(HKEY hkey_hive, const wchar_t* key_path, const wchar_t* value_name)
+{
+    HKEY key = nullptr;
+    if (::RegOpenKeyExW(hkey_hive, key_path, 0, KEY_SET_VALUE, &key) != ERROR_SUCCESS)
+        return false;
+
+    const bool changed = ::RegDeleteValueW(key, value_name) == ERROR_SUCCESS;
+    ::RegCloseKey(key);
+    return changed;
+}
+
+static bool del_win_registry_tree(HKEY hkey_hive, const wchar_t* key_path)
+{
+    return ::RegDeleteTreeW(hkey_hive, key_path) == ERROR_SUCCESS;
 }
 
 #endif // __WXMSW__
@@ -9688,21 +9756,25 @@ void GUI_App::associate_files(std::wstring extend)
     if (is_running_in_msix())
         return;
     wchar_t app_path[MAX_PATH];
-    ::GetModuleFileNameW(nullptr, app_path, sizeof(app_path));
+    ::GetModuleFileNameW(nullptr, app_path, MAX_PATH);
 
-    std::wstring prog_path = L"\"" + std::wstring(app_path) + L"\"";
-    std::wstring prog_id = L" Orca.Slicer.1";
-    std::wstring prog_desc = L"OrcaSlicer";
-    std::wstring prog_command = prog_path + L" \"%1\"";
-    std::wstring reg_base = L"Software\\Classes";
-    std::wstring reg_extension = reg_base + L"\\." + extend;
-    std::wstring reg_prog_id = reg_base + L"\\" + prog_id;
-    std::wstring reg_prog_id_command = reg_prog_id + L"\\Shell\\Open\\Command";
+    const std::wstring prog_path = L"\"" + std::wstring(app_path) + L"\"";
+    const std::wstring prog_command = prog_path + L" \"%1\"";
+    const std::wstring extension_name = L"." + extend;
+    const std::wstring reg_base = L"Software\\Classes";
+    const std::wstring reg_open_with = reg_base + L"\\" + extension_name + L"\\OpenWithProgids";
+    const std::wstring reg_prog_id = reg_base + L"\\" + QUACKSLICER_PROG_ID;
+    const std::wstring reg_prog_id_command = reg_prog_id + L"\\Shell\\Open\\Command";
+    const std::wstring reg_application = reg_base + L"\\Applications\\" + QUACKSLICER_EXE_NAME;
+    const std::wstring reg_application_command = reg_application + L"\\Shell\\Open\\Command";
+    const std::wstring reg_application_types = reg_application + L"\\SupportedTypes";
 
     bool is_new = false;
-    is_new |= set_into_win_registry(HKEY_CURRENT_USER, reg_extension.c_str(), prog_id.c_str());
-    is_new |= set_into_win_registry(HKEY_CURRENT_USER, reg_prog_id.c_str(), prog_desc.c_str());
+    is_new |= set_into_win_registry(HKEY_CURRENT_USER, reg_prog_id.c_str(), L"QuackSlicer");
     is_new |= set_into_win_registry(HKEY_CURRENT_USER, reg_prog_id_command.c_str(), prog_command.c_str());
+    is_new |= set_empty_win_registry_value(HKEY_CURRENT_USER, reg_open_with.c_str(), QUACKSLICER_PROG_ID);
+    is_new |= set_into_win_registry(HKEY_CURRENT_USER, reg_application_command.c_str(), prog_command.c_str());
+    is_new |= set_empty_win_registry_value(HKEY_CURRENT_USER, reg_application_types.c_str(), extension_name.c_str());
     if (is_new)
         // notify Windows only when any of the values gets changed
         ::SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, nullptr, nullptr);
@@ -9714,28 +9786,26 @@ void GUI_App::disassociate_files(std::wstring extend)
 #ifdef WIN32
     if (is_running_in_msix())
         return;
-    wchar_t app_path[MAX_PATH];
-    ::GetModuleFileNameW(nullptr, app_path, sizeof(app_path));
-
-    std::wstring prog_path = L"\"" + std::wstring(app_path) + L"\"";
-    std::wstring prog_id = L" Orca.Slicer.1";
-    std::wstring prog_desc = L"OrcaSlicer";
-    std::wstring prog_command = prog_path + L" \"%1\"";
-    std::wstring reg_base = L"Software\\Classes";
-    std::wstring reg_extension = reg_base + L"\\." + extend;
-    std::wstring reg_prog_id = reg_base + L"\\" + prog_id;
-    std::wstring reg_prog_id_command = reg_prog_id + L"\\Shell\\Open\\Command";
+    const std::wstring extension_name = L"." + extend;
+    const std::wstring reg_base = L"Software\\Classes";
+    const std::wstring reg_open_with = reg_base + L"\\" + extension_name + L"\\OpenWithProgids";
+    const std::wstring reg_prog_id = reg_base + L"\\" + QUACKSLICER_PROG_ID;
+    const std::wstring reg_application = reg_base + L"\\Applications\\" + QUACKSLICER_EXE_NAME;
+    const std::wstring reg_application_types = reg_application + L"\\SupportedTypes";
 
     bool is_new = false;
-    is_new |= del_win_registry(HKEY_CURRENT_USER, reg_extension.c_str(), prog_id.c_str());
+    is_new |= del_win_registry_value(HKEY_CURRENT_USER, reg_open_with.c_str(), QUACKSLICER_PROG_ID);
+    is_new |= del_win_registry_value(HKEY_CURRENT_USER, reg_application_types.c_str(), extension_name.c_str());
 
     bool is_associate_3mf  = app_config->get("associate_3mf") == "true";
+    bool is_associate_drc  = app_config->get("associate_drc") == "true";
     bool is_associate_stl  = app_config->get("associate_stl") == "true";
     bool is_associate_step = app_config->get("associate_step") == "true";
-    if (!is_associate_3mf && !is_associate_stl && !is_associate_step)
+    bool is_associate_gcode = app_config->get("associate_gcode") == "true";
+    if (!is_associate_3mf && !is_associate_drc && !is_associate_stl && !is_associate_step && !is_associate_gcode)
     {
-        is_new |= del_win_registry(HKEY_CURRENT_USER, reg_prog_id.c_str(), prog_desc.c_str());
-        is_new |= del_win_registry(HKEY_CURRENT_USER, reg_prog_id_command.c_str(), prog_command.c_str());
+        is_new |= del_win_registry_tree(HKEY_CURRENT_USER, reg_prog_id.c_str());
+        is_new |= del_win_registry_tree(HKEY_CURRENT_USER, reg_application.c_str());
     }
 
     if (is_new)

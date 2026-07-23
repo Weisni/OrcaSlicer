@@ -235,6 +235,8 @@ void AppConfig::set_defaults()
 
     if (get("enable_append_color_by_sync_ams").empty())
         set_bool("enable_append_color_by_sync_ams", true);
+    if (get("passive_chamber_preheat").empty())
+        set_bool("passive_chamber_preheat", true);
     if (get("enable_merge_color_by_sync_ams").empty())
         set_bool("enable_merge_color_by_sync_ams", false);
     if (get("ams_sync_match_full_use_color_dist").empty())

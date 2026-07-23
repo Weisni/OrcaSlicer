@@ -2,6 +2,7 @@
 #include "libslic3r/MTUtils.hpp"
 #include "libslic3r/Model.hpp"
 #include "libslic3r/PresetBundle.hpp"
+#include "libslic3r/PrintConfig.hpp"
 #include "slic3r/GUI/Plater.hpp"
 #include "slic3r/GUI/GUI.hpp"
 #include "slic3r/GUI/GUI_App.hpp"
@@ -10,10 +11,14 @@
 #include "bambu_networking.hpp"
 
 #include "slic3r/GUI/DeviceCore/DevManager.h"
+#include "slic3r/GUI/DeviceCore/DevBed.h"
+#include "slic3r/GUI/DeviceCore/DevConfig.h"
 #include "slic3r/GUI/DeviceCore/DevUtil.h"
 
 #include "slic3r/Utils/FileTransferUtils.hpp"
 #include "slic3r/Utils/BBLNetworkPlugin.hpp"
+
+#include <cmath>
 
 namespace Slic3r {
 namespace GUI {
@@ -40,6 +45,129 @@ static auto sending_over_cloud_str      = _u8L("Sending print job through cloud 
 static wxString wait_sending_finish         = _L("Print task sending times out.");
 //static wxString desc_wait_sending_finish    = _L("The printer timed out while receiving a print job. Please check if the network is functioning properly and send the print again.");
 //static wxString desc_wait_sending_finish    = _L("The printer timed out while receiving a print job. Please check if the network is functioning properly.");
+
+struct PassiveChamberPreheatParams
+{
+    int chamber_target   = 0;
+    int start_bed_temp   = 0;
+    int timeout          = 2700;
+    int no_rise_timeout  = 600;
+    int poll             = 5;
+};
+
+static int get_max_config_value(const DynamicPrintConfig& config, const std::string& key)
+{
+    const ConfigOptionInts* values = config.option<ConfigOptionInts>(key);
+    if (!values)
+        return 0;
+
+    int max_value = 0;
+    for (int value : values->values)
+        max_value = std::max(max_value, value);
+    return max_value;
+}
+
+static int percent_between(int value, int start, int end)
+{
+    if (start == end)
+        return 100;
+
+    const double progress = double(value - start) / double(end - start) * 100.0;
+    return std::clamp(int(std::round(progress)), 0, 100);
+}
+
+static bool wait_for_passive_chamber_preheat(MachineObject* obj, const PassiveChamberPreheatParams& params, OnUpdateStatusFn update_fn, WasCancelledFn cancel_fn)
+{
+    if (!obj || params.chamber_target <= 0 || params.start_bed_temp <= 0)
+        return true;
+
+    DevConfig* config = obj->GetConfig();
+    if (!config || !config->HasChamber() || config->SupportChamberEdit())
+        return true;
+
+    const int timeout = std::max(0, params.timeout);
+    const int poll    = std::max(1, params.poll);
+    const int no_rise_timeout = std::max(0, params.no_rise_timeout);
+    if (obj->chamber_temp >= params.chamber_target)
+        return true;
+
+    const int preheat_bed_temp = obj->get_bed_temperature_limit();
+    if (preheat_bed_temp <= 0)
+        return true;
+
+    BOOST_LOG_TRIVIAL(info) << "print_job: passive chamber preheat start, chamber=" << obj->chamber_temp
+                            << ", target=" << params.chamber_target
+                            << ", bed=" << preheat_bed_temp
+                            << ", timeout=" << timeout;
+
+    obj->command_set_bed(preheat_bed_temp);
+
+    int elapsed = 0;
+    int last_rise_elapsed = 0;
+    float highest_chamber_temp = obj->chamber_temp;
+    bool reached_target = false;
+    bool stopped_no_rise = false;
+    while (elapsed < timeout) {
+        if (cancel_fn && cancel_fn()) {
+            obj->command_set_bed(params.start_bed_temp);
+            return false;
+        }
+
+        obj->command_set_bed(preheat_bed_temp);
+
+        if (obj->chamber_temp >= params.chamber_target) {
+            BOOST_LOG_TRIVIAL(info) << "print_job: passive chamber preheat reached target, chamber=" << obj->chamber_temp;
+            reached_target = true;
+            break;
+        }
+
+        if (obj->chamber_temp > highest_chamber_temp) {
+            highest_chamber_temp = obj->chamber_temp;
+            last_rise_elapsed = elapsed;
+        }
+        else if (no_rise_timeout > 0 && elapsed - last_rise_elapsed >= no_rise_timeout) {
+            BOOST_LOG_TRIVIAL(info) << "print_job: passive chamber preheat stopped because chamber temperature did not rise, chamber="
+                                    << obj->chamber_temp << ", target=" << params.chamber_target
+                                    << ", elapsed=" << elapsed;
+            stopped_no_rise = true;
+            break;
+        }
+
+        if (update_fn) {
+            update_fn(PrintingStageSending, percent_between(int(std::round(obj->chamber_temp)), 0, params.chamber_target),
+                      (boost::format("Preheating chamber: %1%/%2% C") % obj->chamber_temp % params.chamber_target).str());
+        }
+
+        const int sleep_seconds = std::min(poll, timeout - elapsed);
+        boost::this_thread::sleep_for(boost::chrono::seconds(sleep_seconds));
+        elapsed += sleep_seconds;
+    }
+
+    if (!reached_target && !stopped_no_rise) {
+        BOOST_LOG_TRIVIAL(info) << "print_job: passive chamber preheat timed out, chamber=" << obj->chamber_temp
+                                << ", target=" << params.chamber_target;
+    }
+
+    if (params.start_bed_temp > 0) {
+        BOOST_LOG_TRIVIAL(info) << "print_job: passive chamber preheat restore bed target=" << params.start_bed_temp;
+        obj->command_set_bed(params.start_bed_temp);
+
+        const int cooldown_start_temp = obj->GetBed() ? obj->GetBed()->GetBedTemp() : params.start_bed_temp;
+        while (obj->GetBed() && obj->GetBed()->GetBedTemp() > params.start_bed_temp) {
+            if (cancel_fn && cancel_fn())
+                return false;
+
+            if (update_fn) {
+                update_fn(PrintingStageSending, percent_between(obj->GetBed()->GetBedTemp(), cooldown_start_temp, params.start_bed_temp),
+                          (boost::format("Cooling bed: %1%/%2% C") % obj->GetBed()->GetBedTemp() % params.start_bed_temp).str());
+            }
+
+            boost::this_thread::sleep_for(boost::chrono::seconds(poll));
+        }
+    }
+
+    return true;
+}
 
 PrintJob::PrintJob(std::string dev_id)
 : m_plater{wxGetApp().plater()},
@@ -195,7 +323,7 @@ void PrintJob::process(Ctl &ctl)
 
     PartPlate* curr_plate = m_plater->get_partplate_list().get_curr_plate();
     if (curr_plate) {
-        this->task_bed_type = bed_type_to_gcode_string(plate_data.is_valid ? plate_data.bed_type : curr_plate->get_bed_type(true));
+        this->task_bed_type = bed_type_to_bambu_task_string(plate_data.is_valid ? plate_data.bed_type : curr_plate->get_bed_type(true));
     }
 
     PrintParams params;
@@ -277,6 +405,16 @@ void PrintJob::process(Ctl &ctl)
     params.auto_offset_cali     = this->auto_offset_cali;
     params.extruder_cali_manual_mode = this->extruder_cali_manual_mode;
     params.task_ext_change_assist = this->task_ext_change_assist;
+    PassiveChamberPreheatParams passive_chamber_preheat;
+    if (m_print_type == "from_normal") {
+        const DynamicPrintConfig preset_full_config = wxGetApp().preset_bundle->full_config();
+        passive_chamber_preheat.chamber_target = get_max_config_value(preset_full_config, "chamber_temperature");
+
+        BedType bed_type = curr_plate ? (plate_data.is_valid ? plate_data.bed_type : curr_plate->get_bed_type(true)) : BedType::btDefault;
+        const std::string bed_temp_key = get_bed_temp_1st_layer_key(bed_type);
+        if (!bed_temp_key.empty())
+            passive_chamber_preheat.start_bed_temp = get_max_config_value(preset_full_config, bed_temp_key);
+    }
     // Allow disabling the eMMC print path via AppConfig. Plugin 02.03.00.62's
     // eMMC tunnel code hangs indefinitely at the upload phase with some
     // printers (e.g., Bambu H2D), so we default to disabled. Users with
@@ -436,7 +574,10 @@ void PrintJob::process(Ctl &ctl)
                             msg = _u8L("Sending print configuration");
                         }
                         else if (stage == SendingPrintJobStage::PrintingStageSending && !is_try_lan_mode) {
-                            if (this->connection_type == "lan") {
+                            if (!info.empty()) {
+                                msg = info;
+                            }
+                            else if (this->connection_type == "lan") {
                                 msg = _u8L("Sending print job over LAN");
                             } else {
                                 msg = _u8L("Sending print job through cloud service");
@@ -463,6 +604,11 @@ void PrintJob::process(Ctl &ctl)
                                 || stage == SendingPrintJobStage::PrintingStageRecord)
                                 && (code > 0 && code <= 100)) {
                                 curr_percent = (StagePercentPoint[stage + 1] - StagePercentPoint[stage]) * code / 100 + StagePercentPoint[stage];
+                            }
+                            else if (stage == SendingPrintJobStage::PrintingStageSending
+                                && !info.empty()
+                                && code >= 0 && code <= 100) {
+                                curr_percent = code;
                             }
                         }
 
@@ -543,6 +689,12 @@ void PrintJob::process(Ctl &ctl)
             return true;
     };
 
+    auto passive_preheat_fn = [&]() {
+        if (wxGetApp().app_config && !wxGetApp().app_config->get_bool("passive_chamber_preheat"))
+            return true;
+        return wait_for_passive_chamber_preheat(obj, passive_chamber_preheat, update_fn, cancel_fn);
+    };
+
     if (m_print_type == "from_sdcard_view") {
         BOOST_LOG_TRIVIAL(info) << "print_job: try to send with cloud, model is sdcard view";
         ctl.update_status(curr_percent, _u8L("Sending print job through cloud service"));
@@ -567,6 +719,10 @@ void PrintJob::process(Ctl &ctl)
             }
             else {
                 BOOST_LOG_TRIVIAL(info) << "print_job: use ftp send print only";
+                if (!passive_preheat_fn()) {
+                    ctl.update_status(curr_percent, printjob_cancel_str);
+                    return;
+                }
                 ctl.update_status(curr_percent, _u8L("Sending print job over LAN"));
                 is_try_lan_mode = true;
                 result = m_agent->start_local_print_with_record(params, update_fn, cancel_fn, wait_fn);
@@ -584,6 +740,10 @@ void PrintJob::process(Ctl &ctl)
                 && this->has_sdcard) {
                 // try to send local with record
                 BOOST_LOG_TRIVIAL(info) << "print_job: try to start local print with record";
+                if (!passive_preheat_fn()) {
+                    ctl.update_status(curr_percent, printjob_cancel_str);
+                    return;
+                }
                 ctl.update_status(curr_percent, _u8L("Sending print job over LAN"));
                 result = m_agent->start_local_print_with_record(params, update_fn, cancel_fn, wait_fn);
                 if (result == 0) {
@@ -605,12 +765,20 @@ void PrintJob::process(Ctl &ctl)
             }
             else {
                 BOOST_LOG_TRIVIAL(info) << "print_job: send with cloud";
+                if (!passive_preheat_fn()) {
+                    ctl.update_status(curr_percent, printjob_cancel_str);
+                    return;
+                }
                 ctl.update_status(curr_percent, _u8L("Sending print job through cloud service"));
                 result = m_agent->start_print(params, update_fn, cancel_fn, wait_fn);
             }
         }
     } else {
         if (this->could_emmc_print) {
+            if (!passive_preheat_fn()) {
+                ctl.update_status(curr_percent, printjob_cancel_str);
+                return;
+            }
             ctl.update_status(curr_percent, _u8L("Sending print job over LAN"));
             result = m_agent->start_local_print(params, update_fn, cancel_fn);
         } else {
@@ -621,6 +789,10 @@ void PrintJob::process(Ctl &ctl)
                 case DevStorage::SdcardState::HAS_SDCARD_ABNORMAL:
                     if(this->has_sdcard) {
                         // means the storage is abnormal but can be used option is enabled
+                        if (!passive_preheat_fn()) {
+                            ctl.update_status(curr_percent, printjob_cancel_str);
+                            return;
+                        }
                         ctl.update_status(curr_percent, _u8L("Sending print job over LAN, but the Storage in the printer is abnormal and print-issues may be caused by this."));
                         result = m_agent->start_local_print(params, update_fn, cancel_fn);
                         break;
@@ -631,6 +803,10 @@ void PrintJob::process(Ctl &ctl)
                     ctl.update_status(curr_percent, _u8L("The Storage in the printer is read-only. Please replace it with a normal Storage before sending print job to printer."));
                     return;
                 case DevStorage::SdcardState::HAS_SDCARD_NORMAL:
+                    if (!passive_preheat_fn()) {
+                        ctl.update_status(curr_percent, printjob_cancel_str);
+                        return;
+                    }
                     ctl.update_status(curr_percent, _u8L("Sending print job over LAN"));
                     result = m_agent->start_local_print(params, update_fn, cancel_fn);
                     break;

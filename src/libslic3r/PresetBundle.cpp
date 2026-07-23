@@ -2668,8 +2668,17 @@ void PresetBundle::load_installed_sla_materials(AppConfig &config)
         preset.set_visible_from_appconfig(config);
 }
 
-void PresetBundle::update_selections(AppConfig &config)
+void PresetBundle::update_selections(AppConfig &config, bool preserve_project_filament_colors)
 {
+    const std::vector<std::string> project_filament_colors =
+        project_config.option<ConfigOptionStrings>("filament_colour")->values;
+    const std::vector<std::string> project_multi_filament_colors =
+        project_config.option<ConfigOptionStrings>("filament_multi_colour")->values;
+    const std::vector<std::string> project_filament_color_types =
+        project_config.option<ConfigOptionStrings>("filament_colour_type")->values;
+    const std::vector<int> project_filament_maps =
+        project_config.option<ConfigOptionInts>("filament_map")->values;
+
     std::string initial_printer_profile_name    = printers.get_selected_preset_name();
     // Orca: load from orca_presets
     std::string initial_print_profile_name        = config.get_printer_setting(initial_printer_profile_name, PRESET_PRINT_NAME);
@@ -2693,6 +2702,13 @@ void PresetBundle::update_selections(AppConfig &config)
         this->filament_presets.emplace_back(remove_ini_suffix(f_name));
     }
 
+    // Filament colors and their indices belong to the open project, not to the
+    // printer preset. Keep every existing project slot when switching printers.
+    if (preserve_project_filament_colors && filament_presets.size() < project_filament_colors.size())
+        filament_presets.resize(project_filament_colors.size(), filament_presets.empty()
+            ? filaments.first_visible().name
+            : filament_presets.back());
+
     update_filament_count();
 
     std::vector<std::string> filament_colors;
@@ -2701,23 +2717,40 @@ void PresetBundle::update_selections(AppConfig &config)
         boost::algorithm::split(filament_colors, f_colors, boost::algorithm::is_any_of(","));
     }
     filament_colors.resize(filament_presets.size(), "#26A69A");
+    if (preserve_project_filament_colors)
+        std::copy(project_filament_colors.begin(), project_filament_colors.end(), filament_colors.begin());
     project_config.option<ConfigOptionStrings>("filament_colour")->values = filament_colors;
 
     std::vector<std::string> multi_filament_colors;
     if (config.has_printer_setting(initial_printer_profile_name, "filament_multi_colors")) {
         boost::algorithm::split(multi_filament_colors, config.get_printer_setting(initial_printer_profile_name, "filament_multi_colors"), boost::algorithm::is_any_of(","));
     }
-    if (multi_filament_colors.size() == 0) project_config.option<ConfigOptionStrings>("filament_multi_colour")->values = filament_colors;
-    else project_config.option<ConfigOptionStrings>("filament_multi_colour")->values = multi_filament_colors;
+    if (multi_filament_colors.empty())
+        multi_filament_colors = filament_colors;
+    else
+        multi_filament_colors.resize(filament_presets.size());
+    if (preserve_project_filament_colors) {
+        const size_t count = std::min(project_multi_filament_colors.size(), multi_filament_colors.size());
+        std::copy_n(project_multi_filament_colors.begin(), count, multi_filament_colors.begin());
+    }
+    project_config.option<ConfigOptionStrings>("filament_multi_colour")->values = multi_filament_colors;
 
     std::vector<std::string> filament_color_types;
     if (config.has_printer_setting(initial_printer_profile_name, "filament_color_types")) {
         boost::algorithm::split(filament_color_types, config.get_printer_setting(initial_printer_profile_name, "filament_color_types"), boost::algorithm::is_any_of(","));
     }
     filament_color_types.resize(filament_presets.size(), "1");
+    if (preserve_project_filament_colors) {
+        const size_t count = std::min(project_filament_color_types.size(), filament_color_types.size());
+        std::copy_n(project_filament_color_types.begin(), count, filament_color_types.begin());
+    }
     project_config.option<ConfigOptionStrings>("filament_colour_type")->values = filament_color_types;
 
     std::vector<int> filament_maps(filament_colors.size(), 1);
+    if (preserve_project_filament_colors) {
+        const size_t count = std::min(project_filament_maps.size(), filament_maps.size());
+        std::copy_n(project_filament_maps.begin(), count, filament_maps.begin());
+    }
     project_config.option<ConfigOptionInts>("filament_map")->values = filament_maps;
 
     std::vector<int> filament_nozzle_maps(filament_colors.size(), 0);
@@ -4426,7 +4459,7 @@ static void convert_filament_preset_name(std::string& machine_name, std::string&
 }
 // Load a config file from a boost property_tree. This is a private method called from load_config_file.
 // is_external == false on if called from ConfigWizard
-void PresetBundle::load_config_file_config(const std::string &name_or_path, bool is_external, DynamicPrintConfig &&config, Semver file_version, bool selected)
+void PresetBundle::load_config_file_config(const std::string &name_or_path, bool is_external, DynamicPrintConfig &&config, Semver file_version, bool selected, bool load_printer_preset)
 {
     PrinterTechnology printer_technology = Preset::printer_technology(config);
 
@@ -4602,7 +4635,8 @@ void PresetBundle::load_config_file_config(const std::string &name_or_path, bool
             printer_different_keys_set.insert(ignore_settings_list.begin(), ignore_settings_list.end());
         //BBS: add config related logs
         BOOST_LOG_TRIVIAL(debug) << __FUNCTION__ << boost::format(": load printer preset from printer_settings_id");
-        load_preset(this->printers, num_filaments + 1, "printer_settings_id", printer_different_keys_set, std::string());
+        if (load_printer_preset)
+            load_preset(this->printers, num_filaments + 1, "printer_settings_id", printer_different_keys_set, std::string());
 
         // 3) Now load the filaments. If there are multiple filament presets, split them and load them.
         auto old_filament_profile_names = config.option<ConfigOptionStrings>("filament_settings_id", true);
@@ -4758,6 +4792,46 @@ void PresetBundle::load_config_file_config(const std::string &name_or_path, bool
     }
     //BBS: add config related logs
     BOOST_LOG_TRIVIAL(debug) << __FUNCTION__ << boost::format(": finished");
+}
+
+bool PresetBundle::has_configured_printer_for_project(const DynamicPrintConfig &config) const
+{
+    auto string_option = [&config](const char *key) {
+        const auto *option = config.option<ConfigOptionString>(key);
+        return option != nullptr ? option->value : std::string();
+    };
+
+    const std::string project_preset = string_option("printer_settings_id");
+    const std::string project_model = string_option("printer_model");
+    const std::string project_variant = string_option("printer_variant");
+
+    std::string project_inherits;
+    const auto *filament_colours = config.option<ConfigOptionStrings>("filament_colour");
+    const auto *inherits_group = config.option<ConfigOptionStrings>("inherits_group");
+    if (filament_colours != nullptr && inherits_group != nullptr) {
+        const size_t printer_index = filament_colours->size() + 1;
+        if (printer_index < inherits_group->values.size())
+            project_inherits = inherits_group->values[printer_index];
+    }
+
+    for (const Preset &preset : printers) {
+        // Embedded/external profiles originate from previously opened projects;
+        // they do not mean that the printer was configured by the user.
+        if (!preset.is_visible || preset.is_project_embedded || preset.is_external)
+            continue;
+
+        if ((!project_preset.empty() && preset.name == project_preset) ||
+            (!project_inherits.empty() && preset.name == project_inherits))
+            return true;
+
+        const auto *model = preset.config.option<ConfigOptionString>("printer_model");
+        const auto *variant = preset.config.option<ConfigOptionString>("printer_variant");
+        if (!project_model.empty() && !project_variant.empty() && model != nullptr && variant != nullptr &&
+            model->value == project_model && variant->value == project_variant)
+            return true;
+    }
+
+    return false;
 }
 
 //BBS: Load a config bundle file from json

@@ -231,8 +231,8 @@ const unsigned int METADATA_STR_LEN = 9;
 
 static constexpr const char* MODEL_TAG = "model";
 static constexpr const char* RESOURCES_TAG = "resources";
-static constexpr const char* COLOR_GROUP_TAG = "m:colorgroup";
-static constexpr const char* COLOR_TAG = "m:color";
+static constexpr const char* COLOR_GROUP_TAG = "colorgroup";
+static constexpr const char* COLOR_TAG = "color";
 static constexpr const char* OBJECT_TAG = "object";
 static constexpr const char* MESH_TAG = "mesh";
 static constexpr const char* MESH_STAT_TAG = "mesh_stat";
@@ -296,6 +296,10 @@ static constexpr const char* HIT_NORMAL_ATTR      = "hit_normal";
 // BBS: encrypt
 static constexpr const char* RELATIONSHIP_TAG = "Relationship";
 static constexpr const char* PID_ATTR = "pid";
+static constexpr const char* PINDEX_ATTR = "pindex";
+static constexpr const char* P1_ATTR = "p1";
+static constexpr const char* P2_ATTR = "p2";
+static constexpr const char* P3_ATTR = "p3";
 static constexpr const char* PUUID_ATTR = "p:UUID";
 static constexpr const char* PUUID_LOWER_ATTR = "p:uuid";
 static constexpr const char* PPATH_ATTR = "p:path";
@@ -512,6 +516,25 @@ int bbs_get_attribute_value_int(const char** attributes, unsigned int attributes
     if (const char *text = bbs_get_attribute_value_charptr(attributes, attributes_size, attribute_key); text != nullptr)
         boost::spirit::qi::parse(text, text + strlen(text), boost::spirit::qi::int_, value);
     return value;
+}
+
+bool bbs_get_attribute_value_int(const char** attributes, unsigned int attributes_size, const char* attribute_key, int& value)
+{
+    if (const char *text = bbs_get_attribute_value_charptr(attributes, attributes_size, attribute_key); text != nullptr) {
+        boost::spirit::qi::parse(text, text + strlen(text), boost::spirit::qi::int_, value);
+        return true;
+    }
+    return false;
+}
+
+static bool matches_xml_tag_name(const char* name, const char* local_name)
+{
+    if (name == nullptr || local_name == nullptr)
+        return false;
+    if (::strcmp(name, local_name) == 0)
+        return true;
+    const char* separator = ::strchr(name, ':');
+    return separator != nullptr && ::strcmp(separator + 1, local_name) == 0;
 }
 
 bool bbs_get_attribute_value_bool(const char** attributes, unsigned int attributes_size, const char* attribute_key)
@@ -800,10 +823,25 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
 
         typedef std::vector<Component> ComponentsList;
 
+        struct PropertyRef
+        {
+            int pid{-1};
+            int pindex{-1};
+
+            bool valid() const { return pid >= 0 && pindex >= 0; }
+
+            bool operator<(const PropertyRef& rhs) const
+            {
+                return pid < rhs.pid || (pid == rhs.pid && pindex < rhs.pindex);
+            }
+        };
+
         struct Geometry
         {
             std::vector<Vec3f> vertices;
             std::vector<Vec3i32> triangles;
+            std::vector<PropertyRef> triangle_properties;
+            std::vector<TriangleColor> triangle_colors;
             std::vector<std::string> custom_supports;
             std::vector<std::string> custom_seam;
             std::vector<std::string> mmu_segmentation;
@@ -817,17 +855,25 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
             void swap(Geometry& o) {
                 std::swap(vertices, o.vertices);
                 std::swap(triangles, o.triangles);
+                std::swap(triangle_properties, o.triangle_properties);
+                std::swap(triangle_colors, o.triangle_colors);
                 std::swap(custom_supports, o.custom_supports);
                 std::swap(custom_seam, o.custom_seam);
+                std::swap(mmu_segmentation, o.mmu_segmentation);
+                std::swap(fuzzy_skin, o.fuzzy_skin);
+                std::swap(face_properties, o.face_properties);
             }
 
             void reset() {
                 vertices.clear();
                 triangles.clear();
+                triangle_properties.clear();
+                triangle_colors.clear();
                 custom_supports.clear();
                 custom_seam.clear();
                 mmu_segmentation.clear();
                 fuzzy_skin.clear();
+                face_properties.clear();
             }
         };
 
@@ -846,6 +892,7 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
             std::string name;
             std::string uuid;
             int         pid{-1};
+            PropertyRef default_property;
             //bool is_model_object;
 
             CurrentObject() { reset(); }
@@ -859,6 +906,8 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
                 //BBS: sub object id
                 uuid.clear();
                 name.clear();
+                pid = -1;
+                default_property = PropertyRef();
             }
         };
 
@@ -966,6 +1015,8 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
         /*typedef std::map<int, std::vector<sla::SupportPoint>> IdToSlaSupportPointsMap;
         typedef std::map<int, std::vector<sla::DrainHole>> IdToSlaDrainHolesMap;*/
         using PathToEmbossShapeFileMap = std::map<std::string, std::shared_ptr<std::string>>;
+        using IdToColorGroupMap = std::map<int, std::vector<std::string>>;
+        using PropertyToExtruderMap = std::map<PropertyRef, int>;
 
         struct ObjectImporter
         {
@@ -983,7 +1034,7 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
             std::string obj_curr_characters;
             float object_unit_factor;
             int object_current_color_group{-1};
-            std::map<int, std::string> object_group_id_to_color;
+            IdToColorGroupMap object_group_id_to_color;
             bool is_bbl_3mf { false };
 
             ObjectImporter(_BBS_3MF_Importer *importer, std::string file_path, std::string obj_path)
@@ -1183,7 +1234,10 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
         CurrentInstance m_curr_instance;
 
         int m_current_color_group{-1};
-        std::map<int, std::string> m_group_id_to_color;
+        IdToColorGroupMap m_group_id_to_color;
+        PropertyToExtruderMap m_property_to_extruder;
+        std::vector<std::string> m_imported_filament_colours;
+        VolumeColorInfoMap m_volume_color_data;
 
     public:
         _BBS_3MF_Importer();
@@ -1196,6 +1250,8 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
         bool get_thumbnail(const std::string &filename, std::string &data);
         bool load_gcode_3mf_from_stream(std::istream & data, Model& model, PlateDataPtrs& plate_data_list, DynamicPrintConfig& config, Semver& file_version);
         unsigned int version() const { return m_version; }
+        const IdToColorGroupMap& get_color_group_map() const { return m_group_id_to_color; }
+        const VolumeColorInfoMap& get_volume_color_info_map() const { return m_volume_color_data; }
 
     private:
         void _destroy_xml_parser();
@@ -1299,6 +1355,13 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
         bool _create_object_instance(std::string const & path, int object_id, const Transform3d& transform, const bool printable, const bool auto_drop, unsigned int recur_counter);
 
         void _apply_transform(ModelInstance& instance, const Transform3d& transform);
+
+        void _set_object_default_property(CurrentObject& object, const char** attributes, unsigned int num_attributes);
+        PropertyRef _get_triangle_property(const CurrentObject& object, const char** attributes, unsigned int num_attributes) const;
+        TriangleColor _get_triangle_color(const CurrentObject& object, const char** attributes, unsigned int num_attributes) const;
+        std::string _color_for_property(const PropertyRef& property) const;
+        int _extruder_for_property(const PropertyRef& property);
+        void _apply_imported_filament_colours(DynamicPrintConfig& config);
 
         bool _handle_start_config(const char** attributes, unsigned int num_attributes);
         bool _handle_end_config();
@@ -1428,6 +1491,10 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
         m_curr_config.object_id = -1;
         m_curr_config.volume_id = -1;
         m_objects_metadata.clear();
+        m_current_color_group = -1;
+        m_group_id_to_color.clear();
+        m_property_to_extruder.clear();
+        m_imported_filament_colours.clear();
         m_layer_heights_profiles.clear();
         m_layer_config_ranges.clear();
         m_brim_ear_points.clear();
@@ -1850,7 +1917,7 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
             for (auto obj_importer : m_object_importers) {
                 for (const IdToCurrentObjectMap::value_type&  obj : obj_importer->object_list)
                     m_current_objects.insert({ std::move(obj.first), std::move(obj.second)});
-                for (auto group_color : obj_importer->object_group_id_to_color)
+                for (auto& group_color : obj_importer->object_group_id_to_color)
                     m_group_id_to_color.insert(std::move(group_color));
 
                 delete obj_importer;
@@ -2083,19 +2150,6 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
         }
 
         BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << ":" << __LINE__ << boost::format(", process group colors, size %1%\n")%m_group_id_to_color.size();
-        std::map<int, int> color_group_id_to_extruder_id_map;
-        std::map<std::string, int> color_to_extruder_id_map;
-        int extruder_id = 0;
-        for (auto group_iter = m_group_id_to_color.begin(); group_iter != m_group_id_to_color.end(); ++group_iter) {
-            auto color_iter = color_to_extruder_id_map.find(group_iter->second);
-            if (color_iter == color_to_extruder_id_map.end()) {
-                ++extruder_id;
-                color_to_extruder_id_map[group_iter->second] = extruder_id;
-                color_group_id_to_extruder_id_map[group_iter->first] = extruder_id;
-            } else {
-                color_group_id_to_extruder_id_map[group_iter->first] = color_iter->second;
-            }
-        }
 
         BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << ":" << __LINE__ << boost::format(", begin to assemble objects, size %1%\n")%m_objects.size();
         //only load objects in plate_id
@@ -2195,11 +2249,8 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
                     else
                         model_object->name = "Object_"+std::to_string(object.second+1);
 
-                    // get color
-                    auto extruder_itor = color_group_id_to_extruder_id_map.find(current_object->second.pid);
-                    if (extruder_itor != color_group_id_to_extruder_id_map.end()) {
-                        model_object->config.set_key_value("extruder", new ConfigOptionInt(extruder_itor->second));
-                    }
+                    if (current_object->second.default_property.valid())
+                        model_object->config.set_key_value("extruder", new ConfigOptionInt(_extruder_for_property(current_object->second.default_property)));
                 }
 
                 // select as volumes
@@ -2264,6 +2315,8 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
             }
             ++object_idx;
         }
+
+        _apply_imported_filament_colours(config);
 
         const ConfigOptionStrings* filament_ids_opt = config.option<ConfigOptionStrings>("filament_settings_id");
         int max_filament_id = filament_ids_opt ? filament_ids_opt->size() : std::numeric_limits<int>::max();
@@ -3405,9 +3458,9 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
             res = _handle_start_resources(attributes, num_attributes);
         else if (::strcmp(OBJECT_TAG, name) == 0)
             res = _handle_start_object(attributes, num_attributes);
-        else if (::strcmp(COLOR_GROUP_TAG, name) == 0)
+        else if (matches_xml_tag_name(name, COLOR_GROUP_TAG))
             res = _handle_start_color_group(attributes, num_attributes);
-        else if (::strcmp(COLOR_TAG, name) == 0)
+        else if (matches_xml_tag_name(name, COLOR_TAG))
             res = _handle_start_color(attributes, num_attributes);
         else if (::strcmp(MESH_TAG, name) == 0)
             res = _handle_start_mesh(attributes, num_attributes);
@@ -3447,9 +3500,9 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
             res = _handle_end_resources();
         else if (::strcmp(OBJECT_TAG, name) == 0)
             res = _handle_end_object();
-        else if (::strcmp(COLOR_GROUP_TAG, name) == 0)
+        else if (matches_xml_tag_name(name, COLOR_GROUP_TAG))
             res = _handle_end_color_group();
-        else if (::strcmp(COLOR_TAG, name) == 0)
+        else if (matches_xml_tag_name(name, COLOR_TAG))
             res = _handle_end_color();
         else if (::strcmp(MESH_TAG, name) == 0)
             res = _handle_end_mesh();
@@ -3649,7 +3702,7 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
             if (m_curr_object->uuid.empty()) {
                 m_curr_object->uuid = bbs_get_attribute_value_string(attributes, num_attributes, PUUID_LOWER_ATTR);
             }
-            m_curr_object->pid = bbs_get_attribute_value_int(attributes, num_attributes, PID_ATTR);
+            _set_object_default_property(*m_curr_object, attributes, num_attributes);
         }
 
         return true;
@@ -3767,19 +3820,22 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
     bool _BBS_3MF_Importer::_handle_start_color_group(const char **attributes, unsigned int num_attributes)
     {
         m_current_color_group = bbs_get_attribute_value_int(attributes, num_attributes, ID_ATTR);
+        if (m_current_color_group >= 0)
+            m_group_id_to_color[m_current_color_group].clear();
         return true;
     }
 
     bool _BBS_3MF_Importer::_handle_end_color_group()
     {
-        // do nothing
+        m_current_color_group = -1;
         return true;
     }
 
     bool _BBS_3MF_Importer::_handle_start_color(const char **attributes, unsigned int num_attributes)
     {
         std::string color = bbs_get_attribute_value_string(attributes, num_attributes, COLOR_ATTR);
-        m_group_id_to_color[m_current_color_group] = color;
+        if (m_current_color_group >= 0 && !color.empty())
+            m_group_id_to_color[m_current_color_group].push_back(color);
         return true;
     }
 
@@ -3838,8 +3894,16 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
     bool _BBS_3MF_Importer::_handle_start_triangles(const char** attributes, unsigned int num_attributes)
     {
         // reset current triangles
-        if (m_curr_object)
+        if (m_curr_object) {
             m_curr_object->geometry.triangles.clear();
+            m_curr_object->geometry.triangle_properties.clear();
+            m_curr_object->geometry.triangle_colors.clear();
+            m_curr_object->geometry.custom_supports.clear();
+            m_curr_object->geometry.custom_seam.clear();
+            m_curr_object->geometry.mmu_segmentation.clear();
+            m_curr_object->geometry.fuzzy_skin.clear();
+            m_curr_object->geometry.face_properties.clear();
+        }
         return true;
     }
 
@@ -3851,13 +3915,6 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
 
     bool _BBS_3MF_Importer::_handle_start_triangle(const char** attributes, unsigned int num_attributes)
     {
-        // we are ignoring the following attributes:
-        // p1
-        // p2
-        // p3
-        // pid
-        // see specifications
-
         // appends the triangle's vertices indices
         // missing values are set equal to ZERO
         if (m_curr_object) {
@@ -3865,6 +3922,8 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
                 bbs_get_attribute_value_int(attributes, num_attributes, V1_ATTR),
                 bbs_get_attribute_value_int(attributes, num_attributes, V2_ATTR),
                 bbs_get_attribute_value_int(attributes, num_attributes, V3_ATTR));
+            m_curr_object->geometry.triangle_properties.push_back(_get_triangle_property(*m_curr_object, attributes, num_attributes));
+            m_curr_object->geometry.triangle_colors.push_back(_get_triangle_color(*m_curr_object, attributes, num_attributes));
 
             m_curr_object->geometry.custom_supports.push_back(bbs_get_attribute_value_string(attributes, num_attributes, CUSTOM_SUPPORTS_ATTR));
             m_curr_object->geometry.custom_seam.push_back(bbs_get_attribute_value_string(attributes, num_attributes, CUSTOM_SEAM_ATTR));
@@ -4294,6 +4353,121 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
             return;
 
         instance.set_transformation(t);
+    }
+
+    void _BBS_3MF_Importer::_set_object_default_property(CurrentObject& object, const char** attributes, unsigned int num_attributes)
+    {
+        int pid = -1;
+        if (bbs_get_attribute_value_int(attributes, num_attributes, PID_ATTR, pid)) {
+            int pindex = 0;
+            bbs_get_attribute_value_int(attributes, num_attributes, PINDEX_ATTR, pindex);
+            object.pid = pid;
+            object.default_property = { pid, pindex };
+        }
+    }
+
+    _BBS_3MF_Importer::PropertyRef _BBS_3MF_Importer::_get_triangle_property(const CurrentObject& object, const char** attributes, unsigned int num_attributes) const
+    {
+        PropertyRef property = object.default_property;
+        int pid = -1;
+        const bool has_pid = bbs_get_attribute_value_int(attributes, num_attributes, PID_ATTR, pid);
+        if (has_pid)
+            property.pid = pid;
+
+        int pindex = -1;
+        if (bbs_get_attribute_value_int(attributes, num_attributes, P1_ATTR, pindex) ||
+            bbs_get_attribute_value_int(attributes, num_attributes, P2_ATTR, pindex) ||
+            bbs_get_attribute_value_int(attributes, num_attributes, P3_ATTR, pindex) ||
+            bbs_get_attribute_value_int(attributes, num_attributes, PINDEX_ATTR, pindex)) {
+            property.pindex = pindex;
+        }
+        else if (has_pid && (!object.default_property.valid() || object.default_property.pid != pid)) {
+            property.pindex = 0;
+        }
+
+        return property.valid() ? property : PropertyRef();
+    }
+
+    TriangleColor _BBS_3MF_Importer::_get_triangle_color(const CurrentObject& object, const char** attributes, unsigned int num_attributes) const
+    {
+        TriangleColor color;
+        color.pid = object.default_property.pid;
+
+        int default_index = object.default_property.pindex;
+        int pid = -1;
+        const bool has_pid = bbs_get_attribute_value_int(attributes, num_attributes, PID_ATTR, pid);
+        if (has_pid) {
+            color.pid = pid;
+            if (!object.default_property.valid() || object.default_property.pid != pid)
+                default_index = 0;
+        }
+
+        int pindex = -1;
+        const bool has_pindex = bbs_get_attribute_value_int(attributes, num_attributes, PINDEX_ATTR, pindex);
+        if (has_pindex)
+            default_index = pindex;
+
+        int p1 = -1;
+        int p2 = -1;
+        int p3 = -1;
+        const bool has_p1 = bbs_get_attribute_value_int(attributes, num_attributes, P1_ATTR, p1);
+        const bool has_p2 = bbs_get_attribute_value_int(attributes, num_attributes, P2_ATTR, p2);
+        const bool has_p3 = bbs_get_attribute_value_int(attributes, num_attributes, P3_ATTR, p3);
+
+        if (color.pid < 0)
+            return TriangleColor();
+
+        if (has_p1 && !has_p2 && !has_p3) {
+            color.indices[0] = p1;
+            color.indices[1] = p1;
+            color.indices[2] = p1;
+        } else {
+            color.indices[0] = has_p1 ? p1 : default_index;
+            color.indices[1] = has_p2 ? p2 : default_index;
+            color.indices[2] = has_p3 ? p3 : default_index;
+        }
+
+        if (color.indices[0] < 0 && color.indices[1] < 0 && color.indices[2] < 0)
+            return TriangleColor();
+
+        return color;
+    }
+
+    std::string _BBS_3MF_Importer::_color_for_property(const PropertyRef& property) const
+    {
+        if (!property.valid())
+            return {};
+
+        auto group_it = m_group_id_to_color.find(property.pid);
+        if (group_it == m_group_id_to_color.end() || property.pindex >= int(group_it->second.size()))
+            return {};
+
+        return group_it->second[property.pindex];
+    }
+
+    int _BBS_3MF_Importer::_extruder_for_property(const PropertyRef& property)
+    {
+        auto extruder_it = m_property_to_extruder.find(property);
+        if (extruder_it != m_property_to_extruder.end())
+            return extruder_it->second;
+
+        const int extruder_id = int(m_imported_filament_colours.size()) + 1;
+        m_property_to_extruder[property] = extruder_id;
+        m_imported_filament_colours.emplace_back(_color_for_property(property));
+        return extruder_id;
+    }
+
+    void _BBS_3MF_Importer::_apply_imported_filament_colours(DynamicPrintConfig& config)
+    {
+        if (m_imported_filament_colours.empty())
+            return;
+
+        ConfigOptionStrings* filament_colours = config.option<ConfigOptionStrings>("filament_colour", true);
+        const std::string fallback_colour = filament_colours->values.empty() ? "#F2754E" : filament_colours->values.front();
+        for (std::string& colour : m_imported_filament_colours)
+            if (colour.empty())
+                colour = fallback_colour;
+        filament_colours->values = m_imported_filament_colours;
     }
 
     bool _BBS_3MF_Importer::_handle_start_config(const char** attributes, unsigned int num_attributes)
@@ -5080,15 +5254,27 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
                 add_error("found no trianges in the object " + std::to_string(sub_object->id));
                 return false;
             }
-            if (!shared_volume){
-                // splits volume out of imported geometry
+
+            // Standard 3MF color groups are face/vertex painting data. Do not split them
+            // into mesh volumes: CAD exports may color only surface patches, which are open
+            // meshes and must be restored through MMU painting instead.
+
+            auto create_mesh_volume = [&](ModelVolume*& created_volume, const std::vector<size_t>* source_triangles, bool allow_flip) -> bool {
                 indexed_triangle_set its;
-                its.indices.assign(sub_object->geometry.triangles.begin(), sub_object->geometry.triangles.end());
-                //const size_t triangles_count = its.indices.size();
-                //if (triangles_count == 0) {
-                //    add_error("found no trianges in the object " + std::to_string(sub_object->id));
-                //    return false;
-                //}
+                if (source_triangles != nullptr) {
+                    its.indices.reserve(source_triangles->size());
+                    for (const size_t triangle_id : *source_triangles) {
+                        if (triangle_id >= triangles_count) {
+                            add_error("invalid triangle id in object " + std::to_string(sub_object->id));
+                            return false;
+                        }
+                        its.indices.push_back(sub_object->geometry.triangles[triangle_id]);
+                    }
+                }
+                else {
+                    its.indices.assign(sub_object->geometry.triangles.begin(), sub_object->geometry.triangles.end());
+                }
+
                 for (const Vec3i32& face : its.indices) {
                     for (const int tri_id : face) {
                         if (tri_id < 0 || tri_id >= int(sub_object->geometry.vertices.size())) {
@@ -5100,30 +5286,153 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
 
                 its.vertices.assign(sub_object->geometry.vertices.begin(), sub_object->geometry.vertices.end());
 
-                // BBS
-                for (const std::string& prop_str : sub_object->geometry.face_properties) {
-                    FaceProperty face_prop;
-                    face_prop.from_string(prop_str);
-                    its.properties.push_back(face_prop);
+                if (source_triangles != nullptr) {
+                    its.properties.reserve(source_triangles->size());
+                    for (const size_t triangle_id : *source_triangles) {
+                        if (triangle_id < sub_object->geometry.face_properties.size()) {
+                            FaceProperty face_prop;
+                            face_prop.from_string(sub_object->geometry.face_properties[triangle_id]);
+                            its.properties.push_back(face_prop);
+                        }
+                    }
+                }
+                else {
+                    for (const std::string& prop_str : sub_object->geometry.face_properties) {
+                        FaceProperty face_prop;
+                        face_prop.from_string(prop_str);
+                        its.properties.push_back(face_prop);
+                    }
                 }
 
                 TriangleMesh triangle_mesh(std::move(its), volume_data->mesh_stats);
-
-                // BBS: no need to multiply the instance matrix into the volume
-                //if (!m_is_bbl_3mf) {
-                //    // if the 3mf was not produced by BambuStudio and there is only one instance,
-                //    // bake the transformation into the geometry to allow the reload from disk command
-                //    // to work properly
-                //    if (object.instances.size() == 1) {
-                //        triangle_mesh.transform(object.instances.front()->get_transformation().get_matrix(), false);
-                //        object.instances.front()->set_transformation(Slic3r::Geometry::Transformation());
-                //        //FIXME do the mesh fixing?
-                //    }
-                //}
-                if (triangle_mesh.volume() < 0)
+                if (allow_flip && triangle_mesh.volume() < 0)
                     triangle_mesh.flip_triangles();
 
-                volume = object.add_volume(std::move(triangle_mesh));
+                created_volume = object.add_volume(std::move(triangle_mesh));
+                return true;
+            };
+
+            auto finish_volume = [&](ModelVolume* volume, const std::vector<size_t>* source_triangles, const PropertyRef* property, bool from_shared_mesh) {
+                if (has_transform)
+                    volume->source.transform = Slic3r::Geometry::Transformation(volume_matrix_to_object);
+
+                volume->calculate_convex_hull();
+
+                Slic3r::Geometry::Transformation comp_transformatino(sub_comp.transform);
+                volume->set_transformation(comp_transformatino * volume->get_transformation());
+                if (from_shared_mesh) {
+                    const TriangleMesh& trangle_mesh = volume->mesh();
+                    Vec3d shift = trangle_mesh.get_init_shift();
+                    if (!shift.isApprox(Vec3d::Zero()))
+                        volume->translate(shift);
+                }
+
+                const size_t volume_triangles_count = source_triangles != nullptr ? source_triangles->size() : triangles_count;
+                volume->supported_facets.reserve(volume_triangles_count);
+                volume->seam_facets.reserve(volume_triangles_count);
+                volume->mmu_segmentation_facets.reserve(volume_triangles_count);
+                volume->fuzzy_skin_facets.reserve(volume_triangles_count);
+                for (size_t i = 0; i < volume_triangles_count; ++i) {
+                    const size_t source_triangle_id = source_triangles != nullptr ? (*source_triangles)[i] : i;
+                    assert(source_triangle_id < sub_object->geometry.custom_supports.size());
+                    assert(source_triangle_id < sub_object->geometry.custom_seam.size());
+                    assert(source_triangle_id < sub_object->geometry.mmu_segmentation.size());
+                    assert(source_triangle_id < sub_object->geometry.fuzzy_skin.size());
+                    if (!sub_object->geometry.custom_supports[source_triangle_id].empty())
+                        volume->supported_facets.set_triangle_from_string(i, sub_object->geometry.custom_supports[source_triangle_id]);
+                    if (!sub_object->geometry.custom_seam[source_triangle_id].empty())
+                        volume->seam_facets.set_triangle_from_string(i, sub_object->geometry.custom_seam[source_triangle_id]);
+                    if (!sub_object->geometry.mmu_segmentation[source_triangle_id].empty())
+                        volume->mmu_segmentation_facets.set_triangle_from_string(i, sub_object->geometry.mmu_segmentation[source_triangle_id]);
+                    if (!sub_object->geometry.fuzzy_skin[source_triangle_id].empty())
+                        volume->fuzzy_skin_facets.set_triangle_from_string(i, sub_object->geometry.fuzzy_skin[source_triangle_id]);
+                }
+                volume->supported_facets.shrink_to_fit();
+                volume->seam_facets.shrink_to_fit();
+                volume->mmu_segmentation_facets.shrink_to_fit();
+                volume->mmu_segmentation_facets.touch();
+                volume->fuzzy_skin_facets.shrink_to_fit();
+                volume->fuzzy_skin_facets.touch();
+
+                if (!m_is_bbl_3mf && sub_object->geometry.triangle_colors.size() == triangles_count) {
+                    VolumeColorInfo color_info;
+                    if (property != nullptr && property->valid()) {
+                        color_info.pid = property->pid;
+                        color_info.pindex = property->pindex;
+                    }
+
+                    bool has_valid_color = false;
+                    color_info.triangle_colors.reserve(volume_triangles_count);
+                    for (size_t i = 0; i < volume_triangles_count; ++i) {
+                        const size_t source_triangle_id = source_triangles != nullptr ? (*source_triangles)[i] : i;
+                        const TriangleColor& triangle_color = sub_object->geometry.triangle_colors[source_triangle_id];
+                        if (triangle_color.pid >= 0) {
+                            has_valid_color = true;
+                            if (color_info.pid < 0) {
+                                color_info.pid = triangle_color.pid;
+                                color_info.pindex = triangle_color.indices[0];
+                            }
+                        }
+                        color_info.triangle_colors.push_back(triangle_color);
+                    }
+
+                    if (has_valid_color)
+                        m_volume_color_data[volume->id().id] = std::move(color_info);
+                }
+
+                volume->set_type(volume_data->part_type);
+
+                if (auto &es = volume_data->shape_configuration; es.has_value())
+                    volume->emboss_shape = std::move(es);
+                if (auto &tc = volume_data->text_configuration; tc.has_value())
+                    volume->text_configuration = std::move(tc);
+
+                for (const Metadata& metadata : volume_data->metadata) {
+                    if (metadata.key == NAME_KEY)
+                        volume->name = metadata.value;
+                    else if ((metadata.key == VOLUME_TYPE_KEY) || (metadata.key == PART_TYPE_KEY))
+                        volume->set_type(ModelVolume::type_from_string(metadata.value));
+                    else if (metadata.key == SOURCE_FILE_KEY)
+                        volume->source.input_file = metadata.value;
+                    else if (metadata.key == SOURCE_OBJECT_ID_KEY)
+                        volume->source.object_idx = ::atoi(metadata.value.c_str());
+                    else if (metadata.key == SOURCE_VOLUME_ID_KEY)
+                        volume->source.volume_idx = ::atoi(metadata.value.c_str());
+                    else if (metadata.key == SOURCE_OFFSET_X_KEY)
+                        volume->source.mesh_offset(0) = ::atof(metadata.value.c_str());
+                    else if (metadata.key == SOURCE_OFFSET_Y_KEY)
+                        volume->source.mesh_offset(1) = ::atof(metadata.value.c_str());
+                    else if (metadata.key == SOURCE_OFFSET_Z_KEY)
+                        volume->source.mesh_offset(2) = ::atof(metadata.value.c_str());
+                    else if (metadata.key == SOURCE_IN_INCHES)
+                        volume->source.is_converted_from_inches = metadata.value == "1";
+                    else if (metadata.key == SOURCE_IN_METERS)
+                        volume->source.is_converted_from_meters = metadata.value == "1";
+                    else if ((metadata.key == MATRIX_KEY) || (metadata.key == MESH_SHARED_KEY))
+                        continue;
+                    else
+                        volume->config.set_deserialize(metadata.key, metadata.value, config_substitutions);
+                }
+
+                if (property != nullptr && property->valid()) {
+                    const int extruder_id = _extruder_for_property(*property);
+                    volume->config.set_key_value("extruder", new ConfigOptionInt(extruder_id));
+                    if (object.config.option("extruder") == nullptr)
+                        object.config.set_key_value("extruder", new ConfigOptionInt(extruder_id));
+                }
+
+                if (volume->name.empty()) {
+                    volume->name = object.name;
+                    if (renamed_volumes_count > 0)
+                        volume->name += "_" + std::to_string(renamed_volumes_count + 1);
+                    ++renamed_volumes_count;
+                }
+            };
+
+            const PropertyRef* volume_property = nullptr;
+            if (!shared_volume){
+                if (!create_mesh_volume(volume, nullptr, true))
+                    return false;
 
                 if (shared_mesh_id != -1)
                     //for some cases the shared mesh is in other plate and not loaded in cli slicing
@@ -5137,95 +5446,7 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
                 volume = object.add_volume_with_shared_mesh(*shared_volume);
                 BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << boost::format(": line %1%, create volume using shared_mesh %2%")%__LINE__%shared_volume;
             }
-            // stores the volume matrix taken from the metadata, if present
-            if (has_transform)
-                volume->source.transform = Slic3r::Geometry::Transformation(volume_matrix_to_object);
-
-            volume->calculate_convex_hull();
-
-            //set transform from 3mf
-            Slic3r::Geometry::Transformation comp_transformatino(sub_comp.transform);
-            volume->set_transformation(comp_transformatino * volume->get_transformation());
-            if (shared_volume) {
-                const TriangleMesh& trangle_mesh = volume->mesh();
-                Vec3d shift = trangle_mesh.get_init_shift();
-                if (!shift.isApprox(Vec3d::Zero()))
-                    volume->translate(shift);
-            }
-
-            // recreate custom supports, seam and mmu segmentation from previously loaded attribute
-            {
-                volume->supported_facets.reserve(triangles_count);
-                volume->seam_facets.reserve(triangles_count);
-                volume->mmu_segmentation_facets.reserve(triangles_count);
-                volume->fuzzy_skin_facets.reserve(triangles_count);
-                for (size_t i=0; i<triangles_count; ++i) {
-                    assert(i < sub_object->geometry.custom_supports.size());
-                    assert(i < sub_object->geometry.custom_seam.size());
-                    assert(i < sub_object->geometry.mmu_segmentation.size());
-                    assert(i < sub_object->geometry.fuzzy_skin.size());
-                    if (! sub_object->geometry.custom_supports[i].empty())
-                        volume->supported_facets.set_triangle_from_string(i, sub_object->geometry.custom_supports[i]);
-                    if (! sub_object->geometry.custom_seam[i].empty())
-                        volume->seam_facets.set_triangle_from_string(i, sub_object->geometry.custom_seam[i]);
-                    if (! sub_object->geometry.mmu_segmentation[i].empty())
-                        volume->mmu_segmentation_facets.set_triangle_from_string(i, sub_object->geometry.mmu_segmentation[i]);
-                    if (!sub_object->geometry.fuzzy_skin[i].empty())
-                        volume->fuzzy_skin_facets.set_triangle_from_string(i, sub_object->geometry.fuzzy_skin[i]);
-                }
-                volume->supported_facets.shrink_to_fit();
-                volume->seam_facets.shrink_to_fit();
-                volume->mmu_segmentation_facets.shrink_to_fit();
-                volume->mmu_segmentation_facets.touch();
-                volume->fuzzy_skin_facets.shrink_to_fit();
-                volume->fuzzy_skin_facets.touch();
-            }
-
-            volume->set_type(volume_data->part_type);
-            
-            if (auto &es = volume_data->shape_configuration; es.has_value())
-                volume->emboss_shape = std::move(es);            
-            if (auto &tc = volume_data->text_configuration; tc.has_value())
-                volume->text_configuration = std::move(tc);
-
-            // apply the remaining volume's metadata
-            for (const Metadata& metadata : volume_data->metadata) {
-                if (metadata.key == NAME_KEY)
-                    volume->name = metadata.value;
-                //else if ((metadata.key == MODIFIER_KEY) && (metadata.value == "1"))
-				//	volume->set_type(ModelVolumeType::PARAMETER_MODIFIER);
-				//for old format
-                else if ((metadata.key == VOLUME_TYPE_KEY) || (metadata.key == PART_TYPE_KEY))
-                    volume->set_type(ModelVolume::type_from_string(metadata.value));
-                else if (metadata.key == SOURCE_FILE_KEY)
-                    volume->source.input_file = metadata.value;
-                else if (metadata.key == SOURCE_OBJECT_ID_KEY)
-                    volume->source.object_idx = ::atoi(metadata.value.c_str());
-                else if (metadata.key == SOURCE_VOLUME_ID_KEY)
-                    volume->source.volume_idx = ::atoi(metadata.value.c_str());
-                else if (metadata.key == SOURCE_OFFSET_X_KEY)
-                    volume->source.mesh_offset(0) = ::atof(metadata.value.c_str());
-                else if (metadata.key == SOURCE_OFFSET_Y_KEY)
-                    volume->source.mesh_offset(1) = ::atof(metadata.value.c_str());
-                else if (metadata.key == SOURCE_OFFSET_Z_KEY)
-                    volume->source.mesh_offset(2) = ::atof(metadata.value.c_str());
-                else if (metadata.key == SOURCE_IN_INCHES)
-                    volume->source.is_converted_from_inches = metadata.value == "1";
-                else if (metadata.key == SOURCE_IN_METERS)
-                    volume->source.is_converted_from_meters = metadata.value == "1";
-                else if ((metadata.key == MATRIX_KEY) || (metadata.key == MESH_SHARED_KEY))
-                    continue;
-                else
-                    volume->config.set_deserialize(metadata.key, metadata.value, config_substitutions);
-            }
-
-            // this may happen for 3mf saved by 3rd part softwares
-            if (volume->name.empty()) {
-                volume->name = object.name;
-                if (renamed_volumes_count > 0)
-                    volume->name += "_" + std::to_string(renamed_volumes_count + 1);
-                ++renamed_volumes_count;
-            }
+            finish_volume(volume, nullptr, volume_property, shared_volume != nullptr);
         }
 
         return true;
@@ -5463,7 +5684,7 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
             if (current_object->uuid.empty()) {
                 current_object->uuid = bbs_get_attribute_value_string(attributes, num_attributes, PUUID_LOWER_ATTR);
             }
-            current_object->pid = bbs_get_attribute_value_int(attributes, num_attributes, PID_ATTR);
+            top_importer->_set_object_default_property(*current_object, attributes, num_attributes);
         }
 
         return true;
@@ -5500,6 +5721,8 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
                             new_object.model_object_idx = object_it->second.model_object_idx;
                             new_object.name = object_it->second.name;
                             new_object.uuid = object_it->second.uuid;
+                            new_object.pid = object_it->second.pid;
+                            new_object.default_property = object_it->second.default_property;
 
                             object_list.erase(object_it);
                             object_list.insert({ new_id, std::move(new_object) });
@@ -5535,19 +5758,22 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
     bool _BBS_3MF_Importer::ObjectImporter::_handle_object_start_color_group(const char **attributes, unsigned int num_attributes)
     {
         object_current_color_group = bbs_get_attribute_value_int(attributes, num_attributes, ID_ATTR);
+        if (object_current_color_group >= 0)
+            object_group_id_to_color[object_current_color_group].clear();
         return true;
     }
 
     bool _BBS_3MF_Importer::ObjectImporter::_handle_object_end_color_group()
     {
-        // do nothing
+        object_current_color_group = -1;
         return true;
     }
 
     bool _BBS_3MF_Importer::ObjectImporter::_handle_object_start_color(const char **attributes, unsigned int num_attributes)
     {
         std::string color = bbs_get_attribute_value_string(attributes, num_attributes, COLOR_ATTR);
-        object_group_id_to_color[object_current_color_group] = color;
+        if (object_current_color_group >= 0 && !color.empty())
+            object_group_id_to_color[object_current_color_group].push_back(color);
         return true;
     }
 
@@ -5606,8 +5832,16 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
     bool _BBS_3MF_Importer::ObjectImporter::_handle_object_start_triangles(const char** attributes, unsigned int num_attributes)
     {
         // reset current triangles
-        if (current_object)
+        if (current_object) {
             current_object->geometry.triangles.clear();
+            current_object->geometry.triangle_properties.clear();
+            current_object->geometry.triangle_colors.clear();
+            current_object->geometry.custom_supports.clear();
+            current_object->geometry.custom_seam.clear();
+            current_object->geometry.mmu_segmentation.clear();
+            current_object->geometry.fuzzy_skin.clear();
+            current_object->geometry.face_properties.clear();
+        }
         return true;
     }
 
@@ -5619,13 +5853,6 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
 
     bool _BBS_3MF_Importer::ObjectImporter::_handle_object_start_triangle(const char** attributes, unsigned int num_attributes)
     {
-        // we are ignoring the following attributes:
-        // p1
-        // p2
-        // p3
-        // pid
-        // see specifications
-
         // appends the triangle's vertices indices
         // missing values are set equal to ZERO
         if (current_object) {
@@ -5633,6 +5860,8 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
                 bbs_get_attribute_value_int(attributes, num_attributes, V1_ATTR),
                 bbs_get_attribute_value_int(attributes, num_attributes, V2_ATTR),
                 bbs_get_attribute_value_int(attributes, num_attributes, V3_ATTR));
+            current_object->geometry.triangle_properties.push_back(top_importer->_get_triangle_property(*current_object, attributes, num_attributes));
+            current_object->geometry.triangle_colors.push_back(top_importer->_get_triangle_color(*current_object, attributes, num_attributes));
 
             current_object->geometry.custom_supports.push_back(bbs_get_attribute_value_string(attributes, num_attributes, CUSTOM_SUPPORTS_ATTR));
             current_object->geometry.custom_seam.push_back(bbs_get_attribute_value_string(attributes, num_attributes, CUSTOM_SEAM_ATTR));
@@ -5726,9 +5955,9 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
             res = _handle_object_start_resources(attributes, num_attributes);
         else if (::strcmp(OBJECT_TAG, name) == 0)
             res = _handle_object_start_object(attributes, num_attributes);
-        else if (::strcmp(COLOR_GROUP_TAG, name) == 0)
+        else if (matches_xml_tag_name(name, COLOR_GROUP_TAG))
             res = _handle_object_start_color_group(attributes, num_attributes);
-        else if (::strcmp(COLOR_TAG, name) == 0)
+        else if (matches_xml_tag_name(name, COLOR_TAG))
             res = _handle_object_start_color(attributes, num_attributes);
         else if (::strcmp(MESH_TAG, name) == 0)
             res = _handle_object_start_mesh(attributes, num_attributes);
@@ -5764,9 +5993,9 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
             res = _handle_object_end_resources();
         else if (::strcmp(OBJECT_TAG, name) == 0)
             res = _handle_object_end_object();
-        else if (::strcmp(COLOR_GROUP_TAG, name) == 0)
+        else if (matches_xml_tag_name(name, COLOR_GROUP_TAG))
             res = _handle_object_end_color_group();
-        else if (::strcmp(COLOR_TAG, name) == 0)
+        else if (matches_xml_tag_name(name, COLOR_TAG))
             res = _handle_object_end_color();
         else if (::strcmp(MESH_TAG, name) == 0)
             res = _handle_object_end_mesh();
@@ -9107,7 +9336,8 @@ private:
 
 //BBS: add plate data list related logic
 bool load_bbs_3mf(const char* path, DynamicPrintConfig* config, ConfigSubstitutionContext* config_substitutions, Model* model, PlateDataPtrs* plate_data_list, std::vector<Preset*>* project_presets,
-                    bool* is_bbl_3mf, bool* is_orca_3mf, Semver* file_version, Import3mfProgressFn proFn, LoadStrategy strategy, BBLProject *project, int plate_id)
+                    bool* is_bbl_3mf, bool* is_orca_3mf, Semver* file_version, Import3mfProgressFn proFn, LoadStrategy strategy, BBLProject *project, int plate_id,
+                    std::map<int, std::vector<std::string>>* color_group_map, VolumeColorInfoMap* volume_color_data)
 {
     if (path == nullptr || config == nullptr || model == nullptr)
         return false;
@@ -9117,6 +9347,10 @@ bool load_bbs_3mf(const char* path, DynamicPrintConfig* config, ConfigSubstituti
     _BBS_3MF_Importer importer;
     bool res = importer.load_model_from_file(path, *model, *plate_data_list, *project_presets, *config, *config_substitutions, strategy, is_bbl_3mf, is_orca_3mf, *file_version, proFn, project, plate_id);
     importer.log_errors();
+    if (color_group_map != nullptr)
+        *color_group_map = importer.get_color_group_map();
+    if (volume_color_data != nullptr)
+        *volume_color_data = importer.get_volume_color_info_map();
     //BBS: remove legacy project logic currently
     //handle_legacy_project_loaded(importer.version(), *config);
     return res;

@@ -404,6 +404,7 @@ void DevNozzleSystem::ClearNozzles()
 static unordered_map<string, NozzleFlowType> _str2_nozzle_flow_type = {
     {"S", NozzleFlowType::S_FLOW},
     {"H", NozzleFlowType::H_FLOW},
+    {"E", NozzleFlowType::H_FLOW},
     {"A", NozzleFlowType::S_FLOW},
     {"X", NozzleFlowType::S_FLOW},
     {"E", NozzleFlowType::H_FLOW}, // E3D high-flow

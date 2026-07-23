@@ -86,6 +86,8 @@ static constexpr const char* VERTICES_TAG = "vertices";
 static constexpr const char* VERTEX_TAG = "vertex";
 static constexpr const char* TRIANGLES_TAG = "triangles";
 static constexpr const char* TRIANGLE_TAG = "triangle";
+static constexpr const char* COLORGROUP_TAG = "colorgroup";
+static constexpr const char* COLOR_TAG = "color";
 static constexpr const char* COMPONENTS_TAG = "components";
 static constexpr const char* COMPONENT_TAG = "component";
 static constexpr const char* BUILD_TAG = "build";
@@ -105,6 +107,12 @@ static constexpr const char* Z_ATTR = "z";
 static constexpr const char* V1_ATTR = "v1";
 static constexpr const char* V2_ATTR = "v2";
 static constexpr const char* V3_ATTR = "v3";
+static constexpr const char* PID_ATTR = "pid";
+static constexpr const char* PINDEX_ATTR = "pindex";
+static constexpr const char* P1_ATTR = "p1";
+static constexpr const char* P2_ATTR = "p2";
+static constexpr const char* P3_ATTR = "p3";
+static constexpr const char* COLOR_ATTR = "color";
 static constexpr const char* OBJECTID_ATTR = "objectid";
 static constexpr const char* TRANSFORM_ATTR = "transform";
 static constexpr const char* PRINTABLE_ATTR = "printable";
@@ -198,10 +206,28 @@ int get_attribute_value_int(const char** attributes, unsigned int attributes_siz
     return value;
 }
 
+bool get_attribute_value_int(const char** attributes, unsigned int attributes_size, const char* attribute_key, int& value)
+{
+    const char* text = get_attribute_value_charptr(attributes, attributes_size, attribute_key);
+    if (text == nullptr)
+        return false;
+    value = 0;
+    boost::spirit::qi::parse(text, text + strlen(text), boost::spirit::qi::int_, value);
+    return true;
+}
+
 bool get_attribute_value_bool(const char** attributes, unsigned int attributes_size, const char* attribute_key)
 {
     const char* text = get_attribute_value_charptr(attributes, attributes_size, attribute_key);
     return (text != nullptr) ? (bool)::atoi(text) : true;
+}
+
+static bool matches_xml_tag_name(const char* name, const char* local_name)
+{
+    if (::strcmp(local_name, name) == 0)
+        return true;
+    const char* local_part = ::strchr(name, ':');
+    return local_part != nullptr && ::strcmp(local_name, local_part + 1) == 0;
 }
 
 Slic3r::Transform3d get_transform_from_3mf_specs_string(const std::string& mat_str)
@@ -411,10 +437,24 @@ ModelVolumeType type_from_string(const std::string &s)
 
         typedef std::vector<Component> ComponentsList;
 
+        struct PropertyRef
+        {
+            int pid = -1;
+            int pindex = -1;
+
+            bool valid() const { return pid > 0 && pindex >= 0; }
+
+            bool operator<(const PropertyRef& rhs) const
+            {
+                return pid < rhs.pid || (pid == rhs.pid && pindex < rhs.pindex);
+            }
+        };
+
         struct Geometry
         {
             std::vector<Vec3f> vertices;
             std::vector<Vec3i32> triangles;
+            std::vector<PropertyRef> triangle_properties;
             std::vector<std::string> custom_supports;
             std::vector<std::string> custom_seam;
             std::vector<std::string> mmu_segmentation;
@@ -425,6 +465,7 @@ ModelVolumeType type_from_string(const std::string &s)
             void reset() {
                 vertices.clear();
                 triangles.clear();
+                triangle_properties.clear();
                 custom_supports.clear();
                 custom_seam.clear();
                 mmu_segmentation.clear();
@@ -439,6 +480,7 @@ ModelVolumeType type_from_string(const std::string &s)
             // Index of the ModelObject in its respective Model, zero based.
             int model_object_idx;
             Geometry geometry;
+            PropertyRef default_property;
             ModelObject* object;
             ComponentsList components;
 
@@ -448,6 +490,7 @@ ModelVolumeType type_from_string(const std::string &s)
                 id = -1;
                 model_object_idx = -1;
                 geometry.reset();
+                default_property = PropertyRef();
                 object = nullptr;
                 components.clear();
             }
@@ -491,6 +534,7 @@ ModelVolumeType type_from_string(const std::string &s)
             {
                 unsigned int first_triangle_id;
                 unsigned int last_triangle_id;
+                std::vector<unsigned int> triangle_ids;
                 MetadataList metadata;
                 RepairedMeshErrors mesh_stats;
 
@@ -513,6 +557,8 @@ ModelVolumeType type_from_string(const std::string &s)
         typedef std::vector<Instance> InstancesList;
         typedef std::map<int, ObjectMetadata> IdToMetadataMap;
         typedef std::map<int, Geometry> IdToGeometryMap;
+        typedef std::map<int, std::vector<std::string>> IdToColorGroupMap;
+        typedef std::map<PropertyRef, int> PropertyToExtruderMap;
         typedef std::map<int, std::vector<coordf_t>> IdToLayerHeightsProfileMap;
         typedef std::map<int, t_layer_config_ranges> IdToLayerConfigRangesMap;
         typedef std::map<int, std::vector<sla::SupportPoint>> IdToSlaSupportPointsMap;
@@ -540,6 +586,10 @@ ModelVolumeType type_from_string(const std::string &s)
         IdToAliasesMap m_objects_aliases;
         InstancesList m_instances;
         IdToGeometryMap m_geometries;
+        IdToColorGroupMap m_color_groups;
+        int m_curr_color_group_id;
+        PropertyToExtruderMap m_property_to_extruder;
+        std::vector<std::string> m_imported_filament_colours;
         CurrentConfig m_curr_config;
         IdToMetadataMap m_objects_metadata;
         IdToLayerHeightsProfileMap m_layer_heights_profiles;
@@ -615,6 +665,12 @@ ModelVolumeType type_from_string(const std::string &s)
         bool _handle_start_triangle(const char** attributes, unsigned int num_attributes);
         bool _handle_end_triangle();
 
+        bool _handle_start_color_group(const char** attributes, unsigned int num_attributes);
+        bool _handle_end_color_group();
+
+        bool _handle_start_color(const char** attributes, unsigned int num_attributes);
+        bool _handle_end_color();
+
         bool _handle_start_components(const char** attributes, unsigned int num_attributes);
         bool _handle_end_components();
 
@@ -648,6 +704,10 @@ ModelVolumeType type_from_string(const std::string &s)
         bool _handle_start_config_metadata(const char** attributes, unsigned int num_attributes);
         bool _handle_end_config_metadata();
 
+        PropertyRef _get_triangle_property(const char** attributes, unsigned int num_attributes) const;
+        std::string _color_for_property(const PropertyRef& property) const;
+        int _extruder_for_property(const PropertyRef& property);
+        ObjectMetadata::VolumeMetadataList _make_default_volumes(const Geometry& geometry);
         bool _generate_volumes(ModelObject& object, const Geometry& geometry, const ObjectMetadata::VolumeMetadataList& volumes, ConfigSubstitutionContext& config_substitutions);
 
         // callbacks to parse the .model file
@@ -666,6 +726,7 @@ ModelVolumeType type_from_string(const std::string &s)
         , m_xml_parser(nullptr)
         , m_model(nullptr)
         , m_unit_factor(1.0f)
+        , m_curr_color_group_id(-1)
         , m_curr_metadata_name("")
         , m_curr_characters("")
         , m_name("")
@@ -691,6 +752,10 @@ ModelVolumeType type_from_string(const std::string &s)
         m_objects_aliases.clear();
         m_instances.clear();
         m_geometries.clear();
+        m_color_groups.clear();
+        m_curr_color_group_id = -1;
+        m_property_to_extruder.clear();
+        m_imported_filament_colours.clear();
         m_curr_config.object_id = -1;
         m_curr_config.volume_id = -1;
         m_objects_metadata.clear();
@@ -838,7 +903,7 @@ ModelVolumeType type_from_string(const std::string &s)
                     }
 
                     // use the geometry to create the volumes in the new model objects
-                    ObjectMetadata::VolumeMetadataList volumes(1, { 0, (unsigned int)geometry->triangles.size() - 1 });
+                    ObjectMetadata::VolumeMetadataList volumes = _make_default_volumes(*geometry);
 
                     // for each instance after the 1st, create a new model object containing only that instance
                     // and copy into it the geometry
@@ -910,8 +975,8 @@ ModelVolumeType type_from_string(const std::string &s)
             else {
                 // config data not found, this model was not saved using slic3r pe
 
-                // add the entire geometry as the single volume to generate
-                volumes.emplace_back(0, (int)obj_geometry->second.triangles.size() - 1);
+                // add the geometry as material/color volumes if the 3MF provided standard properties
+                volumes = _make_default_volumes(obj_geometry->second);
 
                 // select as volumes
                 volumes_ptr = &volumes;
@@ -951,6 +1016,19 @@ ModelVolumeType type_from_string(const std::string &s)
 
 //        // fixes the min z of the model if negative
 //        model.adjust_min_z();
+
+        if (!m_imported_filament_colours.empty()) {
+            std::string fallback_colour = "#F2754E";
+            if (const ConfigOptionStrings* current_colours = config.option<ConfigOptionStrings>("filament_colour");
+                current_colours != nullptr && !current_colours->values.empty())
+                fallback_colour = current_colours->values.front();
+
+            std::vector<std::string> colours = m_imported_filament_colours;
+            for (std::string& colour : colours)
+                if (colour.empty())
+                    colour = fallback_colour;
+            config.option<ConfigOptionStrings>("filament_colour", true)->values = std::move(colours);
+        }
 
         return true;
     }
@@ -1451,6 +1529,10 @@ ModelVolumeType type_from_string(const std::string &s)
             res = _handle_start_triangles(attributes, num_attributes);
         else if (::strcmp(TRIANGLE_TAG, name) == 0)
             res = _handle_start_triangle(attributes, num_attributes);
+        else if (matches_xml_tag_name(name, COLORGROUP_TAG))
+            res = _handle_start_color_group(attributes, num_attributes);
+        else if (matches_xml_tag_name(name, COLOR_TAG))
+            res = _handle_start_color(attributes, num_attributes);
         else if (::strcmp(COMPONENTS_TAG, name) == 0)
             res = _handle_start_components(attributes, num_attributes);
         else if (::strcmp(COMPONENT_TAG, name) == 0)
@@ -1489,6 +1571,10 @@ ModelVolumeType type_from_string(const std::string &s)
             res = _handle_end_triangles();
         else if (::strcmp(TRIANGLE_TAG, name) == 0)
             res = _handle_end_triangle();
+        else if (matches_xml_tag_name(name, COLORGROUP_TAG))
+            res = _handle_end_color_group();
+        else if (matches_xml_tag_name(name, COLOR_TAG))
+            res = _handle_end_color();
         else if (::strcmp(COMPONENTS_TAG, name) == 0)
             res = _handle_end_components();
         else if (::strcmp(COMPONENT_TAG, name) == 0)
@@ -1622,6 +1708,13 @@ ModelVolumeType type_from_string(const std::string &s)
                 m_curr_object.object->name = m_name + "_" + std::to_string(m_model->objects.size());
 
             m_curr_object.id = get_attribute_value_int(attributes, num_attributes, ID_ATTR);
+
+            int pid = -1;
+            if (get_attribute_value_int(attributes, num_attributes, PID_ATTR, pid)) {
+                int pindex = 0;
+                get_attribute_value_int(attributes, num_attributes, PINDEX_ATTR, pindex);
+                m_curr_object.default_property = { pid, pindex };
+            }
         }
 
         return true;
@@ -1715,6 +1808,7 @@ ModelVolumeType type_from_string(const std::string &s)
     {
         // reset current triangles
         m_curr_object.geometry.triangles.clear();
+        m_curr_object.geometry.triangle_properties.clear();
         return true;
     }
 
@@ -1726,19 +1820,13 @@ ModelVolumeType type_from_string(const std::string &s)
 
     bool _3MF_Importer::_handle_start_triangle(const char** attributes, unsigned int num_attributes)
     {
-        // we are ignoring the following attributes:
-        // p1
-        // p2
-        // p3
-        // pid
-        // see specifications
-
         // appends the triangle's vertices indices
         // missing values are set equal to ZERO
         m_curr_object.geometry.triangles.emplace_back(
             get_attribute_value_int(attributes, num_attributes, V1_ATTR),
             get_attribute_value_int(attributes, num_attributes, V2_ATTR),
             get_attribute_value_int(attributes, num_attributes, V3_ATTR));
+        m_curr_object.geometry.triangle_properties.emplace_back(_get_triangle_property(attributes, num_attributes));
 
         m_curr_object.geometry.custom_supports.push_back(get_attribute_value_string(attributes, num_attributes, CUSTOM_SUPPORTS_ATTR));
         m_curr_object.geometry.custom_seam.push_back(get_attribute_value_string(attributes, num_attributes, CUSTOM_SEAM_ATTR));
@@ -1750,6 +1838,41 @@ ModelVolumeType type_from_string(const std::string &s)
     bool _3MF_Importer::_handle_end_triangle()
     {
         // do nothing
+        return true;
+    }
+
+    bool _3MF_Importer::_handle_start_color_group(const char** attributes, unsigned int num_attributes)
+    {
+        int id = -1;
+        if (get_attribute_value_int(attributes, num_attributes, ID_ATTR, id) && id > 0) {
+            m_curr_color_group_id = id;
+            m_color_groups[id].clear();
+        }
+        else
+            m_curr_color_group_id = -1;
+
+        return true;
+    }
+
+    bool _3MF_Importer::_handle_end_color_group()
+    {
+        m_curr_color_group_id = -1;
+        return true;
+    }
+
+    bool _3MF_Importer::_handle_start_color(const char** attributes, unsigned int num_attributes)
+    {
+        if (m_curr_color_group_id > 0) {
+            std::string color = get_attribute_value_string(attributes, num_attributes, COLOR_ATTR);
+            if (!color.empty())
+                m_color_groups[m_curr_color_group_id].emplace_back(std::move(color));
+        }
+
+        return true;
+    }
+
+    bool _3MF_Importer::_handle_end_color()
+    {
         return true;
     }
 
@@ -2072,6 +2195,91 @@ ModelVolumeType type_from_string(const std::string &s)
         return true;
     }
 
+    _3MF_Importer::PropertyRef _3MF_Importer::_get_triangle_property(const char** attributes, unsigned int num_attributes) const
+    {
+        PropertyRef property = m_curr_object.default_property;
+
+        int pid = -1;
+        bool has_pid = get_attribute_value_int(attributes, num_attributes, PID_ATTR, pid);
+        if (has_pid)
+            property.pid = pid;
+
+        int pindex = -1;
+        if (get_attribute_value_int(attributes, num_attributes, P1_ATTR, pindex) ||
+            get_attribute_value_int(attributes, num_attributes, P2_ATTR, pindex) ||
+            get_attribute_value_int(attributes, num_attributes, P3_ATTR, pindex) ||
+            get_attribute_value_int(attributes, num_attributes, PINDEX_ATTR, pindex))
+            property.pindex = pindex;
+        else if (has_pid && (!m_curr_object.default_property.valid() || m_curr_object.default_property.pid != pid))
+            property.pindex = 0;
+
+        return property.valid() ? property : PropertyRef();
+    }
+
+    std::string _3MF_Importer::_color_for_property(const PropertyRef& property) const
+    {
+        IdToColorGroupMap::const_iterator color_group = m_color_groups.find(property.pid);
+        if (color_group == m_color_groups.end() || property.pindex < 0 || size_t(property.pindex) >= color_group->second.size())
+            return std::string();
+
+        return color_group->second[property.pindex];
+    }
+
+    int _3MF_Importer::_extruder_for_property(const PropertyRef& property)
+    {
+        PropertyToExtruderMap::const_iterator extruder = m_property_to_extruder.find(property);
+        if (extruder != m_property_to_extruder.end())
+            return extruder->second;
+
+        int extruder_id = int(m_imported_filament_colours.size()) + 1;
+        m_property_to_extruder[property] = extruder_id;
+        m_imported_filament_colours.emplace_back(_color_for_property(property));
+        return extruder_id;
+    }
+
+    _3MF_Importer::ObjectMetadata::VolumeMetadataList _3MF_Importer::_make_default_volumes(const Geometry& geometry)
+    {
+        ObjectMetadata::VolumeMetadataList volumes;
+        if (geometry.triangles.empty())
+            return volumes;
+
+        bool has_properties = false;
+        for (const PropertyRef& property : geometry.triangle_properties) {
+            if (property.valid()) {
+                has_properties = true;
+                break;
+            }
+        }
+
+        if (!has_properties) {
+            volumes.emplace_back(0, (unsigned int)geometry.triangles.size() - 1);
+            return volumes;
+        }
+
+        std::map<PropertyRef, size_t> property_to_volume;
+        for (unsigned int triangle_id = 0; triangle_id < (unsigned int)geometry.triangles.size(); ++triangle_id) {
+            PropertyRef property;
+            if (triangle_id < geometry.triangle_properties.size())
+                property = geometry.triangle_properties[triangle_id];
+
+            auto volume = property_to_volume.find(property);
+            if (volume == property_to_volume.end()) {
+                size_t volume_idx = volumes.size();
+                volume = property_to_volume.insert({ property, volume_idx }).first;
+                volumes.emplace_back(triangle_id, triangle_id);
+                if (property.valid())
+                    volumes.back().metadata.emplace_back("extruder", std::to_string(_extruder_for_property(property)));
+            }
+
+            ObjectMetadata::VolumeMetadata& volume_metadata = volumes[volume->second];
+            volume_metadata.first_triangle_id = std::min(volume_metadata.first_triangle_id, triangle_id);
+            volume_metadata.last_triangle_id = std::max(volume_metadata.last_triangle_id, triangle_id);
+            volume_metadata.triangle_ids.emplace_back(triangle_id);
+        }
+
+        return volumes;
+    }
+
     bool _3MF_Importer::_generate_volumes(ModelObject& object, const Geometry& geometry, const ObjectMetadata::VolumeMetadataList& volumes, ConfigSubstitutionContext& config_substitutions)
     {
         if (!object.volumes.empty()) {
@@ -2083,9 +2291,15 @@ ModelVolumeType type_from_string(const std::string &s)
         unsigned int renamed_volumes_count = 0;
 
         for (const ObjectMetadata::VolumeMetadata& volume_data : volumes) {
-            if (geo_tri_count <= volume_data.first_triangle_id || geo_tri_count <= volume_data.last_triangle_id || volume_data.last_triangle_id < volume_data.first_triangle_id) {
+            if (volume_data.triangle_ids.empty() && (geo_tri_count <= volume_data.first_triangle_id || geo_tri_count <= volume_data.last_triangle_id || volume_data.last_triangle_id < volume_data.first_triangle_id)) {
                 add_error("Found invalid triangle id");
                 return false;
+            }
+            for (unsigned int triangle_id : volume_data.triangle_ids) {
+                if (geo_tri_count <= triangle_id) {
+                    add_error("Found invalid triangle id");
+                    return false;
+                }
             }
 
             Transform3d volume_matrix_to_object = Transform3d::Identity();
@@ -2101,7 +2315,13 @@ ModelVolumeType type_from_string(const std::string &s)
 
             // splits volume out of imported geometry
             indexed_triangle_set its;
-            its.indices.assign(geometry.triangles.begin() + volume_data.first_triangle_id, geometry.triangles.begin() + volume_data.last_triangle_id + 1);
+            if (volume_data.triangle_ids.empty())
+                its.indices.assign(geometry.triangles.begin() + volume_data.first_triangle_id, geometry.triangles.begin() + volume_data.last_triangle_id + 1);
+            else {
+                its.indices.reserve(volume_data.triangle_ids.size());
+                for (unsigned int triangle_id : volume_data.triangle_ids)
+                    its.indices.emplace_back(geometry.triangles[triangle_id]);
+            }
             const size_t triangles_count = its.indices.size();
             if (triangles_count == 0) {
                 add_error("An empty triangle mesh found");
@@ -2148,7 +2368,8 @@ ModelVolumeType type_from_string(const std::string &s)
                     //FIXME do the mesh fixing?
                 }
             }
-            if (triangle_mesh.volume() < 0)
+            // Material/color groups may be open surface patches, so their signed volume is not reliable.
+            if (volume_data.triangle_ids.empty() && triangle_mesh.volume() < 0)
                 triangle_mesh.flip_triangles();
 
 			ModelVolume* volume = object.add_volume(std::move(triangle_mesh));
@@ -2162,7 +2383,7 @@ ModelVolumeType type_from_string(const std::string &s)
             volume->mmu_segmentation_facets.reserve(triangles_count);
             volume->fuzzy_skin_facets.reserve(triangles_count);
             for (size_t i=0; i<triangles_count; ++i) {
-                size_t index = volume_data.first_triangle_id + i;
+                size_t index = volume_data.triangle_ids.empty() ? volume_data.first_triangle_id + i : volume_data.triangle_ids[i];
                 assert(index < geometry.custom_supports.size());
                 assert(index < geometry.custom_seam.size());
                 assert(index < geometry.mmu_segmentation.size());
@@ -2561,7 +2782,7 @@ ModelVolumeType type_from_string(const std::string &s)
             // Orca: PRIVACY: do not store creation & modification date in 3mf
             stream << " <" << METADATA_TAG << " name=\"CreationDate\">" << "</" << METADATA_TAG << ">\n";
             stream << " <" << METADATA_TAG << " name=\"ModificationDate\">" << "</" << METADATA_TAG << ">\n";
-            stream << " <" << METADATA_TAG << " name=\"Application\">" << SLIC3R_APP_KEY << "-" << SLIC3R_VERSION << "</" << METADATA_TAG << ">\n";
+            stream << " <" << METADATA_TAG << " name=\"Application\">" << SLIC3R_ORCA_COMPATIBILITY_NAME << "-" << SLIC3R_VERSION << "</" << METADATA_TAG << ">\n";
             stream << " <" << RESOURCES_TAG << ">\n";
             std::string buf = stream.str();
             if (! buf.empty() && ! mz_zip_writer_add_staged_data(&context, buf.data(), buf.size())) {

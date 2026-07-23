@@ -75,7 +75,7 @@ jobs:
         run: |
           # Windows_V* (not Windows_*) keeps the MSIX Store artifact out: it goes to Partner Center, not GitHub releases.
           gh run download "$RUN_ID" --repo "$GITHUB_REPOSITORY" --dir artifacts \
-            -p 'OrcaSlicer_Windows_V*' \
+            -p 'QuackSlicer_Windows_V*' \
             -p 'OrcaSlicer_Mac_universal_*' \
             -p 'OrcaSlicer_Linux_ubuntu_*' \
             -p 'OrcaSlicer-Linux-flatpak_*' \
@@ -93,10 +93,10 @@ jobs:
           # -type f is required (some artifact *folders* are named "*.flatpak").
 
           # Windows installers (x64 + arm64): the .exe inside each installer
-          # artifact, NOT the orca-slicer.exe in the portable app folder. CPack
-          # now bakes the arch into the filename (…_x64.exe / …_arm64.exe), so
+          # artifact, NOT the quack-slicer.exe in the portable app folder. CPack
+          # bakes the arch into the filename, so
           # copy them straight through.
-          find artifacts -type f -name '*.exe' -path '*OrcaSlicer_Windows_V*' ! -path '*_portable*' -exec cp -v {} upload/ \;
+          find artifacts -type f -name '*.exe' -path '*QuackSlicer_Windows_*' ! -path '*_portable*' -exec cp -v {} upload/ \;
           # macOS universal DMG (profile-validator DMG isn't downloaded).
           find artifacts -type f -name '*.dmg' -path '*OrcaSlicer_Mac_universal_*' -exec cp -v {} upload/ \;
           # Linux AppImage.
@@ -108,7 +108,7 @@ jobs:
 
           # Portable Windows builds (x64 + arm64) are unzipped folder artifacts;
           # re-zip each to its released filename (these stay .zip on the release).
-          mapfile -t portable_dirs < <(find artifacts -maxdepth 1 -type d -name 'OrcaSlicer_Windows_*_portable')
+          mapfile -t portable_dirs < <(find artifacts -maxdepth 1 -type d -name 'QuackSlicer_Windows_*_portable')
           if [ ${#portable_dirs[@]} -eq 0 ]; then
             echo "::warning::Windows portable artifact not found."
           fi
