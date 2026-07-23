@@ -40,7 +40,7 @@ using namespace nlohmann;
 
 namespace Slic3r {
 
-static const std::string VERSION_CHECK_URL = "https://check-version.orcaslicer.com/latest";
+static const std::string VERSION_CHECK_URL = "https://api.github.com/repos/Weisni/OrcaSlicer/releases";
 static const std::string PROFILE_UPDATE_URL = "https://check-version.orcaslicer.com/profile";
 static const std::string MODELS_STR = "models";
 
@@ -1764,8 +1764,7 @@ std::string AppConfig::config_path()
 
 std::string AppConfig::version_check_url() const
 {
-    auto from_settings = get("version_check_url");
-    return from_settings.empty() ? VERSION_CHECK_URL : from_settings;
+    return VERSION_CHECK_URL;
 }
 
 std::string AppConfig::profile_update_url() const

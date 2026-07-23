@@ -6,7 +6,7 @@ name: Publish to draft release
 #
 # Trigger: Actions tab -> "Publish to draft release" -> Run workflow.
 # Locked to a single person: the first step aborts unless the actor matches the
-# `RELEASE_PUBLISHER` repo variable (set to "SoftFever"). To allow someone else,
+# `RELEASE_PUBLISHER` repo variable (set to "Weisni"). To allow someone else,
 # change that variable: gh variable set RELEASE_PUBLISHER --body "<login>".
 
 on:
@@ -96,7 +96,7 @@ jobs:
           # artifact, NOT the quack-slicer.exe in the portable app folder. CPack
           # bakes the arch into the filename, so
           # copy them straight through.
-          find artifacts -type f -name '*.exe' -path '*QuackSlicer_Windows_*' ! -path '*_portable*' -exec cp -v {} upload/ \;
+          find artifacts -type f \( -name '*.exe' -o -name '*.exe.sha256' \) -path '*QuackSlicer_Windows_*' ! -path '*_portable*' -exec cp -v {} upload/ \;
           # macOS universal DMG (profile-validator DMG isn't downloaded).
           find artifacts -type f -name '*.dmg' -path '*OrcaSlicer_Mac_universal_*' -exec cp -v {} upload/ \;
           # Linux AppImage.

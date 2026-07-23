@@ -174,6 +174,10 @@ std::vector<std::string> PluginAuditManager::default_denied_filenames()
         GCODEVIEWER_APP_KEY ".conf",
         SLIC3R_APP_KEY ".ini",
         GCODEVIEWER_APP_KEY ".ini",
+        // Keep protecting configuration files created by the upstream product.
+        // QuackSlicer may share or migrate a data directory with OrcaSlicer.
+        "OrcaSlicer.conf",
+        "OrcaSlicer.ini",
         secret_constants::USER_SECRET_FILENAME,
     };
 }

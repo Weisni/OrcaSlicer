@@ -70,6 +70,10 @@
 #include <openssl/hmac.h>
 #include <openssl/evp.h>
 
+#ifdef _WIN32
+#include <shellapi.h>
+#endif
+
 #include "libslic3r/Utils.hpp"
 #include "libslic3r/Model.hpp"
 #include "libslic3r/I18N.hpp"
@@ -3177,7 +3181,7 @@ bool GUI_App::on_init_inner()
                         if (is_running_in_msix())
                             open_ms_store_product_page();
                         else
-                            wxLaunchDefaultBrowser(version_info.url);
+                            download_and_install_update();
                         break;
                     case wxID_NO:
                         break;
@@ -6023,6 +6027,12 @@ void GUI_App::check_new_version_sf(bool show_tips, int by_user)
             bool      best_release_valid = false;
             std::string best_pre_url;
             std::string best_release_url;
+            std::string best_pre_download_url;
+            std::string best_release_download_url;
+            std::string best_pre_checksum_url;
+            std::string best_release_checksum_url;
+            std::string best_pre_sha256;
+            std::string best_release_sha256;
             std::string best_release_content;
             std::string best_pre_content;
 
@@ -6042,11 +6052,50 @@ void GUI_App::check_new_version_sf(bool show_tips, int by_user)
                 const bool is_prerelease = node.get_optional<bool>("prerelease").get_value_or(false);
                 const std::string html_url = node.get_optional<std::string>("html_url").get_value_or(std::string());
                 const std::string body_copy = node.get_optional<std::string>("body").get_value_or(std::string());
+                std::string installer_url;
+                std::string checksum_url;
+                std::string sha256;
+
+#ifdef _WIN32
+#ifdef _M_ARM64
+                constexpr std::string_view installer_suffix = "_arm64.exe";
+#else
+                constexpr std::string_view installer_suffix = "_x64.exe";
+#endif
+                std::map<std::string, std::string> asset_urls;
+                if (auto assets = node.get_child_optional("assets")) {
+                    for (const auto& asset_entry : *assets) {
+                        const auto& asset = asset_entry.second;
+                        const std::string name = asset.get_optional<std::string>("name").get_value_or(std::string());
+                        const std::string download = asset.get_optional<std::string>("browser_download_url").get_value_or(std::string());
+                        if (!name.empty() && !download.empty())
+                            asset_urls.emplace(name, download);
+
+                        if (boost::starts_with(name, "QuackSlicer_Windows_Installer_") &&
+                            boost::ends_with(name, installer_suffix) &&
+                            name.find("_nightly") == std::string::npos) {
+                            installer_url = download;
+                            const std::string digest = asset.get_optional<std::string>("digest").get_value_or(std::string());
+                            if (boost::starts_with(digest, "sha256:"))
+                                sha256 = digest.substr(7);
+                        }
+                    }
+                }
+                if (!installer_url.empty()) {
+                    const std::string installer_name = Http::get_filename_from_url(installer_url);
+                    auto checksum_it = asset_urls.find(installer_name + ".sha256");
+                    if (checksum_it != asset_urls.end())
+                        checksum_url = checksum_it->second;
+                }
+#endif
 
                 if (is_prerelease) {
                     if (!best_pre_valid || best_pre < tag_version) {
                         best_pre        = tag_version;
                         best_pre_url    = html_url;
+                        best_pre_download_url = installer_url;
+                        best_pre_checksum_url = checksum_url;
+                        best_pre_sha256 = sha256;
                         best_pre_content = body_copy;
                         best_pre_valid  = true;
                     }
@@ -6054,6 +6103,9 @@ void GUI_App::check_new_version_sf(bool show_tips, int by_user)
                     if (!best_release_valid || best_release < tag_version) {
                         best_release         = tag_version;
                         best_release_url     = html_url;
+                        best_release_download_url = installer_url;
+                        best_release_checksum_url = checksum_url;
+                        best_release_sha256 = sha256;
                         best_release_content = body_copy;
                         best_release_valid   = true;
                     }
@@ -6076,6 +6128,9 @@ void GUI_App::check_new_version_sf(bool show_tips, int by_user)
             if (best_pre_valid && best_release_valid && best_pre < best_release) {
                 best_pre        = best_release;
                 best_pre_url    = best_release_url;
+                best_pre_download_url = best_release_download_url;
+                best_pre_checksum_url = best_release_checksum_url;
+                best_pre_sha256 = best_release_sha256;
                 best_pre_content = best_release_content;
                 best_pre_valid  = true;
             }
@@ -6097,6 +6152,9 @@ void GUI_App::check_new_version_sf(bool show_tips, int by_user)
             }
 
             version_info.url           = prefer_release ? best_release_url : best_pre_url;
+            version_info.download_url  = prefer_release ? best_release_download_url : best_pre_download_url;
+            version_info.checksum_url  = prefer_release ? best_release_checksum_url : best_pre_checksum_url;
+            version_info.sha256        = prefer_release ? best_release_sha256 : best_pre_sha256;
             version_info.version_str   = prefer_release ? best_release.to_string_sf() : best_pre.to_string_sf();
             version_info.description   = prefer_release ? best_release_content : best_pre_content;
             version_info.force_upgrade = false;
@@ -6108,6 +6166,150 @@ void GUI_App::check_new_version_sf(bool show_tips, int by_user)
         });
 
     http.perform();
+}
+
+namespace {
+
+std::string sha256_hex(const std::string& contents)
+{
+    unsigned char digest[EVP_MAX_MD_SIZE] = {};
+    unsigned int digest_length = 0;
+    if (EVP_Digest(contents.data(), contents.size(), digest, &digest_length, EVP_sha256(), nullptr) != 1)
+        return {};
+
+    static constexpr char hex[] = "0123456789abcdef";
+    std::string result;
+    result.reserve(digest_length * 2);
+    for (unsigned int i = 0; i < digest_length; ++i) {
+        result.push_back(hex[digest[i] >> 4]);
+        result.push_back(hex[digest[i] & 0x0f]);
+    }
+    return result;
+}
+
+std::string checksum_from_file_body(std::string body)
+{
+    boost::trim(body);
+    const auto separator = body.find_first_of(" \t\r\n");
+    std::string checksum = body.substr(0, separator);
+    boost::algorithm::to_lower(checksum);
+    if (checksum.size() != 64 ||
+        !std::all_of(checksum.begin(), checksum.end(), [](unsigned char c) { return std::isxdigit(c) != 0; }))
+        return {};
+    return checksum;
+}
+
+} // namespace
+
+void GUI_App::download_and_install_update()
+{
+#ifndef _WIN32
+    wxLaunchDefaultBrowser(version_info.url);
+#else
+    static constexpr std::string_view trusted_release_prefix =
+        "https://github.com/Weisni/OrcaSlicer/releases/download/";
+    if (version_info.download_url.empty() ||
+        version_info.download_url.compare(0, trusted_release_prefix.size(), trusted_release_prefix) != 0) {
+        wxLaunchDefaultBrowser(version_info.url);
+        return;
+    }
+
+    const std::string download_url = version_info.download_url;
+    const std::string checksum_url = version_info.checksum_url;
+    const std::string release_url  = version_info.url;
+    const std::string version      = version_info.version_str;
+    std::string expected_sha256    = version_info.sha256;
+    boost::algorithm::to_lower(expected_sha256);
+
+    MessageDialog started(mainframe,
+                          _L("QuackSlicer is downloading the update. The installer will open automatically after the download has been verified."),
+                          _L("Downloading update"), wxOK | wxICON_INFORMATION);
+    started.ShowModal();
+
+    Http::get(download_url)
+        .tls_verify(true)
+        .size_limit(1024ULL * 1024ULL * 1024ULL)
+        .timeout_connect(10)
+        .timeout_max(900)
+        .on_error([this, release_url](std::string, std::string error, unsigned status) {
+            CallAfter([this, release_url, error = std::move(error), status]() {
+                const wxString details = !error.empty() ? from_u8(error) : wxString::Format("HTTP %u", status);
+                MessageDialog failed(mainframe,
+                                     _L("The update could not be downloaded.") + "\n\n" + details,
+                                     _L("Update failed"), wxOK | wxICON_ERROR);
+                failed.ShowModal();
+                if (!release_url.empty())
+                    wxLaunchDefaultBrowser(release_url);
+            });
+        })
+        .on_complete([this, checksum_url, release_url, version, expected_sha256](std::string body, unsigned status) mutable {
+            if (status != 200 || body.empty())
+                return;
+
+            if (expected_sha256.empty() && !checksum_url.empty()) {
+                Http::get(checksum_url)
+                    .tls_verify(true)
+                    .size_limit(4096)
+                    .timeout_connect(10)
+                    .timeout_max(30)
+                    .on_complete([&expected_sha256](std::string checksum_body, unsigned checksum_status) {
+                        if (checksum_status == 200)
+                            expected_sha256 = checksum_from_file_body(std::move(checksum_body));
+                    })
+                    .perform_sync();
+            }
+
+            const std::string actual_sha256 = sha256_hex(body);
+            if (expected_sha256.empty() || actual_sha256 != expected_sha256) {
+                BOOST_LOG_TRIVIAL(error) << "QuackSlicer update checksum verification failed";
+                CallAfter([this, release_url]() {
+                    MessageDialog failed(mainframe,
+                                         _L("The downloaded update could not be verified and will not be installed."),
+                                         _L("Update verification failed"), wxOK | wxICON_ERROR);
+                    failed.ShowModal();
+                    if (!release_url.empty())
+                        wxLaunchDefaultBrowser(release_url);
+                });
+                return;
+            }
+
+            const fs::path installer_path = fs::temp_directory_path() /
+                ("QuackSlicer_Update_" + version + ".exe");
+            boost::system::error_code ec;
+            fs::remove(installer_path, ec);
+            fs::ofstream installer(installer_path, std::ios::binary | std::ios::trunc);
+            installer.write(body.data(), static_cast<std::streamsize>(body.size()));
+            installer.close();
+            if (!installer || !fs::exists(installer_path)) {
+                CallAfter([this]() {
+                    MessageDialog failed(mainframe, _L("The update installer could not be saved."),
+                                         _L("Update failed"), wxOK | wxICON_ERROR);
+                    failed.ShowModal();
+                });
+                return;
+            }
+
+            CallAfter([this, installer_path]() {
+                const std::wstring path = installer_path.wstring();
+                SHELLEXECUTEINFOW info = {};
+                info.cbSize = sizeof(info);
+                info.fMask = SEE_MASK_NOCLOSEPROCESS;
+                info.hwnd = mainframe ? mainframe->GetHandle() : nullptr;
+                info.lpVerb = L"runas";
+                info.lpFile = path.c_str();
+                info.nShow = SW_SHOWNORMAL;
+                if (!ShellExecuteExW(&info)) {
+                    MessageDialog failed(mainframe, _L("The update installer could not be started."),
+                                         _L("Update failed"), wxOK | wxICON_ERROR);
+                    failed.ShowModal();
+                    return;
+                }
+                if (info.hProcess != nullptr)
+                    CloseHandle(info.hProcess);
+            });
+        })
+        .perform();
+#endif
 }
 
 // return true if handled
