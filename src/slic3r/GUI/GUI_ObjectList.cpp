@@ -842,13 +842,11 @@ void ObjectList::update_filament_values_for_items_when_delete_filament(const siz
 
                 if (!object->volumes[id]->config.has("extruder")) {
                     continue;
-                }
-                else if (size_t(object->volumes[id]->config.extruder()) == filament_id + 1) {
-                    object->volumes[id]->config.set_key_value("extruder", new ConfigOptionInt(replace_filament_id));
                 } else {
-                    int new_extruder = object->volumes[id]->config.extruder() > filament_id ? object->volumes[id]->config.extruder() - 1 : object->volumes[id]->config.extruder();
-                    extruder = wxString::Format("%d", new_extruder);
-                    object->volumes[id]->config.set_key_value("extruder", new ConfigOptionInt(new_extruder));
+                    // ModelVolume already remaps its explicit assignment together with the
+                    // MMU facet ids. Applying the deletion a second time here would shift it
+                    // to the wrong filament.
+                    extruder = wxString::Format("%d", object->volumes[id]->config.extruder());
                 }
 
                 m_objects_model->SetExtruder(extruder, item);

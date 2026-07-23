@@ -46,6 +46,17 @@ static std::string MachineBedTypeString[7] = {
 static wxString nozzle_not_set_text = _L("The printer nozzle information has not been set.\nPlease configure it before proceeding with the calibration.");
 static wxString nozzle_volume_type_not_match_text = _L("The nozzle type does not match the actual printer nozzle type.\nPlease click the Sync button above and restart the calibration.");
 
+static ConfigOptionFloats* make_calibration_max_volumetric_speed(const DynamicPrintConfig &filament_config, double value)
+{
+    size_t value_count = 1;
+    if (const auto *variants = filament_config.option<ConfigOptionStrings>("filament_extruder_variant"))
+        value_count = std::max(value_count, variants->values.size());
+    if (const auto *speeds = filament_config.option<ConfigOptionFloats>("filament_max_volumetric_speed"))
+        value_count = std::max(value_count, speeds->values.size());
+
+    return new ConfigOptionFloats(std::vector<double>(value_count, value));
+}
+
 std::vector<std::string> not_support_auto_pa_cali_filaments = {
     "GFU03", // TPU 90A
     "GFU04"  // TPU 85A
@@ -1119,7 +1130,7 @@ void CalibUtils::calib_max_vol_speed(const CalibInfo &calib_info, wxString &erro
     auto max_lh = printer_config.option<ConfigOptionFloats>("max_layer_height");
     if (max_lh->values[0] < layer_height) max_lh->values[0] = {layer_height};
 
-    filament_config.set_key_value("filament_max_volumetric_speed", new ConfigOptionFloats{50});
+    filament_config.set_key_value("filament_max_volumetric_speed", make_calibration_max_volumetric_speed(filament_config, 50));
     filament_config.set_key_value("slow_down_layer_time", new ConfigOptionInts{0});
     filament_config.set_key_value("curr_bed_type", new ConfigOptionEnum<BedType>(calib_info.bed_type));
 
@@ -1182,7 +1193,7 @@ void CalibUtils::calib_VFA(const CalibInfo &calib_info, wxString &error_message)
     DynamicPrintConfig printer_config  = calib_info.printer_prest->config;
 
     filament_config.set_key_value("slow_down_layer_time", new ConfigOptionInts{0});
-    filament_config.set_key_value("filament_max_volumetric_speed", new ConfigOptionFloats{200});
+    filament_config.set_key_value("filament_max_volumetric_speed", make_calibration_max_volumetric_speed(filament_config, 200));
     filament_config.set_key_value("curr_bed_type", new ConfigOptionEnum<BedType>(calib_info.bed_type));
 
     print_config.set_key_value("enable_overhang_speed", new ConfigOptionBool{false});

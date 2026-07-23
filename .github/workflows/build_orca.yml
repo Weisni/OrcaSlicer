@@ -302,7 +302,7 @@ jobs:
         if: runner.os == 'Windows'
         working-directory: ${{ github.workspace }}/build
         shell: cmd
-        run: '"C:/Program Files/7-Zip/7z.exe" a -tzip OrcaSlicer_Windows_${{ env.ver }}_portable.zip ${{ github.workspace }}/build/OrcaSlicer'
+        run: '"C:/Program Files/7-Zip/7z.exe" a -tzip QuackSlicer_Windows_${{ env.ver }}_portable.zip ${{ github.workspace }}/build/OrcaSlicer'
 
       - name: Pack PDB
         if: runner.os == 'Windows' && !vars.SELF_HOSTED
@@ -314,15 +314,15 @@ jobs:
         if: runner.os == 'Windows'
         uses: actions/upload-artifact@v7
         with:
-          name: OrcaSlicer_Windows_${{ env.ver }}_portable
+          name: QuackSlicer_Windows_${{ env.ver }}_portable
           path: ${{ github.workspace }}/build/OrcaSlicer
 
       - name: Upload artifacts Win installer
         if: runner.os == 'Windows' && !vars.SELF_HOSTED
         uses: actions/upload-artifact@v7
         with:
-          name: OrcaSlicer_Windows_${{ env.ver }}
-          path: ${{ github.workspace }}/build/OrcaSlicer*.exe
+          name: QuackSlicer_Windows_${{ env.ver }}
+          path: ${{ github.workspace }}/build/QuackSlicer*.exe
 
       - name: Upload artifacts Win PDB
         if: runner.os == 'Windows' && !vars.SELF_HOSTED
@@ -344,8 +344,8 @@ jobs:
         with:
           upload_url: https://uploads.github.com/repos/OrcaSlicer/OrcaSlicer/releases/137995723/assets{?name,label}
           release_id: 137995723
-          asset_path: ${{ github.workspace }}/build/OrcaSlicer_Windows_${{ env.ver }}_portable.zip
-          asset_name: OrcaSlicer_Windows_nightly_portable.zip
+          asset_path: ${{ github.workspace }}/build/QuackSlicer_Windows_${{ env.ver }}_portable.zip
+          asset_name: QuackSlicer_Windows_nightly_portable.zip
           asset_content_type: application/x-zip-compressed
           max_releases: 1
 
@@ -355,8 +355,8 @@ jobs:
         with:
           upload_url: https://uploads.github.com/repos/OrcaSlicer/OrcaSlicer/releases/137995723/assets{?name,label}
           release_id: 137995723
-          asset_path: ${{ github.workspace }}/build/OrcaSlicer_Windows_Installer_${{ env.ver }}.exe
-          asset_name: OrcaSlicer_Windows_Installer_nightly.exe
+          asset_path: ${{ github.workspace }}/build/QuackSlicer_Windows_Installer_${{ env.ver }}.exe
+          asset_name: QuackSlicer_Windows_Installer_nightly.exe
           asset_content_type: application/x-msdownload
           max_releases: 1
 
@@ -378,17 +378,17 @@ jobs:
         run: |
           ./scripts/msix/build_msix.ps1 `
             -InstallDir "${{ github.workspace }}/build/OrcaSlicer" `
-            -OutputPath "${{ github.workspace }}/build/OrcaSlicer_Windows_MSIX_${{ env.ver }}.msix" `
-            -IdentityName "${{ vars.ORCA_MSIX_IDENTITY_NAME || 'OrcaSlicer.OrcaSlicer' }}" `
-            -Publisher "${{ vars.ORCA_MSIX_PUBLISHER || 'CN=38F7EA55-C73B-4072-B3B2-C8E0EA15BB82' }}" `
-            -PublisherDisplayName "${{ vars.ORCA_MSIX_PUBLISHER_DISPLAY_NAME || 'OrcaSlicer' }}"
+            -OutputPath "${{ github.workspace }}/build/QuackSlicer_Windows_MSIX_${{ env.ver }}.msix" `
+            -IdentityName "${{ vars.QUACK_MSIX_IDENTITY_NAME || 'QuackSlicer.QuackSlicer' }}" `
+            -Publisher "${{ vars.QUACK_MSIX_PUBLISHER || 'CN=38F7EA55-C73B-4072-B3B2-C8E0EA15BB82' }}" `
+            -PublisherDisplayName "${{ vars.QUACK_MSIX_PUBLISHER_DISPLAY_NAME || 'QuackSlicer' }}"
 
       - name: Upload artifacts Win MSIX
         if: runner.os == 'Windows' && !vars.SELF_HOSTED
         uses: actions/upload-artifact@v7
         with:
-          name: OrcaSlicer_Windows_MSIX_${{ env.ver }}
-          path: ${{ github.workspace }}/build/OrcaSlicer_Windows_MSIX_${{ env.ver }}.msix
+          name: QuackSlicer_Windows_MSIX_${{ env.ver }}
+          path: ${{ github.workspace }}/build/QuackSlicer_Windows_MSIX_${{ env.ver }}.msix
 
 # Ubuntu
       - name: Apt-Install Dependencies

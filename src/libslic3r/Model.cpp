@@ -374,7 +374,8 @@ Model Model::read_from_file(const std::string&                                  
 // BBS: backup & restore
 // Loading model from a file (3MF or AMF), not from a simple geometry file (STL or OBJ).
 Model Model::read_from_archive(const std::string& input_file, DynamicPrintConfig* config, ConfigSubstitutionContext* config_substitutions, En3mfType& out_file_type, LoadStrategy options,
-        PlateDataPtrs* plate_data, std::vector<Preset*>* project_presets, Semver* file_version, Import3mfProgressFn proFn, BBLProject *project)
+        PlateDataPtrs* plate_data, std::vector<Preset*>* project_presets, Semver* file_version, Import3mfProgressFn proFn, BBLProject *project,
+        std::map<int, std::vector<std::string>>* color_group_map, VolumeColorInfoMap* volume_color_data)
 {
     assert(config != nullptr);
     assert(config_substitutions != nullptr);
@@ -393,7 +394,7 @@ Model Model::read_from_archive(const std::string& input_file, DynamicPrintConfig
         } else {
             // BBS: add part plate related logic
             // BBS: backup & restore
-            result = load_bbs_3mf(input_file.c_str(), config, config_substitutions, &model, plate_data, project_presets, &is_bbl_3mf, &is_orca_3mf, file_version, proFn, options, project);
+            result = load_bbs_3mf(input_file.c_str(), config, config_substitutions, &model, plate_data, project_presets, &is_bbl_3mf, &is_orca_3mf, file_version, proFn, options, project, 0, color_group_map, volume_color_data);
         }
     }
     else if (boost::algorithm::iends_with(input_file, ".zip.amf"))
@@ -2590,10 +2591,21 @@ void ModelVolume::update_extruder_count_when_delete_filament(size_t extruder_cou
             break;
         }
     }
-    // Same stale-assignment cleanup as update_extruder_count, for the filament-delete path.
-    // Ported from BambuStudio (STUDIO-15763).
-    if (extruder_id() > extruder_count) {
-        this->config.erase("extruder");
+
+    // A deletion renumbers all following filament ids. Remap an explicit volume assignment
+    // before validating it; clearing the old highest id here would lose the volume's base
+    // color before the object-list UI gets a chance to update it.
+    if (config.has("extruder")) {
+        int volume_extruder = config.extruder();
+        if (volume_extruder == int(filament_id))
+            volume_extruder = replace_filament_id > 0 ? replace_filament_id : 1;
+        else if (volume_extruder > int(filament_id))
+            --volume_extruder;
+
+        if (volume_extruder > 0 && volume_extruder <= int(extruder_count))
+            config.set("extruder", volume_extruder);
+        else if (volume_extruder > int(extruder_count))
+            config.erase("extruder");
     }
 }
 
@@ -3066,156 +3078,185 @@ static void get_real_filament_id(const unsigned char &id, std::string &result) {
     }
 };
 
-bool Model::obj_import_vertex_color_deal(const std::vector<unsigned char> &vertex_filament_ids, const unsigned char &first_extruder_id, Model *model)
+bool Model::obj_import_color_deal(const std::vector<unsigned char>& filament_ids, std::optional<unsigned char> first_extruder_id, Model* model,
+                                  std::function<bool(int)> deal_vertex_callback, std::function<int(int, int, int)> get_filament_id_callback)
 {
-    if (vertex_filament_ids.size() == 0) {
+    if (filament_ids.empty() || model == nullptr)
         return false;
-    }
-    // 2.generate mmu_segmentation_facets
-    if (model->objects.size() == 1 ) {
-        auto obj = model->objects[0];
-        obj->config.set("extruder", first_extruder_id);
-        if (obj->volumes.size() == 1) {
-            enum VertexColorCase {
-                _3_SAME_COLOR,
-                _3_DIFF_COLOR,
-                _2_SAME_1_DIFF_COLOR,
-            };
-            auto calc_vertex_color_case = [](const unsigned char &c0, const unsigned char &c1, const unsigned char &c2, VertexColorCase &vertex_color_case,
-                                             unsigned char &iso_index) {
-                if (c0 == c1 && c1 == c2) {
-                    vertex_color_case = VertexColorCase::_3_SAME_COLOR;
-                } else if (c0 != c1 && c1 != c2 && c0 != c2) {
-                    vertex_color_case = VertexColorCase::_3_DIFF_COLOR;
-                } else if (c0 == c1) {
-                    vertex_color_case = _2_SAME_1_DIFF_COLOR;
-                    iso_index         = 2;
-                } else if (c1 == c2) {
-                    vertex_color_case = _2_SAME_1_DIFF_COLOR;
-                    iso_index         = 0;
-                } else if (c0 == c2) {
-                    vertex_color_case = _2_SAME_1_DIFF_COLOR;
-                    iso_index         = 1;
-                } else {
-                    std::cout << "error";
-                }
-            };
-            auto calc_tri_area = [](const Vec3f &v0, const Vec3f &v1, const Vec3f &v2) {
-                return std::abs((v0 - v1).cross(v0 - v2).norm()) / 2;
-            };
-            auto volume = obj->volumes[0];
-            volume->config.set("extruder", first_extruder_id);
-            auto face_count = volume->mesh().its.indices.size();
-            volume->mmu_segmentation_facets.reset();
-            volume->mmu_segmentation_facets.reserve(face_count);
-            if (volume->mesh().its.vertices.size() != vertex_filament_ids.size()) {
-                return false;
-            }
-            for (size_t i = 0; i < volume->mesh().its.indices.size(); i++) {
-                auto face   = volume->mesh().its.indices[i];
-                auto filament_id0 = vertex_filament_ids[face[0]];
-                auto filament_id1 = vertex_filament_ids[face[1]];
-                auto filament_id2 = vertex_filament_ids[face[2]];
-                if (filament_id0 <= 1 && filament_id1 <= 1 && filament_id2 <= 2) {
-                    continue;
-                }
-                VertexColorCase vertex_color_case;
-                unsigned char iso_index;
-                calc_vertex_color_case(filament_id0, filament_id1, filament_id2, vertex_color_case, iso_index);
-                switch (vertex_color_case) {
-                case _3_SAME_COLOR: {
-                    std::string result;
-                    get_real_filament_id(filament_id0, result);
-                    volume->mmu_segmentation_facets.set_triangle_from_string(i, result);
-                    break;
-                }
-                case _3_DIFF_COLOR: {
-                    std::string result0, result1, result2;
-                    get_real_filament_id(filament_id0, result0);
-                    get_real_filament_id(filament_id1, result1);
-                    get_real_filament_id(filament_id2, result2);
 
-                    auto v0 = volume->mesh().its.vertices[face[0]];
-                    auto v1 = volume->mesh().its.vertices[face[1]];
-                    auto v2 = volume->mesh().its.vertices[face[2]];
-                    auto                 dir_0_1  = (v1 - v0).normalized().eval();
-                    auto                 dir_0_2  = (v2 - v0).normalized().eval();
-                    float                sita0    = acos(dir_0_1.dot(dir_0_2));
-                    auto                 dir_1_0  = (-dir_0_1).eval();
-                    auto                 dir_1_2  = (v2 - v1).normalized().eval();
-                    float                sita1    = acos(dir_1_0.dot(dir_1_2));
-                    float                sita2    = PI - sita0 - sita1;
-                    std::array<float, 3> sitas    = {sita0, sita1, sita2};
-                    float                max_sita = sitas[0];
-                    int                  max_sita_vertex_index = 0;
-                    for (size_t j = 1; j < sitas.size(); j++) {
-                        if (sitas[j] > max_sita) {
-                            max_sita_vertex_index = j;
-                            max_sita = sitas[j];
-                        }
-                    }
-                    if (max_sita_vertex_index == 0) {
-                        volume->mmu_segmentation_facets.set_triangle_from_string(i, result0 + result1 + result2 + (result1 + result2 + "5" )+ "3"); //"1C0C2C0C1C13"
-                    } else if (max_sita_vertex_index == 1) {
-                        volume->mmu_segmentation_facets.set_triangle_from_string(i, result0 + result1 + result2 + (result0 + result2 + "9") + "3");
-                    } else{// if (max_sita_vertex_index == 2)
-                        volume->mmu_segmentation_facets.set_triangle_from_string(i, result0 + result1 + result2 + (result1 + result0 + "1") + "3");
-                    }
-                    break;
-                }
-                case _2_SAME_1_DIFF_COLOR: {
-                    std::string result0, result1, result2;
-                    get_real_filament_id(filament_id0, result0);
-                    get_real_filament_id(filament_id1, result1);
-                    get_real_filament_id(filament_id2, result2);
-                    if (iso_index == 0) {
-                        volume->mmu_segmentation_facets.set_triangle_from_string(i, result0 + result1 + result1 + "2");
-                    } else if (iso_index == 1) {
-                        volume->mmu_segmentation_facets.set_triangle_from_string(i, result1 + result0 + result0 + "6");
-                    } else if (iso_index == 2) {
-                        volume->mmu_segmentation_facets.set_triangle_from_string(i, result2 + result0 + result0 + "A");
-                    }
-                    break;
-                }
-                default: break;
-                }
-            }
-            return true;
+    bool success = false;
+    for (ModelObject* obj : model->objects) {
+        if (obj == nullptr)
+            continue;
+        if (first_extruder_id.has_value())
+            obj->config.set("extruder", first_extruder_id.value());
+        for (ModelVolume* volume : obj->volumes) {
+            if (volume == nullptr || !volume->is_model_part())
+                continue;
+            if (first_extruder_id.has_value())
+                volume->config.set("extruder", first_extruder_id.value());
+
+            const int volume_id = volume->id().id;
+            if (deal_vertex_callback == nullptr || !deal_vertex_callback(volume_id))
+                success |= obj_import_face_color_deal(filament_ids, first_extruder_id, volume, get_filament_id_callback);
+            else
+                success |= obj_import_vertex_color_deal(filament_ids, first_extruder_id, volume, get_filament_id_callback);
         }
     }
-    return false;
+    return success;
+}
+
+bool Model::obj_import_vertex_color_deal(const std::vector<unsigned char> &vertex_filament_ids, const unsigned char &first_extruder_id, Model *model)
+{
+    return obj_import_color_deal(vertex_filament_ids, first_extruder_id, model, [](int) { return true; });
 }
 
 bool Model::obj_import_face_color_deal(const std::vector<unsigned char> &face_filament_ids, const unsigned char &first_extruder_id, Model *model)
 {
-    if (face_filament_ids.size() == 0) { return false; }
-    // 2.generate mmu_segmentation_facets
-    if (model->objects.size() == 1) {
-        auto obj = model->objects[0];
-        obj->config.set("extruder", first_extruder_id);
-        if (obj->volumes.size() == 1) {
-            auto volume        = obj->volumes[0];
-            volume->config.set("extruder", first_extruder_id);
-            auto face_count    = volume->mesh().its.indices.size();
-            volume->mmu_segmentation_facets.reset();
-            volume->mmu_segmentation_facets.reserve(face_count);
-            if (volume->mesh().its.indices.size() != face_filament_ids.size()) {
-                return false;
-            }
-            for (size_t i = 0; i < volume->mesh().its.indices.size(); i++) {
-                auto face         = volume->mesh().its.indices[i];
-                auto filament_id = face_filament_ids[i];
-                if (filament_id < 1) {
-                    continue;
+    return obj_import_color_deal(face_filament_ids, first_extruder_id, model, [](int) { return false; });
+}
+
+bool Model::obj_import_vertex_color_deal(const std::vector<unsigned char>& vertex_filament_ids, std::optional<unsigned char> first_extruder_id,
+                                         ModelVolume* volume, std::function<int(int, int, int)> filament_id_callback)
+{
+    if (vertex_filament_ids.empty() || volume == nullptr)
+        return false;
+
+    enum VertexColorCase {
+        _3_SAME_COLOR,
+        _3_DIFF_COLOR,
+        _2_SAME_1_DIFF_COLOR,
+    };
+    auto calc_vertex_color_case = [](const unsigned char& c0, const unsigned char& c1, const unsigned char& c2, VertexColorCase& vertex_color_case,
+                                     unsigned char& iso_index) {
+        if (c0 == c1 && c1 == c2) {
+            vertex_color_case = VertexColorCase::_3_SAME_COLOR;
+        } else if (c0 != c1 && c1 != c2 && c0 != c2) {
+            vertex_color_case = VertexColorCase::_3_DIFF_COLOR;
+        } else if (c0 == c1) {
+            vertex_color_case = _2_SAME_1_DIFF_COLOR;
+            iso_index         = 2;
+        } else if (c1 == c2) {
+            vertex_color_case = _2_SAME_1_DIFF_COLOR;
+            iso_index         = 0;
+        } else if (c0 == c2) {
+            vertex_color_case = _2_SAME_1_DIFF_COLOR;
+            iso_index         = 1;
+        }
+    };
+
+    if (first_extruder_id.has_value())
+        volume->config.set("extruder", first_extruder_id.value());
+
+    const auto face_count = volume->mesh().its.indices.size();
+    volume->mmu_segmentation_facets.reset();
+    volume->mmu_segmentation_facets.reserve(face_count);
+
+    const bool use_vertex_filament_ids = filament_id_callback == nullptr;
+    if (use_vertex_filament_ids && volume->mesh().its.vertices.size() != vertex_filament_ids.size())
+        return false;
+
+    const int volume_id = volume->id().id;
+    const unsigned char base_filament_id = first_extruder_id.has_value() ? first_extruder_id.value() : static_cast<unsigned char>(volume->extruder_id());
+    for (size_t i = 0; i < volume->mesh().its.indices.size(); i++) {
+        auto face = volume->mesh().its.indices[i];
+        const unsigned char filament_id0 = use_vertex_filament_ids ? vertex_filament_ids[face[0]] : static_cast<unsigned char>(filament_id_callback(volume_id, int(i), 0));
+        const unsigned char filament_id1 = use_vertex_filament_ids ? vertex_filament_ids[face[1]] : static_cast<unsigned char>(filament_id_callback(volume_id, int(i), 1));
+        const unsigned char filament_id2 = use_vertex_filament_ids ? vertex_filament_ids[face[2]] : static_cast<unsigned char>(filament_id_callback(volume_id, int(i), 2));
+        if (filament_id0 == base_filament_id && filament_id1 == base_filament_id && filament_id2 == base_filament_id)
+            continue;
+
+        VertexColorCase vertex_color_case = VertexColorCase::_3_SAME_COLOR;
+        unsigned char iso_index = 0;
+        calc_vertex_color_case(filament_id0, filament_id1, filament_id2, vertex_color_case, iso_index);
+        switch (vertex_color_case) {
+        case _3_SAME_COLOR: {
+            std::string result;
+            get_real_filament_id(filament_id0, result);
+            volume->mmu_segmentation_facets.set_triangle_from_string(i, result);
+            break;
+        }
+        case _3_DIFF_COLOR: {
+            std::string result0, result1, result2;
+            get_real_filament_id(filament_id0, result0);
+            get_real_filament_id(filament_id1, result1);
+            get_real_filament_id(filament_id2, result2);
+
+            auto v0 = volume->mesh().its.vertices[face[0]];
+            auto v1 = volume->mesh().its.vertices[face[1]];
+            auto v2 = volume->mesh().its.vertices[face[2]];
+            auto dir_0_1 = (v1 - v0).normalized().eval();
+            auto dir_0_2 = (v2 - v0).normalized().eval();
+            float sita0 = acos(dir_0_1.dot(dir_0_2));
+            auto dir_1_0 = (-dir_0_1).eval();
+            auto dir_1_2 = (v2 - v1).normalized().eval();
+            float sita1 = acos(dir_1_0.dot(dir_1_2));
+            float sita2 = PI - sita0 - sita1;
+            std::array<float, 3> sitas = { sita0, sita1, sita2 };
+            float max_sita = sitas[0];
+            int max_sita_vertex_index = 0;
+            for (size_t j = 1; j < sitas.size(); j++) {
+                if (sitas[j] > max_sita) {
+                    max_sita_vertex_index = int(j);
+                    max_sita = sitas[j];
                 }
-                std::string result;
-                get_real_filament_id(filament_id, result);
-                volume->mmu_segmentation_facets.set_triangle_from_string(i, result);
             }
-            return true;
+            if (max_sita_vertex_index == 0)
+                volume->mmu_segmentation_facets.set_triangle_from_string(i, result0 + result1 + result2 + (result1 + result2 + "5") + "3");
+            else if (max_sita_vertex_index == 1)
+                volume->mmu_segmentation_facets.set_triangle_from_string(i, result0 + result1 + result2 + (result0 + result2 + "9") + "3");
+            else
+                volume->mmu_segmentation_facets.set_triangle_from_string(i, result0 + result1 + result2 + (result1 + result0 + "1") + "3");
+            break;
+        }
+        case _2_SAME_1_DIFF_COLOR: {
+            std::string result0, result1, result2;
+            get_real_filament_id(filament_id0, result0);
+            get_real_filament_id(filament_id1, result1);
+            get_real_filament_id(filament_id2, result2);
+            if (iso_index == 0)
+                volume->mmu_segmentation_facets.set_triangle_from_string(i, result0 + result1 + result1 + "2");
+            else if (iso_index == 1)
+                volume->mmu_segmentation_facets.set_triangle_from_string(i, result1 + result0 + result0 + "6");
+            else if (iso_index == 2)
+                volume->mmu_segmentation_facets.set_triangle_from_string(i, result2 + result0 + result0 + "A");
+            break;
+        }
+        default: break;
         }
     }
-    return false;
+
+    return true;
+}
+
+bool Model::obj_import_face_color_deal(const std::vector<unsigned char>& face_filament_ids, std::optional<unsigned char> first_extruder_id,
+                                       ModelVolume* volume, std::function<int(int, int, int)> filament_id_callback)
+{
+    if (face_filament_ids.empty() || volume == nullptr)
+        return false;
+
+    if (first_extruder_id.has_value())
+        volume->config.set("extruder", first_extruder_id.value());
+
+    const auto face_count = volume->mesh().its.indices.size();
+    volume->mmu_segmentation_facets.reset();
+    volume->mmu_segmentation_facets.reserve(face_count);
+
+    const bool use_face_filament_ids = filament_id_callback == nullptr;
+    if (use_face_filament_ids && volume->mesh().its.indices.size() != face_filament_ids.size())
+        return false;
+
+    const unsigned char base_filament_id = first_extruder_id.has_value() ? first_extruder_id.value() : static_cast<unsigned char>(volume->extruder_id());
+    for (size_t i = 0; i < volume->mesh().its.indices.size(); i++) {
+        const unsigned char filament_id = use_face_filament_ids ? face_filament_ids[i] : static_cast<unsigned char>(filament_id_callback(volume->id().id, int(i), 0));
+        if (filament_id < 1 || filament_id == base_filament_id)
+            continue;
+        std::string result;
+        get_real_filament_id(filament_id, result);
+        volume->mmu_segmentation_facets.set_triangle_from_string(i, result);
+    }
+
+    return true;
 }
 
 // update the maxSpeed of an object if it is different from the global configuration

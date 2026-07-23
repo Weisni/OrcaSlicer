@@ -6,8 +6,11 @@
 #include "Geometry/VoronoiVisualUtils.hpp"
 #include "Geometry/VoronoiUtils.hpp"
 #include "MutablePolygon.hpp"
+#include "TriangleMesh.hpp"
+#include "TriangleMeshSlicer.hpp"
 #include "format.hpp"
 
+#include <limits>
 #include <utility>
 #include <unordered_set>
 
@@ -1194,9 +1197,13 @@ static inline std::vector<std::vector<ExPolygons>> segmentation_top_and_bottom_l
     int granularity = 1;
     for (size_t i = 0; i < print_object.num_printing_regions(); ++ i) {
         const PrintRegionConfig &config = print_object.printing_region(i).config();
-        max_top_layers    = std::max(max_top_layers, config.top_shell_layers.value);
-        max_bottom_layers = std::max(max_bottom_layers, config.bottom_shell_layers.value);
-        granularity       = std::max(granularity, std::max(config.top_shell_layers.value, config.bottom_shell_layers.value) - 1);
+        const int top_layers = config.top_color_penetration_layers.value > 0 ?
+            config.top_color_penetration_layers.value : config.top_shell_layers.value;
+        const int bottom_layers = config.bottom_color_penetration_layers.value > 0 ?
+            config.bottom_color_penetration_layers.value : config.bottom_shell_layers.value;
+        max_top_layers    = std::max(max_top_layers, top_layers);
+        max_bottom_layers = std::max(max_bottom_layers, bottom_layers);
+        granularity       = std::max(granularity, std::max(top_layers, bottom_layers) - 1);
     }
 
     // Project upwards pointing painted triangles over top surfaces,
@@ -1331,10 +1338,9 @@ static inline std::vector<std::vector<ExPolygons>> segmentation_top_and_bottom_l
         float   extrusion_width         { 0.f };
         // Minimum radius of a region to be printable. Used to filter regions by morphological opening.
         float   small_region_threshold  { 0.f };
-        // Maximum number of top layers for a queried color.
-        int     top_shell_layers        { 0 };
-        // Maximum number of bottom layers for a queried color.
-        int     bottom_shell_layers     { 0 };
+        // Maximum paint penetration for a queried color.
+        int     top_color_penetration_layers    { 0 };
+        int     bottom_color_penetration_layers { 0 };
         //BBS: spacing according to width and layer height
         float   extrusion_spacing{ 0.f };
     };
@@ -1350,8 +1356,12 @@ static inline std::vector<std::vector<ExPolygons>> segmentation_top_and_bottom_l
                 const double nozzle_diameter = print_object.print()->config().nozzle_diameter.get_at(0);
                 double outer_wall_line_width = config.get_abs_value("outer_wall_line_width", nozzle_diameter);
                 out.extrusion_width     = std::max<float>(out.extrusion_width, outer_wall_line_width);
-                out.top_shell_layers    = std::max<int>(out.top_shell_layers, config.top_shell_layers);
-                out.bottom_shell_layers = std::max<int>(out.bottom_shell_layers, config.bottom_shell_layers);
+                const int top_layers = config.top_color_penetration_layers.value > 0 ?
+                    config.top_color_penetration_layers.value : config.top_shell_layers.value;
+                const int bottom_layers = config.bottom_color_penetration_layers.value > 0 ?
+                    config.bottom_color_penetration_layers.value : config.bottom_shell_layers.value;
+                out.top_color_penetration_layers = std::max(out.top_color_penetration_layers, top_layers);
+                out.bottom_color_penetration_layers = std::max(out.bottom_color_penetration_layers, bottom_layers);
                 out.small_region_threshold = config.gap_infill_speed.value > 0 ?
                                              // Gap fill enabled. Enable a single line of 1/2 extrusion width.
                                              0.5f * outer_wall_line_width :
@@ -1384,7 +1394,7 @@ static inline std::vector<std::vector<ExPolygons>> segmentation_top_and_bottom_l
                             append(triangles_by_color_top[color_idx][layer_idx + layer_idx_offset], top_ex);
                             float offset = 0.f;
                             ExPolygons layer_slices_trimmed = input_expolygons[layer_idx];
-                            for (int last_idx = int(layer_idx) - 1; last_idx > std::max(int(layer_idx - stat.top_shell_layers), int(0)); --last_idx) {
+                            for (int last_idx = int(layer_idx) - 1; last_idx > std::max(int(layer_idx - stat.top_color_penetration_layers), int(0)); --last_idx) {
                                 //BBS: offset width should be 2*spacing to avoid too narrow area which has overlap of wall line
                                 //offset -= stat.extrusion_width ;
                                 offset -= (stat.extrusion_spacing + stat.extrusion_width);
@@ -1404,7 +1414,7 @@ static inline std::vector<std::vector<ExPolygons>> segmentation_top_and_bottom_l
                             append(triangles_by_color_bottom[color_idx][layer_idx + layer_idx_offset], bottom_ex);
                             float offset = 0.f;
                             ExPolygons layer_slices_trimmed = input_expolygons[layer_idx];
-                            for (size_t last_idx = layer_idx + 1; last_idx < std::min(layer_idx + stat.bottom_shell_layers, num_layers); ++last_idx) {
+                            for (size_t last_idx = layer_idx + 1; last_idx < std::min(layer_idx + stat.bottom_color_penetration_layers, num_layers); ++last_idx) {
                                 //BBS: offset width should be 2*spacing to avoid too narrow area which has overlap of wall line
                                 //offset -= stat.extrusion_width;
                                 offset -= (stat.extrusion_spacing + stat.extrusion_width);
@@ -1952,14 +1962,134 @@ static bool has_layer_only_one_color(const std::vector<ColoredLines> &colored_po
     return true;
 }
 
-std::vector<std::vector<ExPolygons>> segmentation_by_painting(const PrintObject                                               &print_object,
-                                                              const std::function<ModelVolumeFacetsInfo(const ModelVolume &)> &extract_facets_info,
-                                                              const size_t                                                     num_facets_states,
-                                                              const float                                                      segmentation_max_width,
-                                                              const float                                                      segmentation_interlocking_depth,
-                                                              const bool                                                       segmentation_interlocking_beam,
-                                                              const IncludeTopAndBottomLayers                                  include_top_and_bottom_layers,
-                                                              const std::function<void()>                                     &throw_on_cancel_callback)
+namespace MMUSegmentationDetail {
+
+indexed_triangle_set make_closed_facet_prisms(const indexed_triangle_set &print_space_facets, const float penetration_depth)
+{
+    indexed_triangle_set prisms;
+    if (penetration_depth <= 0.f || print_space_facets.indices.empty())
+        return prisms;
+
+    prisms.vertices.reserve(print_space_facets.indices.size() * 6);
+    prisms.indices.reserve(print_space_facets.indices.size() * 8);
+
+    for (const stl_triangle_vertex_indices &face : print_space_facets.indices) {
+        if (face[0] < 0 || face[1] < 0 || face[2] < 0 ||
+            size_t(face[0]) >= print_space_facets.vertices.size() ||
+            size_t(face[1]) >= print_space_facets.vertices.size() ||
+            size_t(face[2]) >= print_space_facets.vertices.size())
+            continue;
+
+        const Vec3f p0 = print_space_facets.vertices[face[0]];
+        const Vec3f p1 = print_space_facets.vertices[face[1]];
+        const Vec3f p2 = print_space_facets.vertices[face[2]];
+        const Vec3f cross = (p1 - p0).cross(p2 - p0);
+        const float cross_length = cross.norm();
+        if (cross_length <= std::numeric_limits<float>::epsilon())
+            continue;
+
+        const Vec3f inward_offset = penetration_depth * cross / cross_length;
+        const int base = int(prisms.vertices.size());
+        prisms.vertices.emplace_back(p0);
+        prisms.vertices.emplace_back(p1);
+        prisms.vertices.emplace_back(p2);
+        prisms.vertices.emplace_back(p0 - inward_offset);
+        prisms.vertices.emplace_back(p1 - inward_offset);
+        prisms.vertices.emplace_back(p2 - inward_offset);
+
+        prisms.indices.emplace_back(base + 0, base + 1, base + 2);
+        prisms.indices.emplace_back(base + 5, base + 4, base + 3);
+        prisms.indices.emplace_back(base + 0, base + 3, base + 4);
+        prisms.indices.emplace_back(base + 0, base + 4, base + 1);
+        prisms.indices.emplace_back(base + 1, base + 4, base + 5);
+        prisms.indices.emplace_back(base + 1, base + 5, base + 2);
+        prisms.indices.emplace_back(base + 2, base + 5, base + 3);
+        prisms.indices.emplace_back(base + 2, base + 3, base + 0);
+    }
+
+    return prisms;
+}
+
+} // namespace MMUSegmentationDetail
+
+static std::vector<std::vector<ExPolygons>> segmentation_by_surface_normal(
+    const PrintObject                                               &print_object,
+    const std::vector<ExPolygons>                                  &input_expolygons,
+    const std::function<ModelVolumeFacetsInfo(const ModelVolume &)> &extract_facets_info,
+    const size_t                                                     num_facets_states,
+    const float                                                      penetration_depth,
+    const std::function<void()>                                     &throw_on_cancel_callback)
+{
+    const size_t num_layers = print_object.layers().size();
+    std::vector<std::vector<ExPolygons>> result(num_layers, std::vector<ExPolygons>(num_facets_states - 1));
+    if (num_layers == 0 || num_facets_states <= 1)
+        return result;
+
+    std::vector<indexed_triangle_set> prisms_by_state(num_facets_states);
+    for (const ModelVolume *mv : print_object.model_object()->volumes) {
+        throw_on_cancel_callback();
+        if (mv == nullptr || !mv->is_model_part())
+            continue;
+
+        const ModelVolumeFacetsInfo facets_info = extract_facets_info(*mv);
+        if (!facets_info.is_painted)
+            continue;
+
+        const Transform3d transform = print_object.trafo_centered() * mv->get_matrix();
+        for (size_t state = 1; state < num_facets_states; ++state) {
+            if ((state & 0x0f) == 0)
+                throw_on_cancel_callback();
+
+            indexed_triangle_set painted_facets = facets_info.facets_annotation.get_facets_strict(*mv, EnforcerBlockerType(state));
+            if (painted_facets.indices.empty())
+                continue;
+
+            // Fix winding for mirrored transforms before deriving the physical-space inward normal.
+            its_transform(painted_facets, transform, true);
+            const indexed_triangle_set prisms = MMUSegmentationDetail::make_closed_facet_prisms(painted_facets, penetration_depth);
+            if (!prisms.indices.empty())
+                its_merge(prisms_by_state[state], prisms);
+        }
+    }
+
+    const std::vector<float> slice_zs = zs_from_layers(print_object.layers());
+    std::vector<ExPolygons> claimed(num_layers);
+    for (size_t state = 1; state < num_facets_states; ++state) {
+        throw_on_cancel_callback();
+        if (prisms_by_state[state].indices.empty())
+            continue;
+
+        std::vector<ExPolygons> state_slices = slice_mesh_ex(prisms_by_state[state], slice_zs, throw_on_cancel_callback);
+        assert(state_slices.size() == num_layers);
+        for (size_t layer_idx = 0; layer_idx < num_layers; ++layer_idx) {
+            throw_on_cancel_callback();
+            if (state_slices[layer_idx].empty() || input_expolygons[layer_idx].empty())
+                continue;
+
+            ExPolygons clipped = intersection_ex(state_slices[layer_idx], input_expolygons[layer_idx]);
+            if (!claimed[layer_idx].empty() && !clipped.empty())
+                clipped = diff_ex(clipped, claimed[layer_idx]);
+            if (clipped.empty())
+                continue;
+
+            result[layer_idx][state - 1] = clipped;
+            append(claimed[layer_idx], std::move(clipped));
+            claimed[layer_idx] = union_ex(claimed[layer_idx]);
+        }
+    }
+
+    return result;
+}
+
+static std::vector<std::vector<ExPolygons>> segmentation_by_painting_impl(const PrintObject                                               &print_object,
+                                                                          const std::function<ModelVolumeFacetsInfo(const ModelVolume &)> &extract_facets_info,
+                                                                          const size_t                                                     num_facets_states,
+                                                                          const float                                                      segmentation_max_width,
+                                                                          const float                                                      segmentation_interlocking_depth,
+                                                                          const bool                                                       segmentation_interlocking_beam,
+                                                                          const IncludeTopAndBottomLayers                                  include_top_and_bottom_layers,
+                                                                          const float                                                      surface_normal_penetration_depth,
+                                                                          const std::function<void()>                                     &throw_on_cancel_callback)
 {
     const size_t                          num_layers    = print_object.layers().size();
     std::vector<std::vector<ExPolygons>>  segmented_regions(num_layers);
@@ -2005,6 +2135,10 @@ std::vector<std::vector<ExPolygons>> segmentation_by_painting(const PrintObject 
         }
     }); // end of parallel_for
     BOOST_LOG_TRIVIAL(debug) << "Print object segmentation - Slices preprocessing in parallel - End";
+
+    if (surface_normal_penetration_depth > 0.f)
+        return segmentation_by_surface_normal(print_object, input_expolygons, extract_facets_info, num_facets_states,
+                                              surface_normal_penetration_depth, throw_on_cancel_callback);
 
     std::vector<BoundingBox> layer_bboxes(num_layers);
     for (size_t layer_idx = 0; layer_idx < num_layers; ++layer_idx) {
@@ -2193,18 +2327,34 @@ std::vector<std::vector<ExPolygons>> segmentation_by_painting(const PrintObject 
     return segmented_regions_merged;
 }
 
+std::vector<std::vector<ExPolygons>> segmentation_by_painting(const PrintObject                                               &print_object,
+                                                               const std::function<ModelVolumeFacetsInfo(const ModelVolume &)> &extract_facets_info,
+                                                               const size_t                                                     num_facets_states,
+                                                               const float                                                      segmentation_max_width,
+                                                               const float                                                      segmentation_interlocking_depth,
+                                                               const bool                                                       segmentation_interlocking_beam,
+                                                               const IncludeTopAndBottomLayers                                  include_top_and_bottom_layers,
+                                                               const std::function<void()>                                     &throw_on_cancel_callback)
+{
+    return segmentation_by_painting_impl(print_object, extract_facets_info, num_facets_states, segmentation_max_width,
+                                         segmentation_interlocking_depth, segmentation_interlocking_beam,
+                                         include_top_and_bottom_layers, 0.f, throw_on_cancel_callback);
+}
+
 // Returns multi-material segmentation based on painting in multi-material segmentation gizmo
 std::vector<std::vector<ExPolygons>> multi_material_segmentation_by_painting(const PrintObject &print_object, const std::function<void()> &throw_on_cancel_callback) {
     const size_t num_facets_states  = print_object.print()->config().filament_colour.size() + 1;
     const float  max_width          = float(print_object.config().mmu_segmented_region_max_width.value);
     const float  interlocking_depth = float(print_object.config().mmu_segmented_region_interlocking_depth.value);
+    const float  normal_depth       = float(print_object.config().mmu_surface_normal_penetration_depth.value);
     const bool   interlocking_beam  = print_object.config().interlocking_beam.value;
 
     const auto extract_facets_info = [](const ModelVolume &mv) -> ModelVolumeFacetsInfo {
         return {mv.mmu_segmentation_facets, mv.is_mm_painted(), false};
     };
 
-    return segmentation_by_painting(print_object, extract_facets_info, num_facets_states, max_width, interlocking_depth, interlocking_beam, IncludeTopAndBottomLayers::Yes, throw_on_cancel_callback);
+    return segmentation_by_painting_impl(print_object, extract_facets_info, num_facets_states, max_width, interlocking_depth,
+                                         interlocking_beam, IncludeTopAndBottomLayers::Yes, normal_depth, throw_on_cancel_callback);
 }
 
 // Returns fuzzy skin segmentation based on painting in fuzzy skin segmentation gizmo

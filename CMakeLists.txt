@@ -928,28 +928,75 @@ endif ()
 install(FILES ${CMAKE_SOURCE_DIR}/LICENSE.txt DESTINATION ".")
 configure_file(${LIBDIR}/dev-utils/platform/unix/fhs.hpp.in ${LIBDIR_BIN}/dev-utils/platform/unix/fhs.hpp)
 
-set (CPACK_PACKAGE_NAME "OrcaSlicer")
+set (CPACK_PACKAGE_NAME "QuackSlicer")
 set (CPACK_PACKAGE_VENDOR "SoftFever")
 set (CPACK_PACKAGE_VERSION_MAJOR "${ORCA_VERSION_MAJOR}")
 set (CPACK_PACKAGE_VERSION_MINOR "${ORCA_VERSION_MINOR}")
 set (CPACK_PACKAGE_VERSION_PATCH "${ORCA_VERSION_PATCH}")
-set (CPACK_PACKAGE_FILE_NAME "OrcaSlicer_Windows_Installer_V${SoftFever_VERSION}")
-set (CPACK_PACKAGE_DESCRIPTION_SUMMARY "Orca Slicer is an open source slicer for FDM printers")
+set (CPACK_PACKAGE_FILE_NAME "QuackSlicer_Windows_Installer_V${SoftFever_VERSION}")
+set (CPACK_PACKAGE_DESCRIPTION_SUMMARY "QuackSlicer is an open source slicer for FDM printers")
 set (CPACK_PACKAGE_HOMEPAGE_URL "https://github.com/OrcaSlicer/OrcaSlicer")
 set (CPACK_PACKAGE_INSTALL_DIRECTORY ${CPACK_PACKAGE_NAME})
 set (CPACK_PACKAGE_ICON "${CMAKE_SOURCE_DIR}/resources/images\\\\OrcaSlicer.ico")
 set (CPACK_NSIS_MUI_ICON "${CPACK_PACKAGE_ICON}")
 set (CPACK_NSIS_MUI_UNIICON "${CPACK_PACKAGE_ICON}")
-set (CPACK_NSIS_INSTALLED_ICON_NAME  "$INSTDIR\\\\orca-slicer.exe")
+set (CPACK_NSIS_INSTALLED_ICON_NAME  "$INSTDIR\\\\quack-slicer.exe")
 set (CPACK_PACKAGE_CHECKSUM SHA256)
-set (CPACK_PACKAGE_INSTALL_REGISTRY_KEY "OrcaSlicer")
+set (CPACK_PACKAGE_INSTALL_REGISTRY_KEY "QuackSlicer")
 set (CPACK_NSIS_ENABLE_UNINSTALL_BEFORE_INSTALL ON)
 set (CPACK_NSIS_EXECUTABLES_DIRECTORY ".")
 # set (CPACK_NSIS_MODIFY_PATH "ON")
-set(CPACK_PACKAGE_EXECUTABLES "orca-slicer;OrcaSlicer")
-set(CPACK_CREATE_DESKTOP_LINKS "orca-slicer")
+set(CPACK_PACKAGE_EXECUTABLES "quack-slicer;QuackSlicer")
+set(CPACK_CREATE_DESKTOP_LINKS "quack-slicer")
 set (CPACK_RESOURCE_FILE_LICENSE ${CMAKE_SOURCE_DIR}/LICENSE.txt) # must also include in install command
 
-set(CPACK_WIX_UPGRADE_GUID "058245e8-20e0-4a95-9ab7-1acfe17ad511")
+# Register QuackSlicer as an available file handler without replacing the
+# user's current defaults. The application assigns the same AppUserModelID to
+# its process and Start menu shortcut so Windows can maintain its Jump List.
+set(CPACK_NSIS_EXTRA_INSTALL_COMMANDS [=[
+  WriteRegStr HKLM "Software\Classes\QuackSlicer.File.1" "" "QuackSlicer project or model"
+  WriteRegStr HKLM "Software\Classes\QuackSlicer.File.1" "AppUserModelID" "QuackSlicer.QuackSlicer"
+  WriteRegStr HKLM "Software\Classes\QuackSlicer.File.1\DefaultIcon" "" "$INSTDIR\quack-slicer.exe,0"
+  WriteRegStr HKLM "Software\Classes\QuackSlicer.File.1\shell\open\command" "" "$\"$INSTDIR\quack-slicer.exe$\" $\"%1$\""
+  WriteRegStr HKLM "Software\Classes\Applications\quack-slicer.exe" "AppUserModelID" "QuackSlicer.QuackSlicer"
+  WriteRegStr HKLM "Software\Classes\Applications\quack-slicer.exe\shell\open\command" "" "$\"$INSTDIR\quack-slicer.exe$\" $\"%1$\""
+  WriteRegStr HKLM "Software\QuackSlicer\Capabilities" "ApplicationName" "QuackSlicer"
+  WriteRegStr HKLM "Software\QuackSlicer\Capabilities" "ApplicationDescription" "Open-source slicer for FDM 3D printers"
+  WriteRegStr HKLM "Software\QuackSlicer\Capabilities" "ApplicationIcon" "$INSTDIR\quack-slicer.exe,0"
+  WriteRegStr HKLM "Software\RegisteredApplications" "QuackSlicer" "Software\QuackSlicer\Capabilities"
+  WriteRegStr HKLM "Software\QuackSlicer\Capabilities\FileAssociations" ".3mf" "QuackSlicer.File.1"
+  WriteRegStr HKLM "Software\QuackSlicer\Capabilities\FileAssociations" ".stl" "QuackSlicer.File.1"
+  WriteRegStr HKLM "Software\QuackSlicer\Capabilities\FileAssociations" ".step" "QuackSlicer.File.1"
+  WriteRegStr HKLM "Software\QuackSlicer\Capabilities\FileAssociations" ".stp" "QuackSlicer.File.1"
+  WriteRegStr HKLM "Software\QuackSlicer\Capabilities\FileAssociations" ".gcode" "QuackSlicer.File.1"
+  WriteRegStr HKLM "Software\QuackSlicer\Capabilities\FileAssociations" ".drc" "QuackSlicer.File.1"
+  WriteRegStr HKLM "Software\Classes\.3mf\OpenWithProgids" "QuackSlicer.File.1" ""
+  WriteRegStr HKLM "Software\Classes\.stl\OpenWithProgids" "QuackSlicer.File.1" ""
+  WriteRegStr HKLM "Software\Classes\.step\OpenWithProgids" "QuackSlicer.File.1" ""
+  WriteRegStr HKLM "Software\Classes\.stp\OpenWithProgids" "QuackSlicer.File.1" ""
+  WriteRegStr HKLM "Software\Classes\.gcode\OpenWithProgids" "QuackSlicer.File.1" ""
+  WriteRegStr HKLM "Software\Classes\.drc\OpenWithProgids" "QuackSlicer.File.1" ""
+  System::Call 'shell32::SHChangeNotify(i 0x08000000, i 0, p 0, p 0)'
+]=])
+string(REPLACE "\\" "\\\\" CPACK_NSIS_EXTRA_INSTALL_COMMANDS "${CPACK_NSIS_EXTRA_INSTALL_COMMANDS}")
+string(REPLACE "\"" "\\\"" CPACK_NSIS_EXTRA_INSTALL_COMMANDS "${CPACK_NSIS_EXTRA_INSTALL_COMMANDS}")
+
+set(CPACK_NSIS_EXTRA_UNINSTALL_COMMANDS [=[
+  DeleteRegValue HKLM "Software\Classes\.3mf\OpenWithProgids" "QuackSlicer.File.1"
+  DeleteRegValue HKLM "Software\Classes\.stl\OpenWithProgids" "QuackSlicer.File.1"
+  DeleteRegValue HKLM "Software\Classes\.step\OpenWithProgids" "QuackSlicer.File.1"
+  DeleteRegValue HKLM "Software\Classes\.stp\OpenWithProgids" "QuackSlicer.File.1"
+  DeleteRegValue HKLM "Software\Classes\.gcode\OpenWithProgids" "QuackSlicer.File.1"
+  DeleteRegValue HKLM "Software\Classes\.drc\OpenWithProgids" "QuackSlicer.File.1"
+  DeleteRegValue HKLM "Software\RegisteredApplications" "QuackSlicer"
+  DeleteRegKey HKLM "Software\QuackSlicer\Capabilities"
+  DeleteRegKey HKLM "Software\Classes\Applications\quack-slicer.exe"
+  DeleteRegKey HKLM "Software\Classes\QuackSlicer.File.1"
+  System::Call 'shell32::SHChangeNotify(i 0x08000000, i 0, p 0, p 0)'
+]=])
+string(REPLACE "\\" "\\\\" CPACK_NSIS_EXTRA_UNINSTALL_COMMANDS "${CPACK_NSIS_EXTRA_UNINSTALL_COMMANDS}")
+string(REPLACE "\"" "\\\"" CPACK_NSIS_EXTRA_UNINSTALL_COMMANDS "${CPACK_NSIS_EXTRA_UNINSTALL_COMMANDS}")
+
+set(CPACK_WIX_UPGRADE_GUID "B35656CF-D888-58A7-B720-23FE00CDCCEE")
 set(CPACK_GENERATOR NSIS)
 include(CPack)

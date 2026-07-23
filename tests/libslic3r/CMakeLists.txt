@@ -7,6 +7,7 @@ add_executable(${_TEST_NAME}_tests
     test_appconfig.cpp
     test_arachne_walls.cpp
     test_bambu_networking.cpp
+    test_build_path_classifier.cpp
     test_clipper_offset.cpp
     test_clipper_utils.cpp
     test_config.cpp
@@ -17,9 +18,12 @@ add_executable(${_TEST_NAME}_tests
     test_polygon.cpp
     test_mutable_polygon.cpp
     test_mutable_priority_queue.cpp
+    test_obj_color_utils.cpp
     test_stl.cpp
     test_meshboolean.cpp
     test_marchingsquares.cpp
+    test_model_filament_remapping.cpp
+    test_multi_material_segmentation.cpp
     test_timeutils.cpp
     test_voronoi.cpp
     test_optimizers.cpp

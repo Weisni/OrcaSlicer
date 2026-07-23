@@ -3056,6 +3056,16 @@ void GCode::_do_export(Print& print, GCodeOutputStream &file, ThumbnailsGenerato
             during_print_exhaust_fan_speed_num.emplace_back((int)(item / 100.0 * 255));
         this->placeholder_parser().set("during_print_exhaust_fan_speed_num", new ConfigOptionInts(during_print_exhaust_fan_speed_num));
 
+        this->placeholder_parser().set("activate_air_filtration", new ConfigOptionBools(m_config.activate_air_filtration));
+        this->placeholder_parser().set("activate_air_filtration_during_print", new ConfigOptionBools(m_config.activate_air_filtration_during_print));
+        this->placeholder_parser().set("activate_air_filtration_on_completion", new ConfigOptionBools(m_config.activate_air_filtration_on_completion));
+
+        std::vector<int> complete_print_exhaust_fan_speed_num;
+        complete_print_exhaust_fan_speed_num.reserve(m_config.complete_print_exhaust_fan_speed.size());
+        for (const auto& item : m_config.complete_print_exhaust_fan_speed.values)
+            complete_print_exhaust_fan_speed_num.emplace_back((int)(item / 100.0 * 255));
+        this->placeholder_parser().set("complete_print_exhaust_fan_speed_num", new ConfigOptionInts(complete_print_exhaust_fan_speed_num));
+
         //BBS: calculate the volumetric speed of outer wall. Ignore pre-object setting and multi-filament, and just use the default setting
         float outer_wall_volumetric_speed = get_outer_wall_volumetric_speed(m_config, print, initial_non_support_extruder_id, get_extruder_id(initial_non_support_extruder_id));
         this->placeholder_parser().set("outer_wall_volumetric_speed", new ConfigOptionFloat(outer_wall_volumetric_speed));
@@ -3480,6 +3490,17 @@ void GCode::_do_export(Print& print, GCodeOutputStream &file, ThumbnailsGenerato
                 file.writeln(this->placeholder_parser_process("filament_end_gcode", end_gcode, extruder_id, &config));
             }
         }
+
+        config.set_key_value("activate_air_filtration", new ConfigOptionBools(m_config.activate_air_filtration));
+        config.set_key_value("activate_air_filtration_during_print", new ConfigOptionBools(m_config.activate_air_filtration_during_print));
+        config.set_key_value("activate_air_filtration_on_completion", new ConfigOptionBools(m_config.activate_air_filtration_on_completion));
+
+        std::vector<int> complete_print_exhaust_fan_speed_num;
+        complete_print_exhaust_fan_speed_num.reserve(m_config.complete_print_exhaust_fan_speed.size());
+        for (const auto& item : m_config.complete_print_exhaust_fan_speed.values)
+            complete_print_exhaust_fan_speed_num.emplace_back((int)(item / 100.0 * 255));
+        config.set_key_value("complete_print_exhaust_fan_speed_num", new ConfigOptionInts(complete_print_exhaust_fan_speed_num));
+
         file.writeln(this->placeholder_parser_process("machine_end_gcode", print.config().machine_end_gcode, m_writer.filament()->id(), &config));
     }
     file.write(m_writer.update_progress(m_layer_count, m_layer_count, true)); // 100%

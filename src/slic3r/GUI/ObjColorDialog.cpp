@@ -82,7 +82,7 @@ bool ObjColorDialog::Show(bool show) {
 ObjColorDialog::ObjColorDialog(wxWindow *parent, Slic3r::ObjDialogInOut &in_out, const std::vector<std::string> &extruder_colours)
     : DPIDialog(parent ? parent : static_cast<wxWindow *>(wxGetApp().mainframe),
                 wxID_ANY,
-                _(L("OBJ file import color")),
+                in_out.input_type == ObjDialogInOut::FormatType::Obj ? _(L("OBJ file import color")) : _(L("Standard 3MF import color")),
                 wxDefaultPosition,
                 wxDefaultSize,
                 wxDEFAULT_DIALOG_STYLE /* | wxRESIZE_BORDER*/)
@@ -102,7 +102,7 @@ ObjColorDialog::ObjColorDialog(wxWindow *parent, Slic3r::ObjDialogInOut &in_out,
     sizer_width      = sizer_width > MIN_OBJCOLOR_DIALOG_WIDTH ? sizer_width : MIN_OBJCOLOR_DIALOG_WIDTH;
     m_main_sizer->SetMinSize(wxSize(sizer_width, -1));
     bool some_face_no_color = false;
-    if (!in_out.deal_vertex_color) {
+    if (in_out.input_type == ObjDialogInOut::FormatType::Obj && !in_out.deal_vertex_color) {
         auto temp0 = in_out.input_colors.size();
         auto temp1 = in_out.model->objects[0]->volumes[0]->mesh_ptr()->facets_count();
         some_face_no_color = temp0 < temp1;
@@ -196,7 +196,18 @@ ObjColorPanel::ObjColorPanel(wxWindow *parent, Slic3r::ObjDialogInOut &in_out, c
             in_out.input_colors[i] = convert_to_rgba(m_colours[0]);
         }
     }
-    if (in_out.is_single_color && in_out.input_colors.size() >= 1) {
+    if (in_out.input_type == ObjDialogInOut::FormatType::Standard3mf && in_out.input_colors.size() <= g_max_color) {
+        m_cluster_colors_from_algo = in_out.input_colors;
+        m_cluster_colours.reserve(in_out.input_colors.size());
+        m_cluster_labels_from_algo.reserve(in_out.input_colors.size());
+        for (size_t i = 0; i < in_out.input_colors.size(); ++i) {
+            m_cluster_colours.emplace_back(convert_to_wxColour(in_out.input_colors[i]));
+            m_cluster_labels_from_algo.emplace_back(int(i));
+        }
+        m_cluster_map_filaments.resize(m_cluster_colors_from_algo.size());
+        m_new_add_colors.resize(m_cluster_map_filaments.size());
+        m_color_num_recommend = m_color_cluster_num_by_algo = m_cluster_colors_from_algo.size();
+    } else if (in_out.is_single_color && in_out.input_colors.size() >= 1) {
         m_cluster_colors_from_algo.emplace_back(in_out.input_colors[0]);
         m_cluster_colours.emplace_back(convert_to_wxColour(in_out.input_colors[0]));
         m_cluster_labels_from_algo.reserve(m_input_colors_size);
@@ -272,7 +283,7 @@ ObjColorPanel::ObjColorPanel(wxWindow *parent, Slic3r::ObjDialogInOut &in_out, c
         {//add combox
             auto      icon_sizer     = new wxBoxSizer(wxHORIZONTAL);
             auto plater     = wxGetApp().plater();
-            {
+            if (m_obj_in_out.input_type == ObjDialogInOut::FormatType::Obj) {
                 auto mo = m_obj_in_out.model->objects[0];
                 mo->add_instance();
                 auto mv  = mo->volumes[0];
@@ -372,9 +383,14 @@ ObjColorPanel::ObjColorPanel(wxWindow *parent, Slic3r::ObjDialogInOut &in_out, c
 
         auto calc_approximate_match_btn_sizer = create_approximate_match_btn_sizer(m_page_simple);
         auto calc_add_btn_sizer = create_add_btn_sizer(m_page_simple);
+        auto calc_replace_btn_sizer = create_replace_btn_sizer(m_page_simple);
         auto calc_reset_btn_sizer      = create_reset_btn_sizer(m_page_simple);
         quick_set_sizer->Add(calc_add_btn_sizer, 0, wxALIGN_CENTER | wxALL, 0);
         quick_set_sizer->AddSpacer(FromDIP(10));
+        if (m_obj_in_out.input_type == ObjDialogInOut::FormatType::Standard3mf) {
+            quick_set_sizer->Add(calc_replace_btn_sizer, 0, wxALIGN_CENTER | wxALL, 0);
+            quick_set_sizer->AddSpacer(FromDIP(10));
+        }
         quick_set_sizer->Add(calc_approximate_match_btn_sizer, 0, wxALIGN_CENTER | wxALL, 0);
         quick_set_sizer->AddSpacer(FromDIP(10));
         quick_set_sizer->Add(calc_reset_btn_sizer, 0, wxALIGN_CENTER | wxALL, 0);
@@ -429,24 +445,40 @@ bool ObjColorPanel::is_ok() {
 
 void ObjColorPanel::send_new_filament_to_ui()
 {
-    update_new_add_final_colors();
-    if (m_is_add_filament) {
+    if (m_obj_in_out.input_type == ObjDialogInOut::FormatType::Standard3mf && m_filament_action == FilamentAction::Match)
+        return;
+    const bool mapping_changed = update_new_add_final_colors();
+    if (m_filament_action == FilamentAction::Replace) {
+        wxGetApp().sidebar().replace_filaments(m_new_add_final_colors);
+    } else if (m_is_add_filament) {
         for (auto c : m_new_add_final_colors) {
             /*auto evt = new ColorEvent(EVT_ADD_CUSTOM_FILAMENT, c);
             wxQueueEvent(wxGetApp().plater(), evt);*/
             wxGetApp().sidebar().add_custom_filament(c);
         }
     }
+    if (mapping_changed || m_filament_action == FilamentAction::Replace) {
+        update_filament_ids();
+        m_deal_thumbnail_flag = apply_color_mapping_to_model();
+    }
 }
 
 void ObjColorPanel::cancel_paint_color() {
     m_filament_ids.clear();
-    auto mo = m_obj_in_out.model->objects[0];
-    mo->config.set("extruder", 1);
     clear_instance_and_revert_offset();
-    auto mv = mo->volumes[0];
-    mv->mmu_segmentation_facets.reset();
-    mv->config.set("extruder", 1);
+    for (ModelObject* mo : m_obj_in_out.model->objects) {
+        if (mo == nullptr)
+            continue;
+        if (m_obj_in_out.input_type == ObjDialogInOut::FormatType::Obj)
+            mo->config.set("extruder", 1);
+        for (ModelVolume* mv : mo->volumes) {
+            if (mv == nullptr)
+                continue;
+            mv->mmu_segmentation_facets.reset();
+            if (m_obj_in_out.input_type == ObjDialogInOut::FormatType::Obj)
+                mv->config.set("extruder", 1);
+        }
+    }
     m_first_extruder_id = 1;
 }
 
@@ -485,6 +517,9 @@ wxBoxSizer *ObjColorPanel::create_approximate_match_btn_sizer(wxWindow *parent)
     m_quick_approximate_match_btn->SetFocus();
     btn_sizer->Add(m_quick_approximate_match_btn, 0, wxRIGHT | wxALIGN_CENTER_VERTICAL, 0);
     m_quick_approximate_match_btn->Bind(wxEVT_BUTTON, [this](wxCommandEvent &) {
+        m_filament_action = FilamentAction::Match;
+        if (m_obj_in_out.input_type == ObjDialogInOut::FormatType::Standard3mf)
+            deal_reset_btn();
         deal_approximate_match_btn();
         deal_thumbnail();
     });
@@ -501,7 +536,21 @@ wxBoxSizer *ObjColorPanel::create_add_btn_sizer(wxWindow *parent)
     cur_btn->SetFocus();
     btn_sizer->Add(cur_btn, 0, wxRIGHT | wxALIGN_CENTER_VERTICAL, 0);
     cur_btn->Bind(wxEVT_BUTTON, [this](wxCommandEvent &) {
-        deal_add_btn();
+        m_filament_action = deal_add_btn() ? FilamentAction::Match : FilamentAction::Append;
+        deal_thumbnail();
+    });
+    return btn_sizer;
+}
+
+wxBoxSizer *ObjColorPanel::create_replace_btn_sizer(wxWindow *parent)
+{
+    auto btn_sizer = new wxBoxSizer(wxHORIZONTAL);
+    m_quick_replace_btn = new Button(parent, _L("Replace"));
+    m_quick_replace_btn->SetToolTip(_L("Replace existing filaments with the colors used by the project"));
+    m_quick_replace_btn->SetStyle(ButtonStyle::Regular, ButtonType::Window);
+    btn_sizer->Add(m_quick_replace_btn, 0, wxRIGHT | wxALIGN_CENTER_VERTICAL, 0);
+    m_quick_replace_btn->Bind(wxEVT_BUTTON, [this](wxCommandEvent &) {
+        m_filament_action = deal_replace_btn() ? FilamentAction::Match : FilamentAction::Replace;
         deal_thumbnail();
     });
     return btn_sizer;
@@ -517,6 +566,7 @@ wxBoxSizer *ObjColorPanel::create_reset_btn_sizer(wxWindow *parent)
     cur_btn->SetFocus();
     btn_sizer->Add(cur_btn, 0, wxRIGHT | wxALIGN_CENTER_VERTICAL, 0);
     cur_btn->Bind(wxEVT_BUTTON, [this](wxCommandEvent &) {
+        m_filament_action = FilamentAction::Match;
         deal_reset_btn();
         deal_thumbnail();
     });
@@ -579,8 +629,10 @@ ComboBox *ObjColorPanel::CreateEditorCtrl(wxWindow *parent, int id) // wxRect la
         auto *com_box = static_cast<ComboBox *>(evt.GetEventObject());
         int   i       = atoi(com_box->GetName().c_str());
         if (i < m_cluster_map_filaments.size()) {
-            m_cluster_map_filaments[i] = com_box->GetSelection();
-            m_new_add_colors[i]        = com_box->GetItemTooltip(com_box->GetSelection());
+            const int selection = com_box->GetSelection();
+            m_cluster_map_filaments[i] = m_filament_action == FilamentAction::Replace && selection > int(m_colours.size()) ?
+                selection - int(m_colours.size()) : selection;
+            m_new_add_colors[i] = com_box->GetItemTooltip(selection);
             deal_thumbnail();
         }
         evt.StopPropagation();
@@ -598,10 +650,14 @@ void ObjColorPanel::deal_approximate_match_btn()
         auto    c = m_cluster_colours[i];
         std::vector<ColorDistValue> color_dists;
         color_dists.resize(map_count);
+        const bool prefer_device_filaments = m_obj_in_out.filament_available_on_device.size() == map_count &&
+            std::any_of(m_obj_in_out.filament_available_on_device.begin(), m_obj_in_out.filament_available_on_device.end(), [](bool available) { return available; });
         for (size_t j = 0; j < map_count; j++) {
             auto tip_color       = m_result_icon_list[0]->bitmap_combox->GetItemTooltip(j+1);
             wxColour candidate_c(tip_color);
             color_dists[j].distance = calc_color_distance(c, candidate_c);
+            if (prefer_device_filaments && !m_obj_in_out.filament_available_on_device[j])
+                color_dists[j].distance += 1.0e6;
             color_dists[j].id = j + 1;
         }
         std::sort(color_dists.begin(), color_dists.end(), [](ColorDistValue &a, ColorDistValue& b) {
@@ -701,34 +757,22 @@ void ObjColorPanel::draw_new_table()
     }
 }
 
-void ObjColorPanel::update_new_add_final_colors()
+bool ObjColorPanel::update_new_add_final_colors()
 {
-    m_new_add_final_colors = m_new_add_colors;
-    if (!m_cluster_map_filaments.empty()) {
-        m_max_filament_index = *std::max_element(m_cluster_map_filaments.begin(), m_cluster_map_filaments.end());
-    } else {
-        m_max_filament_index = 0;
-    }
+    const std::vector<int> previous_mappings = m_cluster_map_filaments;
+    const size_t existing_filament_count = m_filament_action == FilamentAction::Replace ? 0 : m_colours.size();
+    const std::vector<size_t> color_source_indices =
+        compact_new_filament_mappings(existing_filament_count, m_cluster_map_filaments);
 
-    if (m_max_filament_index <= m_colours.size()) { // Fix 20240904
-        m_new_add_final_colors.clear();
+    m_is_add_filament = false;
+    m_new_add_final_colors.clear();
+    m_new_add_final_colors.reserve(color_source_indices.size());
+    for (const size_t source_index : color_source_indices) {
+        if (source_index < m_new_add_colors.size())
+            m_new_add_final_colors.emplace_back(m_new_add_colors[source_index]);
     }
-    else {
-        m_new_add_final_colors.resize(m_max_filament_index - m_colours.size());
-        for (int ii = m_colours.size() ; ii < m_max_filament_index; ii++) {
-            for (int j = 0; j < m_cluster_map_filaments.size(); j++) {
-                if (m_cluster_map_filaments[j] == (ii+ 1) && j < m_new_add_colors.size()) {
-                    auto index                = ii - m_colours.size();
-                    if (index < m_new_add_final_colors.size()) {
-                        m_new_add_final_colors[index] = m_new_add_colors[j];
-                    }
-                }
-            }
-        }
-    }
-    if (m_new_add_final_colors.size() > 0) {
-        m_is_add_filament = true;
-    }
+    m_is_add_filament = !m_new_add_final_colors.empty();
+    return previous_mappings != m_cluster_map_filaments;
 }
 
 void ObjColorPanel::deal_algo(char cluster_number, bool redraw_ui)
@@ -766,6 +810,13 @@ void ObjColorPanel::deal_algo(char cluster_number, bool redraw_ui)
 
 void ObjColorPanel::deal_default_strategy()
 {
+    if (m_obj_in_out.input_type == ObjDialogInOut::FormatType::Standard3mf) {
+        m_filament_action = FilamentAction::Match;
+        deal_reset_btn();
+        deal_approximate_match_btn();
+        m_warning_text->SetLabelText(_L("Note") + ": " + _L("Imported colors were matched to existing filament slots. Use Append only to add new filaments."));
+        return;
+    }
     bool is_exceed = deal_add_btn();
     if (!is_exceed) {
         deal_approximate_match_btn();
@@ -775,23 +826,94 @@ void ObjColorPanel::deal_default_strategy()
 
 void ObjColorPanel::deal_thumbnail() {
     update_filament_ids();
-    // generate model volume
-    if (m_obj_in_out.deal_vertex_color) {
-        if (m_obj_in_out.filament_ids.size() > 0) {
-            m_deal_thumbnail_flag = Model::obj_import_vertex_color_deal(m_obj_in_out.filament_ids, m_obj_in_out.first_extruder_id, m_obj_in_out.model);
-        }
-    } else {
-        if (m_obj_in_out.filament_ids.size() > 0) {
-            m_deal_thumbnail_flag = Model::obj_import_face_color_deal(m_obj_in_out.filament_ids, m_obj_in_out.first_extruder_id, m_obj_in_out.model);
-        }
-    }
+    m_deal_thumbnail_flag = apply_color_mapping_to_model();
     generate_thumbnail();
+}
+
+bool ObjColorPanel::apply_color_mapping_to_model()
+{
+    if (m_obj_in_out.filament_ids.empty())
+        return false;
+
+    auto check_deal_vertex_color = [this](int volume_id) {
+        if (m_obj_in_out.input_type == ObjDialogInOut::FormatType::Obj)
+            return m_obj_in_out.deal_vertex_color;
+
+        auto volume_color = m_obj_in_out.volume_colors.find(volume_id);
+        if (volume_color == m_obj_in_out.volume_colors.end())
+            return false;
+
+        for (const TriangleColor& triangle_color : volume_color->second.triangle_colors) {
+            if (triangle_color.indices[0] != triangle_color.indices[1] || triangle_color.indices[0] != triangle_color.indices[2])
+                return true;
+        }
+        return false;
+    };
+
+    auto filament_id_for_color = [this](const RGBA& color) -> int {
+        for (size_t i = 0; i < m_input_colors.size(); ++i) {
+            if (!color_is_equal(m_input_colors[i], color) || i >= m_cluster_labels_from_algo.size())
+                continue;
+            const int label = m_cluster_labels_from_algo[i];
+            if (label >= 0 && label < int(m_cluster_map_filaments.size()) && m_cluster_map_filaments[label] > 0)
+                return m_cluster_map_filaments[label];
+            break;
+        }
+        return 1;
+    };
+
+    std::function<int(int, int, int)> get_filament_id_callback;
+    if (m_obj_in_out.input_type == ObjDialogInOut::FormatType::Standard3mf) {
+        for (ModelObject* object : m_obj_in_out.model->objects) {
+            if (object == nullptr)
+                continue;
+            for (ModelVolume* volume : object->volumes) {
+                if (volume == nullptr || !volume->is_model_part())
+                    continue;
+                auto volume_color = m_obj_in_out.volume_colors.find(volume->id().id);
+                if (volume_color == m_obj_in_out.volume_colors.end())
+                    continue;
+                auto group_color = m_obj_in_out.color_group_map.find(volume_color->second.pid);
+                if (group_color == m_obj_in_out.color_group_map.end() || volume_color->second.pindex < 0 ||
+                    volume_color->second.pindex >= int(group_color->second.size()))
+                    continue;
+                volume->config.set("extruder", filament_id_for_color(group_color->second[volume_color->second.pindex]));
+            }
+        }
+
+        get_filament_id_callback = [this, filament_id_for_color](int volume_id, int triangle_id, int vertex_id) -> int {
+            auto volume_color = m_obj_in_out.volume_colors.find(volume_id);
+            if (volume_color == m_obj_in_out.volume_colors.end() || triangle_id < 0 || triangle_id >= int(volume_color->second.triangle_colors.size()))
+                return 1;
+
+            const TriangleColor& triangle_color = volume_color->second.triangle_colors[triangle_id];
+            auto group_color = m_obj_in_out.color_group_map.find(triangle_color.pid);
+            if (group_color == m_obj_in_out.color_group_map.end() || group_color->second.empty())
+                return 1;
+
+            const int clamped_vertex_id = std::clamp(vertex_id, 0, 2);
+            const int color_index = triangle_color.indices[clamped_vertex_id];
+            if (color_index < 0 || color_index >= int(group_color->second.size()))
+                return 1;
+
+            return filament_id_for_color(group_color->second[color_index]);
+        };
+    }
+
+    return Model::obj_import_color_deal(
+        m_obj_in_out.filament_ids,
+        m_obj_in_out.input_type == ObjDialogInOut::FormatType::Obj ? std::optional<unsigned char>(m_obj_in_out.first_extruder_id) : std::nullopt,
+        m_obj_in_out.model,
+        check_deal_vertex_color,
+        get_filament_id_callback);
 }
 
 void ObjColorPanel::generate_thumbnail()
 {
-    if (m_deal_thumbnail_flag && m_obj_in_out.model->objects.size() == 1) {
-        std::vector<Slic3r::ColorRGBA> colors = GUI::wxGetApp().plater()->get_extruders_colors();
+    if (m_deal_thumbnail_flag && m_obj_in_out.model != nullptr && !m_obj_in_out.model->objects.empty()) {
+        std::vector<Slic3r::ColorRGBA> colors;
+        if (m_filament_action != FilamentAction::Replace)
+            colors = GUI::wxGetApp().plater()->get_extruders_colors();
         for (size_t i = 0; i < m_new_add_colors.size(); i++) {
             Slic3r::ColorRGBA temp_color;
             temp_color[0] = m_new_add_colors[i].Red() / 255.f;
@@ -801,31 +923,35 @@ void ObjColorPanel::generate_thumbnail()
             colors.emplace_back(temp_color);
         }
 
+        if (m_obj_in_out.input_type == ObjDialogInOut::FormatType::Standard3mf) {
+            wxGetApp().plater()->update_obj_preview_thumbnail(m_obj_in_out.model, colors, (int) m_camera_view_angle_type);
+        } else if (m_obj_in_out.model->objects.size() == 1) {
             auto mo = m_obj_in_out.model->objects[0];
             wxGetApp().plater()->update_obj_preview_thumbnail(mo, 0, 0, colors, (int) m_camera_view_angle_type);
-            // get thumbnail image
-            PartPlate *plate = wxGetApp().plater()->get_partplate_list().get_plate(0);
-            auto &     data  = plate->obj_preview_thumbnail_data;
-            if (data.is_valid()) {
-                wxImage image(data.width, data.height);
-                image.InitAlpha();
-                for (unsigned int r = 0; r < data.height; ++r) {
-                    unsigned int rr = (data.height - 1 - r) * data.width;
-                    for (unsigned int c = 0; c < data.width; ++c) {
-                        unsigned char *px = (unsigned char *) data.pixels.data() + 4 * (rr + c);
-                        image.SetRGB((int) c, (int) r, px[0], px[1], px[2]);
-                        image.SetAlpha((int) c, (int) r, px[3]);
-                    }
-                }
-                image = image.Rescale(FromDIP(IMAGE_SIZE_WIDTH), FromDIP(IMAGE_SIZE_WIDTH));
-                m_image_button->SetBitmap(image);
-            }
+        } else {
+            return;
+        }
 
+        // get thumbnail image
+        PartPlate *plate = wxGetApp().plater()->get_partplate_list().get_plate(0);
+        auto &     data  = plate->obj_preview_thumbnail_data;
+        if (data.is_valid()) {
+            wxImage image(data.width, data.height);
+            image.InitAlpha();
+            for (unsigned int r = 0; r < data.height; ++r) {
+                unsigned int rr = (data.height - 1 - r) * data.width;
+                for (unsigned int c = 0; c < data.width; ++c) {
+                    unsigned char *px = (unsigned char *) data.pixels.data() + 4 * (rr + c);
+                    image.SetRGB((int) c, (int) r, px[0], px[1], px[2]);
+                    image.SetAlpha((int) c, (int) r, px[3]);
+                }
+            }
+            image = image.Rescale(FromDIP(IMAGE_SIZE_WIDTH), FromDIP(IMAGE_SIZE_WIDTH));
+            m_image_button->SetBitmap(image);
+        }
     }
     else {
-#ifdef _WIN32
-        __debugbreak();
-#endif
+        return;
     }
 }
 
@@ -840,12 +966,19 @@ void ObjColorPanel::set_view_angle_type(int value)
 
 void ObjColorPanel::clear_instance_and_revert_offset()
 {
-    auto mo = m_obj_in_out.model->objects[0];
-    mo->clear_instances();
-    auto mv  = mo->volumes[0];
-    auto box = mo->bounding_box_exact();
-    if (!m_thumbnail_offset.isApprox(Slic3r::Vec3d::Zero())) {
-        mv->translate(-m_thumbnail_offset);
+    if (m_obj_in_out.model->objects.empty())
+        return;
+
+    for (ModelObject* mo : m_obj_in_out.model->objects) {
+        if (mo == nullptr)
+            continue;
+        if (m_obj_in_out.input_type == ObjDialogInOut::FormatType::Obj)
+            mo->clear_instances();
+        if (!m_thumbnail_offset.isApprox(Slic3r::Vec3d::Zero())) {
+            for (ModelVolume* mv : mo->volumes)
+                if (mv != nullptr)
+                    mv->translate(-m_thumbnail_offset);
+        }
     }
 }
 
@@ -895,6 +1028,37 @@ bool ObjColorPanel::deal_add_btn()
         BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << ",Waring:The count of newly added and \n current extruders exceeds 32.";
         return true;
     }
+    return false;
+}
+
+bool ObjColorPanel::deal_replace_btn()
+{
+    if (m_cluster_colors_from_algo.empty() || m_cluster_colors_from_algo.size() > g_max_color)
+        return true;
+
+    deal_reset_btn();
+    m_new_add_colors.clear();
+    m_new_add_colors.reserve(m_cluster_colors_from_algo.size());
+
+    for (size_t i = 0; i < m_cluster_colors_from_algo.size(); ++i) {
+        const wxColour color = convert_to_wxColour(m_cluster_colors_from_algo[i]);
+        m_new_add_colors.emplace_back(color);
+        wxBitmap *icon = get_extruder_color_icon(color.GetAsString(wxC2S_HTML_SYNTAX).ToStdString(),
+            std::to_string(i + 1), m_combox_icon_width, m_combox_icon_height);
+
+        for (ButtonState *item : m_result_icon_list) {
+            item->bitmap_combox->Append(wxString::Format("%d", int(i + 1)), *icon);
+            item->bitmap_combox->SetItemTooltip(item->bitmap_combox->GetCount() - 1, color.GetAsString(wxC2S_HTML_SYNTAX));
+        }
+    }
+
+    const int first_replacement_selection = int(m_colours.size()) + 1;
+    for (size_t i = 0; i < m_result_icon_list.size(); ++i) {
+        m_result_icon_list[i]->bitmap_combox->SetSelection(first_replacement_selection + int(i));
+        m_cluster_map_filaments[i] = int(i) + 1;
+    }
+
+    m_warning_text->SetLabelText(_L("Note") + ": " + _L("Existing filaments will be replaced by the colors used in this project."));
     return false;
 }
 

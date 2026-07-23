@@ -548,7 +548,7 @@ PrintParams SendMultiMachinePage::request_params(MachineObject* obj)
 
     PartPlate* curr_plate = m_plater->get_partplate_list().get_curr_plate();
     if (curr_plate) {
-        params.task_bed_type = bed_type_to_gcode_string( curr_plate->get_bed_type(true));
+        params.task_bed_type = bed_type_to_bambu_task_string(curr_plate->get_bed_type(true));
     }
 
     wxString filename;

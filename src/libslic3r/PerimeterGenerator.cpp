@@ -30,6 +30,52 @@ namespace Slic3r {
     
 using namespace Slic3r::Feature::FuzzySkin;
 
+Polygons top_surface_filter_features(const PrintRegionConfig &config, const ExPolygons &current_contour, const Polygons &upper_slices_clipped)
+{
+    if (!config.top_surface_ignore_small_features || upper_slices_clipped.empty() || current_contour.empty())
+        return upper_slices_clipped;
+
+    const ExPolygons upper_islands = union_ex(upper_slices_clipped);
+
+    const double max_island_area = config.top_surface_ignore_small_features_area;
+    const double max_island_area_scaled = max_island_area * scale_(1.0) * scale_(1.0);
+
+    ExPolygons kept_islands;
+    kept_islands.reserve(upper_islands.size());
+    for (const ExPolygon &island : upper_islands) {
+        const ExPolygons island_ex{ island };
+        const ExPolygons covered = intersection_ex(current_contour, island_ex, ApplySafetyOffset::Yes);
+
+        double covered_area = 0.0;
+        for (const ExPolygon &p : covered)
+            covered_area += std::abs(p.area());
+
+        const bool ignore_by_area = (covered_area > 0.0) && (covered_area <= max_island_area_scaled);
+
+        bool keep = !ignore_by_area;
+        if (!keep) {
+            constexpr double structural_coverage_threshold = 0.75;
+
+            for (const ExPolygon &base_poly : current_contour) {
+                if (!base_poly.contour.bounding_box().overlap(island.contour.bounding_box()))
+                    continue;
+
+                double base_area = std::abs(base_poly.area());
+                if (base_area * structural_coverage_threshold > covered_area)
+                    continue;
+
+                keep = true;
+                break;
+            }
+        }
+
+        if (keep)
+            kept_islands.push_back(island);
+    }
+
+    return to_polygons(kept_islands);
+}
+
 // Hierarchy of perimeters.
 class PerimeterGeneratorLoop {
 public:
@@ -612,6 +658,8 @@ void PerimeterGenerator::split_top_surfaces(const ExPolygons &orig_polygons, ExP
         upper_polygons_series_clipped = ClipperUtils::clip_clipper_polygons_with_subject_bbox(upper_slicer_same_region, last_box);
     } else
         upper_polygons_series_clipped = ClipperUtils::clip_clipper_polygons_with_subject_bbox(*this->upper_slices, last_box);
+
+    upper_polygons_series_clipped = top_surface_filter_features(*config, orig_polygons, upper_polygons_series_clipped);
 
     upper_polygons_series_clipped          = offset(upper_polygons_series_clipped, min_width_top_surface);
 
@@ -2192,6 +2240,8 @@ void PerimeterGenerator::process_arachne()
                 upper_slices_clipped = ClipperUtils::clip_clipper_polygons_with_subject_bbox(upper_slicer_same_region, infill_contour_bbox);
             } else
                 upper_slices_clipped = ClipperUtils::clip_clipper_polygons_with_subject_bbox(*upper_slices, infill_contour_bbox);
+
+            upper_slices_clipped = top_surface_filter_features(*config, infill_contour, upper_slices_clipped);
 
             top_expolygons = diff_ex(infill_contour, upper_slices_clipped);
 

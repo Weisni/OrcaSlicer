@@ -1,8 +1,13 @@
 #ifndef slic3r_MultiMaterialSegmentation_hpp_
 #define slic3r_MultiMaterialSegmentation_hpp_
 
+#include "Line.hpp"
+
+#include <functional>
 #include <utility>
 #include <vector>
+
+struct indexed_triangle_set;
 
 namespace Slic3r {
 
@@ -35,6 +40,14 @@ struct ModelVolumeFacetsInfo {
     // Indicate if the default extruder (TriangleStateType::NONE) should be replaced with the volume extruder.
     const bool              replace_default_extruder;
 };
+
+namespace MMUSegmentationDetail {
+
+// Build independent closed prisms extending from outward-oriented surface
+// triangles into the model by penetration_depth millimeters.
+indexed_triangle_set make_closed_facet_prisms(const indexed_triangle_set &print_space_facets, float penetration_depth);
+
+} // namespace MMUSegmentationDetail
 
 // Returns segmentation based on painting in segmentation gizmos.
 std::vector<std::vector<ExPolygons>> segmentation_by_painting(const PrintObject                                               &print_object,

@@ -1,9 +1,11 @@
 #pragma once
 #include <iostream>
 #include <ctime>
+#include <map>
 
 #include "opencv2/opencv.hpp"
 #include "libslic3r/Color.hpp"
+#include "libslic3r/Format/OBJ.hpp"
 class QuantKMeans
 {
 public:
@@ -262,7 +264,19 @@ public:
 };
 
 bool obj_color_deal_algo(std::vector<Slic3r::RGBA> &input_colors,
-                         std::vector<Slic3r::RGBA>&   cluster_colors_from_algo,
-                         std::vector<int>&            cluster_labels_from_algo,
-                         char &                     cluster_number,
-                         int                        max_cluster);
+                          std::vector<Slic3r::RGBA>&   cluster_colors_from_algo,
+                          std::vector<int>&            cluster_labels_from_algo,
+                          char &                     cluster_number,
+                          int                        max_cluster);
+
+bool extract_colors_to_obj_dialog(
+    Slic3r::Model* model,
+    const std::map<int, std::vector<std::string>>& color_group_map,
+    const Slic3r::VolumeColorInfoMap& volume_color_data,
+    Slic3r::ObjDialogInOut& out);
+
+// Compacts selected filament ids above existing_filament_count and returns
+// one source mapping index for each actually referenced new filament.
+std::vector<size_t> compact_new_filament_mappings(
+    size_t existing_filament_count,
+    std::vector<int>& filament_mappings);

@@ -38,6 +38,7 @@
 #include "GLCanvas3D.hpp"
 #include "Plater.hpp"
 #include "WebViewDialog.hpp"
+#include "WindowsShellIntegration.hpp"
 #include "../Utils/Process.hpp"
 #include "format.hpp"
 // BBS
@@ -394,7 +395,7 @@ DPIFrame(NULL, wxID_ANY, "", wxDefaultPosition, wxDefaultSize, BORDERLESS_FRAME_
     default:
     case GUI_App::EAppMode::Editor:
         m_taskbar_icon = std::make_unique<OrcaSlicerTaskBarIcon>(wxTBI_DOCK);
-        m_taskbar_icon->SetIcon(wxIcon(Slic3r::var("OrcaSlicer-mac_256px.ico"), wxBITMAP_TYPE_ICO), "OrcaSlicer");
+        m_taskbar_icon->SetIcon(wxIcon(Slic3r::var("OrcaSlicer-mac_256px.ico"), wxBITMAP_TYPE_ICO), "QuackSlicer");
         break;
     case GUI_App::EAppMode::GCodeViewer:
         break;
@@ -2693,7 +2694,12 @@ void MainFrame::init_menubar_as_editor()
         std::reverse(recent_projects.begin(), recent_projects.end());
         for (const std::string& project : recent_projects)
         {
-            m_recent_projects.AddFileToHistory(from_u8(project));
+            const wxString filename = from_u8(project);
+            m_recent_projects.AddFileToHistory(filename);
+#ifdef _WIN32
+            if (wxFileExists(filename))
+                WindowsShellIntegration::add_recent_document(filename.ToStdWstring());
+#endif
         }
         m_recent_projects.LoadThumbnails();
 
@@ -4044,6 +4050,9 @@ void MainFrame::add_to_recent_projects(const wxString& filename)
     if (wxFileExists(filename))
     {
         m_recent_projects.AddFileToHistory(filename);
+#ifdef _WIN32
+        WindowsShellIntegration::add_recent_document(filename.ToStdWstring());
+#endif
         std::vector<std::string> recent_projects;
         size_t count = m_recent_projects.GetCount();
         for (size_t i = 0; i < count; ++i)

@@ -1156,6 +1156,16 @@ void PrintConfigDef::init_fff_params()
     def->min = 0;
     def->set_default_value(new ConfigOptionInt(3));
 
+    def = this->add("bottom_color_penetration_layers", coInt);
+    def->label = L("Bottom paint penetration layers");
+    def->category = L("Strength");
+    def->sidetext = L("layers");
+    def->tooltip = L("Number of layers that a color painted on a bottom surface penetrates into the model. "
+                     "Use 1 for only the surface layer. Higher values can reduce color bleeding. "
+                     "Set to 0 to follow bottom shell layers.");
+    def->min = 0;
+    def->set_default_value(new ConfigOptionInt(0));
+
     def = this->add("bottom_shell_thickness", coFloat);
     def->label = L("Bottom shell thickness");
     def->category = L("Strength");
@@ -1486,6 +1496,22 @@ void PrintConfigDef::init_fff_params()
     def->category = L("Quality");
     def->tooltip = L("Use only one wall on flat top surfaces, to give more space to the top infill pattern.");
     def->set_default_value(new ConfigOptionBool(false));
+
+    def = this->add("top_surface_ignore_small_features", coBool);
+    def->label = L("Make top surface continuous");
+    def->category = L("Quality");
+    def->tooltip = L("If enabled, the top surface fill pattern will cover the area below small features on the layer above, rather than being interrupted by them. Useful for surfaces with embossed text or small details on top.");
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionBool(false));
+
+    def = this->add("top_surface_ignore_small_features_area", coFloat);
+    def->label = L("Small feature threshold");
+    def->category = L("Quality");
+    def->tooltip = L("Features on the layer above with an area smaller than this value (mm²) will be ignored, preserving the continuity of the top surface below them.");
+    def->min = 0;
+    def->max = 10000;
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionFloat(10.0));
 
     // the tooltip is copied from SuperStudio
     def = this->add("min_width_top_surface", coFloatOrPercent);
@@ -4205,6 +4231,17 @@ void PrintConfigDef::init_fff_params()
     def->mode     = comAdvanced;
     def->set_default_value(new ConfigOptionFloat(0.));
 
+    def           = this->add("mmu_surface_normal_penetration_depth", coFloat);
+    def->label    = L("Surface normal paint penetration depth");
+    def->tooltip  = L("Depth that painted surface colors penetrate into the model along each painted facet's inward surface normal. "
+                      "A positive value uses the same physical depth for every surface orientation and ignores the legacy top/bottom layer counts and segmented-region width. "
+                      "Zero uses the legacy paint segmentation method.");
+    def->sidetext = L("mm");
+    def->min      = 0;
+    def->category = L("Advanced");
+    def->mode     = comAdvanced;
+    def->set_default_value(new ConfigOptionFloat(0.));
+
     def           = this->add("mmu_segmented_region_interlocking_depth", coFloat);
     def->label    = L("Interlocking depth of a segmented region");
     def->tooltip  = L("Interlocking depth of a segmented region. It will be ignored if "
@@ -6716,6 +6753,16 @@ void PrintConfigDef::init_fff_params()
     def->min = 0;
     def->set_default_value(new ConfigOptionInt(4));
 
+    def = this->add("top_color_penetration_layers", coInt);
+    def->label = L("Top paint penetration layers");
+    def->category = L("Strength");
+    def->sidetext = L("layers");
+    def->tooltip = L("Number of layers that a color painted on a top surface penetrates into the model. "
+                     "Use 1 for only the surface layer. Higher values can reduce color bleeding. "
+                     "Set to 0 to follow top shell layers.");
+    def->min = 0;
+    def->set_default_value(new ConfigOptionInt(0));
+
     def = this->add("top_shell_thickness", coFloat);
     def->label = L("Top shell thickness");
     def->category = L("Strength");
@@ -9009,24 +9056,34 @@ int DynamicPrintConfig::get_index_for_extruder(int extruder_or_filament_id, std:
     if (variant_opt != nullptr) {
         int v_size = variant_opt->values.size();
         const bool has_complete_id_map = id_opt && int(id_opt->values.size()) >= v_size;
-        std::string extruder_variant = get_extruder_variant_string(extruder_type, nozzle_volume_type);
-        for (int index = 0; index < v_size; index++)
-        {
-            const std::string variant = variant_opt->get_at(index);
-            if (extruder_variant == variant) {
-                if (id_opt) {
-                    const int id = has_complete_id_map ? id_opt->get_at(index) : generated_extruder_id(index);
-                    if (id == extruder_or_filament_id) {
-                        ret = index * stride;
-                        break;
+        auto find_variant_index = [&](const std::string &extruder_variant) {
+            for (int index = 0; index < v_size; index++)
+            {
+                const std::string variant = variant_opt->get_at(index);
+                if (extruder_variant == variant) {
+                    if (id_opt) {
+                        const int id = has_complete_id_map ? id_opt->get_at(index) : generated_extruder_id(index);
+                        if (id == extruder_or_filament_id)
+                            return index * static_cast<int>(stride);
                     }
-                }
-                else {
-                    ret = index * stride;
-                    break;
-                }
+                    else {
+                        return index * static_cast<int>(stride);
+                    }
 
+                }
             }
+            return -1;
+        };
+
+        std::string extruder_variant = get_extruder_variant_string(extruder_type, nozzle_volume_type);
+        ret = find_variant_index(extruder_variant);
+
+        // Bambu-style profiles may expose High Flow selection for the nozzle while
+        // only defining one set of flow values. Reuse the matching Standard variant
+        // instead of failing or forcing duplicated High Flow entries in every preset.
+        if (ret < 0 && nozzle_volume_type != NozzleVolumeType::nvtStandard) {
+            extruder_variant = get_extruder_variant_string(extruder_type, NozzleVolumeType::nvtStandard);
+            ret = find_variant_index(extruder_variant);
         }
     }
     return ret;
@@ -10354,6 +10411,16 @@ std::map<std::string, std::string> validate(const FullPrintConfig &cfg, bool und
     if (cfg.bottom_shell_layers < 0) {
         error_message.emplace("bottom_shell_layers", L("invalid value ") + std::to_string(cfg.bottom_shell_layers));
     }
+    if (cfg.top_color_penetration_layers < 0) {
+        error_message.emplace("top_color_penetration_layers", L("invalid value ") + std::to_string(cfg.top_color_penetration_layers));
+    }
+    if (cfg.bottom_color_penetration_layers < 0) {
+        error_message.emplace("bottom_color_penetration_layers", L("invalid value ") + std::to_string(cfg.bottom_color_penetration_layers));
+    }
+    if (cfg.mmu_surface_normal_penetration_depth < 0.) {
+        error_message.emplace("mmu_surface_normal_penetration_depth",
+                              L("invalid value ") + std::to_string(cfg.mmu_surface_normal_penetration_depth));
+    }
 
     if (cfg.use_firmware_retraction.value &&
         cfg.gcode_flavor.value != gcfKlipper &&
@@ -11354,7 +11421,9 @@ static std::map<t_custom_gcode_key, t_config_option_keys> s_CustomGcodeSpecificP
     // Machine G-code
     {"file_start_gcode",           {}},
     {"machine_start_gcode",         {}},
-    {"machine_end_gcode",           {"layer_num", "layer_z", "max_layer_z", "filament_extruder_id"}},
+    {"machine_end_gcode",           {"layer_num", "layer_z", "max_layer_z", "filament_extruder_id",
+                                      "activate_air_filtration", "activate_air_filtration_during_print",
+                                      "activate_air_filtration_on_completion", "complete_print_exhaust_fan_speed_num"}},
     {"before_layer_change_gcode",   {"layer_num", "layer_z", "max_layer_z"}},
     {"layer_change_gcode",          {"layer_num", "layer_z", "max_layer_z"}},
     {"timelapse_gcode",             {"layer_num", "layer_z", "max_layer_z"}},
@@ -11401,6 +11470,11 @@ CustomGcodeSpecificConfigDef::CustomGcodeSpecificConfigDef()
     def = this->add("filament_extruder_id", coInt);
     def->label = L("Filament extruder ID");
     def->tooltip = L("The current extruder ID. The same as current_extruder.");
+
+    new_def("activate_air_filtration", coBools, "Activate air filtration", "Whether air filtration is enabled for the current filament.");
+    new_def("activate_air_filtration_during_print", coBools, "Activate air filtration during print", "Whether air filtration is enabled during printing for the current filament.");
+    new_def("activate_air_filtration_on_completion", coBools, "Activate air filtration on completion", "Whether air filtration is enabled after print completion for the current filament.");
+    new_def("complete_print_exhaust_fan_speed_num", coInts, "Complete print exhaust fan speed", "Completion exhaust fan speed converted to the 0-255 G-code fan range.");
 
 // change_filament_gcode
     new_def("previous_extruder", coInt, "Previous extruder", "Index of the extruder that is being unloaded. The index is zero based (first extruder has index 0).");

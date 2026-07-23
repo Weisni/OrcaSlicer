@@ -41,20 +41,23 @@ public:
 private:
     wxBoxSizer *create_approximate_match_btn_sizer(wxWindow *parent);
     wxBoxSizer *create_add_btn_sizer(wxWindow *parent);
+    wxBoxSizer *create_replace_btn_sizer(wxWindow *parent);
     wxBoxSizer *create_reset_btn_sizer(wxWindow *parent);
     wxBoxSizer *create_extruder_icon_and_rgba_sizer(wxWindow *parent, int id, const wxColour& color);
     std::string get_color_str(const wxColour &color);
     wxBoxSizer *create_color_icon_map_rgba_sizer(wxWindow *parent, int id, const wxColour &color);//for display map
     ComboBox* CreateEditorCtrl(wxWindow *parent,int id);
     void draw_new_table();
-    void update_new_add_final_colors();
+    bool update_new_add_final_colors();
     void show_sizer(wxSizer *sizer, bool show);
     void deal_approximate_match_btn();
     bool deal_add_btn();
+    bool deal_replace_btn();
     void deal_reset_btn();
     void deal_algo(char cluster_number,bool redraw_ui =false);
     void deal_default_strategy();
     void deal_thumbnail();
+    bool apply_color_mapping_to_model();
     void generate_thumbnail();
     void set_view_angle_type(int);
 private:
@@ -71,6 +74,7 @@ private:
     wxScrolledWindow *         m_scrolledWindow{nullptr};
     Button *    m_quick_approximate_match_btn{nullptr};
     Button *    m_quick_add_btn{nullptr};
+    Button *    m_quick_replace_btn{nullptr};
     Button *    m_quick_reset_btn{nullptr};
     std::vector<wxButton*> m_extruder_icon_list;
     std::vector<wxButton*> m_color_cluster_icon_list;//need modeify
@@ -92,7 +96,6 @@ private:
     int m_input_colors_size{0};
     std::vector<wxColour> m_colours;//from project and show right
     std::vector<int>      m_cluster_map_filaments;//show middle
-    int                   m_max_filament_index = 0;
     std::vector<wxColour> m_cluster_colours;//from_algo and show left
     bool                  m_can_add_filament{true};
     bool                  m_deal_thumbnail_flag{false};
@@ -103,10 +106,12 @@ private:
     std::vector<int>          m_cluster_labels_from_algo;
     //result
     bool                        m_is_add_filament{false};
+    enum class FilamentAction { Match, Append, Replace };
+    FilamentAction              m_filament_action{FilamentAction::Match};
     unsigned char&             m_first_extruder_id;
     std::vector<unsigned char> &m_filament_ids;
 
-    Slic3r::Vec3d m_thumbnail_offset;
+    Slic3r::Vec3d m_thumbnail_offset{Slic3r::Vec3d::Zero()};
 };
 
 class ObjColorDialog : public Slic3r::GUI::DPIDialog

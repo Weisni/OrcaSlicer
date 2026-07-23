@@ -9,6 +9,7 @@
 #include "slic3r/GUI/format.hpp"
 #include "slic3r/GUI/MainFrame.hpp"
 #include "slic3r/GUI/Plater.hpp"
+#include "slic3r/GUI/WindowsShellIntegration.hpp"
 
 // To show a message box if GUI initialization ends up with an exception thrown.
 #include <wx/msgdlg.h>
@@ -27,6 +28,9 @@ const std::vector<std::pair<int, int>> OpenGLVersions::core    = { {3,2}, {3,3},
 
 int GUI_Run(GUI_InitParams &params)
 {
+#ifdef _WIN32
+    WindowsShellIntegration::initialize_process_app_id();
+#endif
 #if __APPLE__
     // On OSX, we use boost::process::spawn() to launch new instances of PrusaSlicer from another PrusaSlicer.
     // boost::process::spawn() sets SIGCHLD to SIGIGN for the child process, thus if a child PrusaSlicer spawns another
@@ -67,10 +71,10 @@ int GUI_Run(GUI_InitParams &params)
         }
     } catch (const Slic3r::Exception &ex) {
         BOOST_LOG_TRIVIAL(error) << ex.what() << std::endl;
-        wxMessageBox(boost::nowide::widen(ex.what()), _L("Orca Slicer GUI initialization failed"), wxICON_STOP);
+        wxMessageBox(boost::nowide::widen(ex.what()), _L("QuackSlicer GUI initialization failed"), wxICON_STOP);
     } catch (const std::exception &ex) {
         BOOST_LOG_TRIVIAL(error) << ex.what() << std::endl;
-        wxMessageBox(format_wxstr(_L("Fatal error, exception caught: %1%"), ex.what()), _L("Orca Slicer GUI initialization failed"), wxICON_STOP);
+        wxMessageBox(format_wxstr(_L("Fatal error, exception caught: %1%"), ex.what()), _L("QuackSlicer GUI initialization failed"), wxICON_STOP);
     }
     // error
     return 1;
