@@ -204,6 +204,12 @@ modules:
         sha256: 71642cb54658e98c8f07a0f0d08bf9766f1c3771496936f6014169d3726d9657
         dest: external-packages/Cereal
 
+      # SQLite 3.53.3
+      - type: file
+        url: https://www.sqlite.org/2026/sqlite-amalgamation-3530300.zip
+        sha256: 646421e12aac110282ef8cc68f1a62d4bb15fc7b8f09da0b53e29ee690500431
+        dest: external-packages/SQLite
+
       # Qhull v8.0.2
       - type: file
         url: https://github.com/qhull/qhull/archive/v8.0.2.zip
