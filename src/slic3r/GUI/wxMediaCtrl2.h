@@ -40,6 +40,10 @@ public:
 
     int GetLastError() const { return m_error; }
 
+    void SuspendNativeResize() {}
+
+    void ResumeNativeResize() {}
+
     static inline const wxMediaState MEDIASTATE_BUFFERING = static_cast<wxMediaState>(6);
 
 protected:
