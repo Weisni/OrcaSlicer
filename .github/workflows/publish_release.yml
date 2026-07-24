@@ -62,13 +62,27 @@ jobs:
 
       - name: Verify source build run
         run: |
-          info=$(gh run view "$RUN_ID" --repo "$GITHUB_REPOSITORY" --json workflowName,conclusion,headBranch)
+          info=$(gh run view "$RUN_ID" --repo "$GITHUB_REPOSITORY" --json workflowName,conclusion,headBranch,headSha)
           name=$(echo "$info" | jq -r '.workflowName')
           conclusion=$(echo "$info" | jq -r '.conclusion')
           branch=$(echo "$info" | jq -r '.headBranch')
-          echo "Source run #$RUN_ID: '$name' on '$branch' (conclusion: $conclusion)"
+          head_sha=$(echo "$info" | jq -r '.headSha')
+          release_target=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" \
+            --json targetCommitish --jq '.targetCommitish')
+          release_target_sha=$(gh api \
+            "repos/$GITHUB_REPOSITORY/commits/$release_target" --jq '.sha')
+          echo "Source run #$RUN_ID: '$name' on '$branch' at $head_sha (conclusion: $conclusion)"
+          if [ "$name" != "Build QuackSlicer" ] || [ "$branch" != "main" ]; then
+            echo "::error::Source run must be the 'Build QuackSlicer' workflow on main."
+            exit 1
+          fi
           if [ "$conclusion" != "success" ]; then
-            echo "::warning::Source run did not conclude 'success' ($conclusion). Some assets may be missing."
+            echo "::error::Source run did not conclude 'success' ($conclusion). Refusing to publish an incomplete release."
+            exit 1
+          fi
+          if [ "$head_sha" != "$release_target_sha" ]; then
+            echo "::error::Source run SHA $head_sha does not match draft release target $release_target_sha ($release_target)."
+            exit 1
           fi
 
       - name: Download release artifacts from build run

@@ -89,6 +89,7 @@ class NetworkErrorDialog;
 class PluginsDialog;
 class SpeedDialWebDialog;
 class TerminalDialog;
+class FilamentInventoryService;
 
 
 enum FileType
@@ -295,6 +296,8 @@ private:
 	size_t m_instance_hash_int;
 
     std::unique_ptr<Downloader> m_downloader;
+    std::unique_ptr<FilamentInventoryService> m_filament_inventory;
+    std::once_flag m_filament_inventory_once;
 
     //BBS
     std::atomic<bool> m_is_closing {false};
@@ -367,6 +370,7 @@ public:
     Slic3r::TaskManager*   getTaskManager() { return m_task_manager; }
     HMSQuery* get_hms_query() { return hms_query; }
     NetworkAgent* getAgent() { return m_agent; }
+    FilamentInventoryService &filament_inventory();
 
     // Dynamic printer agent switching
     void switch_printer_agent();

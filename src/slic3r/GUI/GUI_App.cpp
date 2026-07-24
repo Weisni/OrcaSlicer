@@ -3,6 +3,7 @@
 #include "libslic3r/Technologies.hpp"
 #include "libslic3r/Platform.hpp"
 #include "GUI_App.hpp"
+#include "FilamentInventoryService.hpp"
 #include "GUI_Init.hpp"
 #include "GUI_ObjectList.hpp"
 #include "slic3r/GUI/UserManager.hpp"
@@ -1151,6 +1152,14 @@ GUI_App::GUI_App()
     // It now runs in post_init(), before the first WebView (the setup wizard) is created.
 
     reset_to_active();
+}
+
+FilamentInventoryService &GUI_App::filament_inventory()
+{
+    std::call_once(m_filament_inventory_once, [this] {
+        m_filament_inventory = std::make_unique<FilamentInventoryService>();
+    });
+    return *m_filament_inventory;
 }
 
 void GUI_App::shutdown()
@@ -2312,6 +2321,9 @@ void GUI_App::init_networking_callbacks()
                     } else {
                         obj->parse_json("cloud", msg, true);
                     }
+                    filament_inventory().observe_bambu_status({
+                        obj->get_dev_id(), obj->print_status, obj->job_id_
+                    });
                 }
 
                 if (GUI::wxGetApp().plater())
@@ -2354,6 +2366,9 @@ void GUI_App::init_networking_callbacks()
 
                 if (MachineObject* obj = m_device_manager->get_my_machine(dev_id)) {
                     obj->parse_json("lan", msg);
+                    filament_inventory().observe_bambu_status({
+                        obj->get_dev_id(), obj->print_status, obj->job_id_
+                    });
                     // Orca: skip it if it doesn't support subscription based filament sync
                     if (this->m_device_manager->get_selected_machine() == obj &&
                         m_agent->get_filament_sync_mode() == FilamentSyncMode::subscription) {
@@ -2380,6 +2395,7 @@ GUI_App::~GUI_App()
     if (m_agent)
         m_agent->set_printer_agent(nullptr);
     NetworkAgentFactory::clear_printer_agent_cache();
+    m_filament_inventory.reset();
 
     Slic3r::PluginManager::instance().shutdown();
     Slic3r::PythonInterpreter::instance().shutdown();

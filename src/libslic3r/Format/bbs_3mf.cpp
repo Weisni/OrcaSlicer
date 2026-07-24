@@ -14,6 +14,7 @@
 
 #include "bbs_3mf.hpp"
 
+#include <cmath>
 #include <limits>
 #include <stdexcept>
 #include <iomanip>
@@ -701,28 +702,30 @@ bool bbs_is_valid_object_type(const std::string& type)
 
 namespace Slic3r {
 
-void PlateData::parse_filament_info(GCodeProcessorResult *result)
+std::vector<FilamentInfo> collect_filament_usage(const GCodeProcessorResult &result)
 {
-    if (!result) return;
+    const PrintEstimatedStatistics &statistics = result.print_statistics;
+    std::vector<FilamentInfo> usages;
+    usages.reserve(statistics.total_volumes_per_extruder.size());
 
-    PrintEstimatedStatistics &ps                            = result->print_statistics;
-    std::vector<float>        m_filament_diameters          = result->filament_diameters;
-    std::vector<float>        m_filament_densities          = result->filament_densities;
-    auto get_used_filament_from_volume = [m_filament_diameters, m_filament_densities](double volume, int extruder_id) {
-        double                    koef = 0.001;
-        double                    section_area = PI * sqr(0.5 * m_filament_diameters[extruder_id]);
-        std::pair<double, double> ret = {section_area < EPSILON ? 0 : (koef * volume / section_area), volume * m_filament_densities[extruder_id] * 0.001};
-        return ret;
-    };
+    for (const auto &[extruder_id, volume] : statistics.total_volumes_per_extruder) {
+        if (extruder_id >= result.filament_diameters.size() ||
+            extruder_id >= result.filament_densities.size() ||
+            extruder_id > static_cast<std::size_t>(std::numeric_limits<int>::max()) ||
+            !std::isfinite(volume) || volume <= EPSILON)
+            continue;
 
-    for (auto it = ps.total_volumes_per_extruder.begin(); it != ps.total_volumes_per_extruder.end(); it++) {
-        double volume                           = it->second;
-        auto [used_filament_m, used_filament_g] = get_used_filament_from_volume(volume, it->first);
+        const double diameter = result.filament_diameters[extruder_id];
+        const double density  = result.filament_densities[extruder_id];
+        const double section_area = PI * sqr(0.5 * diameter);
+        if (!std::isfinite(diameter) || !std::isfinite(density) ||
+            !std::isfinite(section_area) || section_area < EPSILON || density <= 0.0)
+            continue;
 
         FilamentInfo info;
-        info.id = it->first;
-        info.used_g = used_filament_g;
-        info.used_m = used_filament_m;
+        info.id     = static_cast<int>(extruder_id);
+        info.used_m = static_cast<float>(0.001 * volume / section_area);
+        info.used_g = static_cast<float>(volume * density * 0.001);
 
         // Stamp each filament's logical-nozzle assignment onto the saved 3mf so the device/monitor can
         // reconstruct it. This block runs for every print: reorder_extruders_for_minimum_flush_volume
@@ -730,8 +733,9 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
         // so result->nozzle_group_result is non-null here for single-nozzle printers too. The stamped
         // nozzle_diameter is the grouping result's rounded matching-key value; the 3mf writer decides the
         // final saved diameter (see has_multi_nozzle_extruder). group_id and volume_type are unaffected.
-        if (result && result->nozzle_group_result) {
-            auto nozzles_for_filament = result->nozzle_group_result->get_nozzles_for_filament(it->first);
+        if (result.nozzle_group_result) {
+            auto nozzles_for_filament =
+                result.nozzle_group_result->get_nozzles_for_filament(extruder_id);
             if (!nozzles_for_filament.empty()) {
                 info.group_id.reserve(nozzles_for_filament.size());
                 std::set<double> diameters;
@@ -752,12 +756,25 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
             }
         }
 
-        auto model_volume_it = ps.model_volumes_per_extruder.find(it->first);
-        auto support_volume_it = ps.support_volumes_per_extruder.find(it->first);
-        info.used_for_object = model_volume_it != ps.model_volumes_per_extruder.end() && model_volume_it->second > EPSILON;
-        info.used_for_support = support_volume_it != ps.support_volumes_per_extruder.end() && support_volume_it->second > EPSILON;
-        slice_filaments_info.push_back(info);
+        const auto model_volume = statistics.model_volumes_per_extruder.find(extruder_id);
+        const auto support_volume = statistics.support_volumes_per_extruder.find(extruder_id);
+        info.used_for_object =
+            model_volume != statistics.model_volumes_per_extruder.end() &&
+            model_volume->second > EPSILON;
+        info.used_for_support =
+            support_volume != statistics.support_volumes_per_extruder.end() &&
+            support_volume->second > EPSILON;
+        usages.emplace_back(std::move(info));
     }
+    return usages;
+}
+
+void PlateData::parse_filament_info(GCodeProcessorResult *result)
+{
+    if (!result)
+        return;
+
+    slice_filaments_info = collect_filament_usage(*result);
 
     // Carry the layer-aware grouping result into the plate so the 3mf writer can emit the <nozzle> tags
     // and the enable_filament_dynamic_map flag. Only a LayeredNozzleGroupResult (the slicer output) is

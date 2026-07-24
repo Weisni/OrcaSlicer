@@ -313,6 +313,7 @@ private:
     std::string                         m_print_error_extra;
     std::string                         m_printer_last_select;
     std::string                         m_print_info;
+    std::string                         m_inventory_job_id;
     wxString                            m_current_project_name;
     PrintDialogStatus                   m_print_status { PrintStatusInit };
     wxColour                            m_colour_def_color{wxColour(255, 255, 255)};

@@ -7,6 +7,7 @@
 #include "slic3r/GUI/GUI.hpp"
 #include "slic3r/GUI/GUI_App.hpp"
 #include "slic3r/GUI/MainFrame.hpp"
+#include "slic3r/GUI/FilamentInventoryService.hpp"
 #include "slic3r/GUI/format.hpp"
 #include "bambu_networking.hpp"
 
@@ -19,6 +20,7 @@
 #include "slic3r/Utils/BBLNetworkPlugin.hpp"
 
 #include <cmath>
+#include <utility>
 
 namespace Slic3r {
 namespace GUI {
@@ -41,6 +43,23 @@ static auto desc_upload_ftp_failed      = _u8L("Failed to upload print file via 
 
 static auto sending_over_lan_str        = _u8L("Sending print job over LAN");
 static auto sending_over_cloud_str      = _u8L("Sending print job through cloud service");
+
+static bool inventory_dispatch_failure_is_ambiguous(int result)
+{
+    switch (result) {
+    case BAMBU_NETWORK_ERR_TIMEOUT:
+    case BAMBU_NETWORK_ERR_PRINT_WR_PUT_NOTIFICATION_FAILED:
+    case BAMBU_NETWORK_ERR_PRINT_WR_GET_NOTIFICATION_TIMEOUT:
+    case BAMBU_NETWORK_ERR_PRINT_WR_GET_NOTIFICATION_FAILED:
+    case BAMBU_NETWORK_ERR_PRINT_SP_PUT_NOTIFICATION_FAILED:
+    case BAMBU_NETWORK_ERR_PRINT_SP_GET_NOTIFICATION_TIMEOUT:
+    case BAMBU_NETWORK_ERR_PRINT_SP_GET_NOTIFICATION_FAILED:
+    case BAMBU_NETWORK_ERR_PRINT_SP_WAIT_PRINTER_FAILED:
+        return true;
+    default:
+        return false;
+    }
+}
 
 static wxString wait_sending_finish         = _L("Print task sending times out.");
 //static wxString desc_wait_sending_finish    = _L("The printer timed out while receiving a print job. Please check if the network is functioning properly and send the print again.");
@@ -640,14 +659,10 @@ void PrintJob::process(Ctl &ctl)
     auto wait_fn = [this, &ctl, curr_percent, &obj](int state, std::string job_info) {
             BOOST_LOG_TRIVIAL(info) << "print_job: get_job_info = " << job_info;
 
-            if (!obj->is_support_wait_sending_finish) {
-                return true;
-            }
-
             std::string curr_job_id;
             json job_info_j;
             try {
-                std::ignore = job_info_j.parse(job_info);
+                job_info_j = json::parse(job_info);
                 if (job_info_j.contains("job_id")) {
                     curr_job_id = DevJsonValParser::get_longlong_val(job_info_j["job_id"]);
                 }
@@ -655,6 +670,15 @@ void PrintJob::process(Ctl &ctl)
 
             } catch(...) {
                 ;
+            }
+
+            if (!m_inventory_job_id.empty() && !curr_job_id.empty()) {
+                wxGetApp().filament_inventory().bind_bambu_job_id(
+                    m_inventory_job_id, m_dev_id, curr_job_id);
+            }
+
+            if (obj == nullptr || !obj->is_support_wait_sending_finish) {
+                return true;
             }
 
             if (obj) {
@@ -698,6 +722,7 @@ void PrintJob::process(Ctl &ctl)
     if (m_print_type == "from_sdcard_view") {
         BOOST_LOG_TRIVIAL(info) << "print_job: try to send with cloud, model is sdcard view";
         ctl.update_status(curr_percent, _u8L("Sending print job through cloud service"));
+        m_inventory_dispatch_attempted = true;
         result = m_agent->start_sdcard_print(params, update_fn, cancel_fn);
     } else if (params.connection_type != "lan") {
         if (params.dev_ip.empty())
@@ -725,6 +750,7 @@ void PrintJob::process(Ctl &ctl)
                 }
                 ctl.update_status(curr_percent, _u8L("Sending print job over LAN"));
                 is_try_lan_mode = true;
+                m_inventory_dispatch_attempted = true;
                 result = m_agent->start_local_print_with_record(params, update_fn, cancel_fn, wait_fn);
                 if (result < 0) {
                     error_text = wxString::Format(_L("Access code:%s IP address:%s"), params.password, params.dev_ip);
@@ -745,6 +771,7 @@ void PrintJob::process(Ctl &ctl)
                     return;
                 }
                 ctl.update_status(curr_percent, _u8L("Sending print job over LAN"));
+                m_inventory_dispatch_attempted = true;
                 result = m_agent->start_local_print_with_record(params, update_fn, cancel_fn, wait_fn);
                 if (result == 0) {
                     params.comments = "";
@@ -760,6 +787,7 @@ void PrintJob::process(Ctl &ctl)
                     // try to send with cloud
                     BOOST_LOG_TRIVIAL(warning) << "print_job: try to send with cloud";
                     ctl.update_status(curr_percent, _u8L("Sending print job through cloud service"));
+                    m_inventory_dispatch_attempted = true;
                     result = m_agent->start_print(params, update_fn, cancel_fn, wait_fn);
                 }
             }
@@ -770,6 +798,7 @@ void PrintJob::process(Ctl &ctl)
                     return;
                 }
                 ctl.update_status(curr_percent, _u8L("Sending print job through cloud service"));
+                m_inventory_dispatch_attempted = true;
                 result = m_agent->start_print(params, update_fn, cancel_fn, wait_fn);
             }
         }
@@ -780,6 +809,7 @@ void PrintJob::process(Ctl &ctl)
                 return;
             }
             ctl.update_status(curr_percent, _u8L("Sending print job over LAN"));
+            m_inventory_dispatch_attempted = true;
             result = m_agent->start_local_print(params, update_fn, cancel_fn);
         } else {
             switch(this->sdcard_state) {
@@ -794,6 +824,7 @@ void PrintJob::process(Ctl &ctl)
                             return;
                         }
                         ctl.update_status(curr_percent, _u8L("Sending print job over LAN, but the Storage in the printer is abnormal and print-issues may be caused by this."));
+                        m_inventory_dispatch_attempted = true;
                         result = m_agent->start_local_print(params, update_fn, cancel_fn);
                         break;
                     }
@@ -808,6 +839,7 @@ void PrintJob::process(Ctl &ctl)
                         return;
                     }
                     ctl.update_status(curr_percent, _u8L("Sending print job over LAN"));
+                    m_inventory_dispatch_attempted = true;
                     result = m_agent->start_local_print(params, update_fn, cancel_fn);
                     break;
                 default:
@@ -818,6 +850,13 @@ void PrintJob::process(Ctl &ctl)
     }
 
     if (result < 0) {
+        if (!m_inventory_job_id.empty()) {
+            wxGetApp().filament_inventory().mark_dispatch_failed(
+                m_inventory_job_id,
+                m_inventory_dispatch_attempted &&
+                    inventory_dispatch_failure_is_ambiguous(result));
+            m_inventory_handoff_complete = true;
+        }
         curr_percent = -1;
 
         // The printer is still fetching its encryption flag (a transient state), so ask the
@@ -847,6 +886,23 @@ void PrintJob::process(Ctl &ctl)
 
         BOOST_LOG_TRIVIAL(error) << "print_job: failed, result = " << result;
     } else {
+        if (!m_inventory_job_id.empty()) {
+            FilamentInventoryService::BambuStatusSnapshot current;
+            current.printer_id = m_dev_id;
+            if (obj != nullptr && obj->get_dev_id() == m_dev_id) {
+                current.status = obj->print_status;
+                current.job_id = obj->job_id_;
+            }
+            wxGetApp().filament_inventory().mark_bambu_dispatch_accepted(
+                m_inventory_job_id, m_dev_id,
+                {
+                    m_dev_id,
+                    m_inventory_bambu_baseline.status,
+                    m_inventory_bambu_baseline.job_id
+                },
+                std::move(current));
+            m_inventory_handoff_complete = true;
+        }
         // wait for printer mqtt ready the same job id
 
         wxGetApp().plater()->record_slice_preset("print");
@@ -875,6 +931,12 @@ void PrintJob::finalize(bool canceled, std::exception_ptr &eptr) {
         eptr = nullptr;
     } catch (...) {
         eptr = std::current_exception();
+    }
+
+    if (!m_inventory_job_id.empty() && !m_inventory_handoff_complete) {
+        wxGetApp().filament_inventory().mark_dispatch_failed(
+            m_inventory_job_id, m_inventory_dispatch_attempted);
+        m_inventory_handoff_complete = true;
     }
 
     if (canceled || eptr)

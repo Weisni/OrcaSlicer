@@ -87,6 +87,9 @@ src/slic3r/GUI/Gizmos/GLGizmoAssembly.cpp
 src/slic3r/GUI/Gizmos/GLGizmoAssembly.hpp
 src/slic3r/GUI/GUI.cpp
 src/slic3r/GUI/GUI_App.cpp
+src/slic3r/GUI/CustomerOrderDialogs.cpp
+src/slic3r/GUI/FilamentAllocationDialog.cpp
+src/slic3r/GUI/FilamentManagerPanel.cpp
 src/slic3r/GUI/GUI_AuxiliaryList.cpp
 src/slic3r/GUI/GUI_Init.cpp
 src/slic3r/GUI/GUI_Factories.cpp

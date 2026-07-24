@@ -345,6 +345,7 @@ set(DEP_Boost_COMPONENTS system iostreams filesystem thread log locale regex dat
 include(Boost/Boost.cmake)
 
 include(Cereal/Cereal.cmake)
+include(SQLite/SQLite.cmake)
 include(Qhull/Qhull.cmake)
 include(GLEW/GLEW.cmake)
 
@@ -431,6 +432,7 @@ set(_dep_list
     ${CURL_PKG}
     ${WXWIDGETS_PKG}
     dep_Cereal
+    dep_SQLite
     dep_Draco
     dep_NLopt
     dep_OpenVDB

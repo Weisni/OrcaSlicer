@@ -2234,21 +2234,22 @@ void StatusBasePanel::expand_filament_loading(wxMouseEvent& e)
 
 void StatusBasePanel::show_ams_group(bool show)
 {
+    bool layout_changed = false;
     if (m_ams_control->IsShown() != show) {
         m_ams_control->Show(show);
-        m_ams_control->Layout();
-        m_ams_control->Fit();
-        Layout();
-        Fit();
-        wxGetApp().mainframe->m_monitor->Layout();
+        layout_changed = true;
     }
 
     // On rack printers, don't clobber the rack view when the user has the switch on "Hotends".
     // Inert for every non-rack printer: the switch stays hidden, so this guard never triggers.
-    if (show && m_ams_rack_switch->IsShown() && (m_ams_rack_switch->switch_left != true)) { return; }
+    const bool keep_rack_view = show && m_ams_rack_switch->IsShown() && (m_ams_rack_switch->switch_left != true);
 
-    if (m_ams_control_box->IsShown() != show) {
+    if (!keep_rack_view && m_ams_control_box->IsShown() != show) {
         m_ams_control_box->Show(show);
+        layout_changed = true;
+    }
+
+    if (layout_changed) {
         m_ams_control->Layout();
         m_ams_control->Fit();
         Layout();

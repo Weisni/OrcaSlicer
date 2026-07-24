@@ -79,6 +79,10 @@ public:
 
     wxSize GetVideoSize() const;
 
+    void SuspendNativeResize();
+
+    void ResumeNativeResize();
+
 protected:
     wxSize DoGetBestSize() const override;
 
@@ -110,6 +114,15 @@ private:
     int      m_error = 0;
     bool     m_loaded = false;
     wxSize   m_video_size{16, 9};
+#ifdef __WIN32__
+    bool m_native_resize_suspended = false;
+    bool m_native_resize_pending = false;
+    int  m_pending_x = 0;
+    int  m_pending_y = 0;
+    int  m_pending_width = 0;
+    int  m_pending_height = 0;
+    int  m_pending_size_flags = 0;
+#endif
 };
 
 #endif

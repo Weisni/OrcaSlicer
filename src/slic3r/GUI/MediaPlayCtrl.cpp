@@ -604,7 +604,10 @@ void MediaPlayCtrl::onStateChanged(wxMediaEvent &event)
             return;
         }
     }
-    if ((last_state == MEDIASTATE_IDLE || last_state == MEDIASTATE_INITIALIZING) && state == wxMEDIASTATE_STOPPED) { return; }
+    if ((last_state == MEDIASTATE_IDLE || last_state == MEDIASTATE_INITIALIZING) && state == wxMEDIASTATE_STOPPED) {
+        m_media_ctrl->ResumeNativeResize();
+        return;
+    }
     if ((last_state == wxMEDIASTATE_PAUSED || last_state == wxMEDIASTATE_PLAYING) && state == wxMEDIASTATE_STOPPED) {
         m_failed_code = m_media_ctrl->GetLastError();
         Stop();
@@ -632,6 +635,8 @@ void MediaPlayCtrl::onStateChanged(wxMediaEvent &event)
         }
     } else {
         m_last_state = state;
+        if (state == wxMEDIASTATE_PLAYING)
+            m_media_ctrl->ResumeNativeResize();
     }
 }
 
@@ -666,6 +671,12 @@ void MediaPlayCtrl::load()
 {
     m_last_state = MEDIASTATE_LOADING;
     SetStatus(_L("Loading..."));
+#ifdef __WXMSW__
+    // The legacy Windows Media Player ActiveX control may crash in
+    // jscript9Legacy.dll when a surrounding status-panel layout resizes it
+    // while the Bambu stream source is still being initialized.
+    m_media_ctrl->SuspendNativeResize();
+#endif
     if (wxGetApp().app_config->get("internal_developer_mode") == "true") {
         std::string file_h264 = data_dir() + "/video.h264";
         std::string file_info = data_dir() + "/video.info";
@@ -835,6 +846,19 @@ void wxMediaCtrl2::DoSetSize(int x, int y, int width, int height, int sizeFlags)
 #ifdef __WXMAC__
     wxWindow::DoSetSize(x, y, width, height, sizeFlags);
 #else
+#ifdef __WXMSW__
+    if (m_native_resize_suspended) {
+        if ((sizeFlags & wxSIZE_USE_EXISTING) == 0) {
+            m_native_resize_pending = true;
+            m_pending_x = x;
+            m_pending_y = y;
+            m_pending_width = width;
+            m_pending_height = height;
+            m_pending_size_flags = sizeFlags;
+        }
+        return;
+    }
+#endif
     wxMediaCtrl::DoSetSize(x, y, width, height, sizeFlags);
 #endif
 #if defined(__LINUX__) && defined(__WXGTK__)

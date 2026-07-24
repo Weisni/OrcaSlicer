@@ -352,12 +352,18 @@ endif()
 message(STATUS "libslic3r-CMAKE_BUILD_TYPE: ${build_type}")
 message(STATUS "CMAKE_CURRENT_BINARY_DIR: ${CMAKE_CURRENT_BINARY_DIR}")
 if (WIN32)
+    # CMAKE_PREFIX_PATH may be supplied with native Windows separators. Keep
+    # forward slashes here because install() writes this path into a generated
+    # CMake script, where sequences such as "\U" would otherwise be parsed as
+    # invalid escapes.
+    file(TO_CMAKE_PATH "${CMAKE_PREFIX_PATH}/libpython" ORCA_BUNDLED_PYTHON_ROOT)
+
     install(TARGETS OrcaSlicer RUNTIME DESTINATION ".")
     if (MSVC)
         install(TARGETS OrcaSlicer_app_gui RUNTIME DESTINATION ".")
     endif ()
     install(FILES ${output_dlls_${build_type}} DESTINATION ".")
-    install(DIRECTORY "${CMAKE_PREFIX_PATH}/libpython/" DESTINATION "python")
+    install(DIRECTORY "${ORCA_BUNDLED_PYTHON_ROOT}/" DESTINATION "python")
 else ()
     install(TARGETS OrcaSlicer RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}" BUNDLE DESTINATION ${CMAKE_INSTALL_BINDIR})
 endif ()

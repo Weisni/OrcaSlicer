@@ -1,0 +1,76 @@
+cmake_minimum_required(VERSION 3.13)
+project(SQLite3 VERSION 3.53.3 LANGUAGES C)
+
+include(CMakePackageConfigHelpers)
+include(GNUInstallDirs)
+
+find_package(Threads REQUIRED)
+
+add_library(sqlite3 STATIC sqlite3.c)
+add_library(SQLite3::SQLite3 ALIAS sqlite3)
+
+target_include_directories(sqlite3
+    PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
+        $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
+)
+
+target_compile_definitions(sqlite3
+    PRIVATE
+        SQLITE_DEFAULT_FOREIGN_KEYS=1
+        SQLITE_DQS=0
+        SQLITE_OMIT_LOAD_EXTENSION
+        SQLITE_THREADSAFE=1
+)
+
+if (MSVC)
+    target_compile_options(sqlite3 PRIVATE /wd4100 /wd4127 /wd4242 /wd4244 /wd4706)
+endif ()
+
+set_target_properties(sqlite3 PROPERTIES
+    DEBUG_POSTFIX d
+    EXPORT_NAME SQLite3
+    POSITION_INDEPENDENT_CODE ON
+)
+
+target_link_libraries(sqlite3 PUBLIC Threads::Threads)
+if (UNIX)
+    target_link_libraries(sqlite3 PUBLIC m)
+endif ()
+
+write_basic_package_version_file(
+    "${CMAKE_CURRENT_BINARY_DIR}/SQLite3ConfigVersion.cmake"
+    VERSION ${PROJECT_VERSION}
+    COMPATIBILITY SameMajorVersion
+)
+
+file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/SQLite3Config.cmake"
+    "include(CMakeFindDependencyMacro)\n"
+    "find_dependency(Threads)\n"
+    "include(\"\${CMAKE_CURRENT_LIST_DIR}/SQLite3Targets.cmake\")\n"
+)
+
+install(
+    TARGETS sqlite3
+    EXPORT SQLite3Targets
+    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+    INCLUDES DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+)
+
+install(FILES sqlite3.h DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+
+install(
+    EXPORT SQLite3Targets
+    FILE SQLite3Targets.cmake
+    NAMESPACE SQLite3::
+    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/SQLite3
+)
+
+install(
+    FILES
+        "${CMAKE_CURRENT_BINARY_DIR}/SQLite3Config.cmake"
+        "${CMAKE_CURRENT_BINARY_DIR}/SQLite3ConfigVersion.cmake"
+    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/SQLite3
+)

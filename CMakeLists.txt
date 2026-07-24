@@ -831,6 +831,21 @@ else ()
     set_target_properties(cereal::cereal PROPERTIES IMPORTED_GLOBAL TRUE)
 endif ()
 
+# Local-first filament inventory storage. Prefer the pinned dependency bundle,
+# while allowing distro builds to use the module fallback.
+find_package(SQLite3 CONFIG QUIET)
+if (TARGET SQLite::SQLite3 AND NOT TARGET SQLite3::SQLite3)
+    # Imported targets only became aliasable across directory scopes in newer
+    # CMake releases. Keep OrcaSlicer's 3.13 minimum by aliasing a normal
+    # interface wrapper instead.
+    add_library(quackslicer_sqlite3 INTERFACE)
+    target_link_libraries(quackslicer_sqlite3 INTERFACE SQLite::SQLite3)
+    add_library(SQLite3::SQLite3 ALIAS quackslicer_sqlite3)
+endif ()
+if (NOT TARGET SQLite3::SQLite3)
+    find_package(SQLite3 MODULE REQUIRED)
+endif ()
+
 # l10n
 set(L10N_DIR "${SLIC3R_RESOURCES_DIR}/i18n")
 set(BBL_L18N_DIR "${CMAKE_CURRENT_SOURCE_DIR}/localization/i18n")
@@ -1160,6 +1175,7 @@ if (WIN32)
         string (APPEND CPACK_PACKAGE_FILE_NAME "_x64")
     endif ()
 endif ()
+
 set (CPACK_PACKAGE_DESCRIPTION_SUMMARY "QuackSlicer is an open source slicer for FDM printers")
 set (CPACK_PACKAGE_HOMEPAGE_URL "https://github.com/Weisni/OrcaSlicer")
 set (CPACK_PACKAGE_INSTALL_DIRECTORY ${CPACK_PACKAGE_NAME})

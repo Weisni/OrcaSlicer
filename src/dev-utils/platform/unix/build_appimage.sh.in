@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 APPIMAGETOOLURL="https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-$(uname -m).AppImage"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd -- "${SCRIPT_DIR}/../../.." && pwd)"
+REPO_ROOT="@CMAKE_SOURCE_DIR@"
 
 
 APP_IMAGE="@SLIC3R_APP_KEY@_Linux_V@SoftFever_VERSION@.AppImage"
@@ -35,9 +35,13 @@ mkdir -p usr/share/applications
 cp com.orcaslicer.@SLIC3R_APP_KEY@.desktop usr/share/applications/
 
 mkdir -p usr/share/metainfo
-cp "${REPO_ROOT}/scripts/flatpak/com.orcaslicer.OrcaSlicer.metainfo.xml" \
+METADATA_SOURCE="${REPO_ROOT}/scripts/flatpak/com.orcaslicer.@SLIC3R_APP_KEY@.metainfo.xml"
+if [ ! -f "${METADATA_SOURCE}" ]; then
+  METADATA_SOURCE="${REPO_ROOT}/scripts/flatpak/com.orcaslicer.OrcaSlicer.metainfo.xml"
+fi
+cp "${METADATA_SOURCE}" \
   "usr/share/metainfo/com.orcaslicer.@SLIC3R_APP_KEY@.metainfo.xml"
-cp "${REPO_ROOT}/scripts/flatpak/com.orcaslicer.OrcaSlicer.metainfo.xml" \
+cp "${METADATA_SOURCE}" \
   "usr/share/metainfo/com.orcaslicer.@SLIC3R_APP_KEY@.appdata.xml"
 
 

@@ -337,6 +337,15 @@ set(SLIC3R_GUI_SOURCES
     GUI/LinuxDisplayBackend.hpp
     GUI/MainFrame.cpp
     GUI/MainFrame.hpp
+    GUI/FilamentAllocationDialog.cpp
+    GUI/FilamentAllocationDialog.hpp
+    GUI/CustomerOrderDialogs.cpp
+    GUI/CustomerOrderDialogs.hpp
+    GUI/FilamentInventoryService.cpp
+    GUI/FilamentInventoryService.hpp
+    GUI/FilamentManagerPanel.cpp
+    GUI/FilamentManagerPanel.hpp
+    GUI/FilamentSpoolEditor.hpp
     GUI/MarkdownTip.cpp
     GUI/MarkdownTip.hpp
     GUI/MediaFilePanel.cpp

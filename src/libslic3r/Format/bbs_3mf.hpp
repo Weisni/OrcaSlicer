@@ -50,6 +50,8 @@ public:
 
 
 //BBS: define plate data list related structures
+std::vector<FilamentInfo> collect_filament_usage(const GCodeProcessorResult &result);
+
 struct PlateData
 {
     PlateData(int plate_id, std::set<std::pair<int, int>> &obj_to_inst_list, bool lock_state) : plate_index(plate_id), locked(lock_state)

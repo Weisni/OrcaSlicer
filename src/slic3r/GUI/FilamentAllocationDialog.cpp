@@ -1,0 +1,408 @@
+#include "FilamentAllocationDialog.hpp"
+
+#include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <cmath>
+#include <limits>
+#include <map>
+
+#include <wx/button.h>
+#include <wx/choice.h>
+#include <wx/dialog.h>
+#include <wx/msgdlg.h>
+#include <wx/scrolwin.h>
+#include <wx/sizer.h>
+#include <wx/stattext.h>
+
+#include "FilamentSpoolEditor.hpp"
+#include "GUI.hpp"
+#include "GUI_Utils.hpp"
+#include "I18N.hpp"
+
+namespace Slic3r::GUI {
+
+namespace {
+
+using namespace FilamentInventory;
+
+constexpr int ID_CONTINUE_WITHOUT_TRACKING = wxID_HIGHEST + 1;
+
+std::string make_launch_key()
+{
+    static std::atomic<std::uint64_t> sequence {0};
+    const auto now = std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+    return "print-launch:" + std::to_string(now) + ":" +
+           std::to_string(sequence.fetch_add(1, std::memory_order_relaxed));
+}
+
+wxString format_weight(Milligrams milligrams)
+{
+    return wxString::Format("%.1f g", static_cast<double>(milligrams) / 1'000.0);
+}
+
+class FilamentAllocationDialog : public wxDialog
+{
+public:
+    FilamentAllocationDialog(
+        wxWindow *parent, Store &store, const FilamentReservationContext &context)
+        : wxDialog(parent, wxID_ANY, _L("Assign filament spools"), wxDefaultPosition,
+                   wxDefaultSize, wxDEFAULT_DIALOG_STYLE | wxRESIZE_BORDER)
+        , m_store(store)
+        , m_context(context)
+    {
+        auto *root = new wxBoxSizer(wxVERTICAL);
+        root->Add(new wxStaticText(
+                      this, wxID_ANY,
+                      _L("Assign each sliced project filament to the physical spool that will be used.")),
+                  0, wxEXPAND | wxALL, FromDIP(12));
+
+        m_orders = m_store.list_customer_orders({}, false);
+        std::map<std::string, std::string> customer_names;
+        for (const Customer &customer : m_store.list_customers(true))
+            customer_names.emplace(customer.id, customer.name);
+
+        auto *tracking_grid = new wxFlexGridSizer(2, FromDIP(8), FromDIP(10));
+        tracking_grid->AddGrowableCol(1, 1);
+        tracking_grid->Add(
+            new wxStaticText(this, wxID_ANY, _L("Customer order")),
+            0, wxALIGN_CENTER_VERTICAL);
+        m_customer_order = new wxChoice(this, wxID_ANY);
+        m_customer_order->Append(_L("No customer order (personal or family print)"));
+        for (const CustomerOrder &order : m_orders) {
+            const auto customer = customer_names.find(order.customer_id);
+            wxString label = customer != customer_names.end() ?
+                                 from_u8(customer->second) + " — " : wxString {};
+            label += from_u8(
+                order.order_number.empty() ? order.title : order.order_number);
+            if (!order.title.empty() && !order.order_number.empty())
+                label += " — " + from_u8(order.title);
+            m_customer_order->Append(label);
+        }
+        m_customer_order->SetSelection(0);
+        tracking_grid->Add(m_customer_order, 1, wxEXPAND);
+        tracking_grid->Add(
+            new wxStaticText(this, wxID_ANY, _L("Estimated machine runtime")),
+            0, wxALIGN_CENTER_VERTICAL);
+        tracking_grid->Add(
+            new wxStaticText(
+                this, wxID_ANY,
+                context.estimated_runtime_seconds > 0 ?
+                    wxString::Format(
+                        "%.1f h",
+                        context.estimated_runtime_seconds / 3'600.0) :
+                    _L("Not available")),
+            0, wxALIGN_CENTER_VERTICAL);
+        root->Add(
+            tracking_grid, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(12));
+
+        auto *scroll = new wxScrolledWindow(
+            this, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxVSCROLL);
+        scroll->SetScrollRate(0, FromDIP(10));
+        m_grid = new wxFlexGridSizer(4, FromDIP(8), FromDIP(10));
+        m_grid->AddGrowableCol(2, 1);
+        for (const wxString &heading : {
+                 _L("Project filament"), _L("Required"), _L("Physical spool"), wxString()}) {
+            auto *label = new wxStaticText(scroll, wxID_ANY, heading);
+            wxFont font = label->GetFont();
+            font.SetWeight(wxFONTWEIGHT_BOLD);
+            label->SetFont(font);
+            m_grid->Add(label, 0, wxALIGN_CENTER_VERTICAL);
+        }
+
+        for (std::size_t index = 0; index < context.usages.size(); ++index) {
+            const FilamentInventoryUsage &usage = context.usages[index];
+            wxString description = from_u8(
+                usage.display_name.empty() ? usage.material_type : usage.display_name);
+            if (!usage.color_hex.empty())
+                description += "  " + from_u8(usage.color_hex);
+            if (!usage.suggested_bambu_tag_uid.empty())
+                description += "  " + wxString::Format(
+                    _L("Bambu RFID: %s"), from_u8(usage.suggested_bambu_tag_uid));
+            m_grid->Add(new wxStaticText(scroll, wxID_ANY, description),
+                        0, wxALIGN_CENTER_VERTICAL);
+            m_grid->Add(new wxStaticText(
+                            scroll, wxID_ANY, format_weight(usage.estimated_weight_mg)),
+                        0, wxALIGN_CENTER_VERTICAL);
+
+            auto *choice = new wxChoice(scroll, wxID_ANY, wxDefaultPosition, wxSize(FromDIP(330), -1));
+            m_choices.push_back(choice);
+            m_grid->Add(choice, 1, wxEXPAND | wxALIGN_CENTER_VERTICAL);
+
+            auto *create = new wxButton(scroll, wxID_ANY, _L("Create spool"));
+            create->Bind(wxEVT_BUTTON, [this, index](wxCommandEvent &) {
+                create_spool(index);
+            });
+            m_grid->Add(create, 0, wxALIGN_CENTER_VERTICAL);
+        }
+        scroll->SetSizer(m_grid);
+        root->Add(scroll, 1, wxEXPAND | wxLEFT | wxRIGHT, FromDIP(12));
+        auto *button_row = new wxBoxSizer(wxHORIZONTAL);
+        auto *without_tracking = new wxButton(
+            this, ID_CONTINUE_WITHOUT_TRACKING, _L("Continue without tracking"));
+        without_tracking->SetToolTip(
+            _L("Start the print without reserving or deducting filament."));
+        without_tracking->Bind(wxEVT_BUTTON, [this](wxCommandEvent &) {
+            EndModal(ID_CONTINUE_WITHOUT_TRACKING);
+        });
+        button_row->Add(without_tracking, 0, wxALIGN_CENTER_VERTICAL);
+        button_row->AddStretchSpacer();
+
+        auto *standard_buttons = new wxStdDialogButtonSizer();
+        standard_buttons->AddButton(new wxButton(this, wxID_OK));
+        standard_buttons->AddButton(new wxButton(this, wxID_CANCEL));
+        standard_buttons->Realize();
+        button_row->Add(standard_buttons, 0, wxALIGN_CENTER_VERTICAL);
+        root->Add(button_row, 0, wxEXPAND | wxALL, FromDIP(12));
+        SetSizer(root);
+        SetSize(wxSize(FromDIP(850), FromDIP(500)));
+        SetMinSize(wxSize(FromDIP(650), FromDIP(330)));
+        CentreOnParent();
+
+        refresh_spools();
+    }
+
+    bool allocations(std::vector<AllocationInput> &result, wxString &error) const
+    {
+        result.clear();
+        std::map<std::string, Milligrams> required_by_spool;
+        for (std::size_t index = 0; index < m_context.usages.size(); ++index) {
+            const int selection = m_choices[index]->GetSelection();
+            if (selection <= 0 || static_cast<std::size_t>(selection) > m_spools.size()) {
+                error = _L("Please assign a physical spool to every project filament.");
+                return false;
+            }
+            const Spool &spool = m_spools[static_cast<std::size_t>(selection - 1)];
+            const FilamentInventoryUsage &usage = m_context.usages[index];
+            Milligrams &required = required_by_spool[spool.id];
+            if (usage.estimated_weight_mg >
+                std::numeric_limits<Milligrams>::max() - required) {
+                error = _L("The combined filament requirement is too large.");
+                return false;
+            }
+            required += usage.estimated_weight_mg;
+            result.push_back({spool.id, usage.filament_index, usage.estimated_weight_mg});
+        }
+
+        for (const auto &[spool_id, required] : required_by_spool) {
+            const auto found = std::find_if(
+                m_spools.begin(), m_spools.end(),
+                [&spool_id](const Spool &spool) { return spool.id == spool_id; });
+            if (found != m_spools.end() && found->available_weight_mg < required) {
+                error = wxString::Format(
+                    _L("Spool \"%s\" has %s available, but the assigned filaments require %s."),
+                    from_u8(found->name), format_weight(found->available_weight_mg),
+                    format_weight(required));
+                return false;
+            }
+        }
+        return true;
+    }
+
+    wxString low_stock_warning(const std::vector<AllocationInput> &allocations) const
+    {
+        std::map<std::string, Milligrams> required_by_spool;
+        for (const AllocationInput &allocation : allocations)
+            required_by_spool[allocation.spool_id] += allocation.estimated_weight_mg;
+
+        wxString warning;
+        for (const Spool &spool : m_spools) {
+            const auto required = required_by_spool.find(spool.id);
+            if (required == required_by_spool.end() ||
+                spool.warning_mode == WarningMode::none)
+                continue;
+
+            Milligrams threshold = spool.warning_value;
+            wxString threshold_text = format_weight(threshold);
+            if (spool.warning_mode == WarningMode::percent) {
+                const long double value =
+                    static_cast<long double>(spool.nominal_capacity_mg) *
+                    static_cast<long double>(spool.warning_value) / 10'000.0L;
+                threshold = static_cast<Milligrams>(std::llround(value));
+                threshold_text = wxString::Format(
+                    "%.1f%%", static_cast<double>(spool.warning_value) / 100.0);
+            }
+
+            const Milligrams projected_available =
+                spool.available_weight_mg - required->second;
+            if (projected_available > threshold)
+                continue;
+
+            if (!warning.empty())
+                warning += "\n";
+            warning += wxString::Format(
+                _L("Spool \"%s\" will have %s available after this reservation "
+                   "(warning threshold: %s)."),
+                from_u8(spool.name), format_weight(projected_available), threshold_text);
+        }
+        return warning;
+    }
+
+    std::optional<std::string> selected_customer_order_id() const
+    {
+        const int selection = m_customer_order != nullptr ?
+                                  m_customer_order->GetSelection() : 0;
+        if (selection <= 0 ||
+            static_cast<std::size_t>(selection) > m_orders.size())
+            return std::nullopt;
+        return m_orders[static_cast<std::size_t>(selection - 1)].id;
+    }
+
+private:
+    int best_selection(const FilamentInventoryUsage &usage) const
+    {
+        if (!usage.suggested_bambu_tag_uid.empty()) {
+            try {
+                const auto matched = m_store.find_spool(
+                    IdentifierKind::bambu_tag_uid, usage.suggested_bambu_tag_uid);
+                if (matched) {
+                    const auto found = std::find_if(
+                        m_spools.begin(), m_spools.end(),
+                        [&matched](const Spool &spool) { return spool.id == matched->id; });
+                    if (found != m_spools.end())
+                        return static_cast<int>(std::distance(m_spools.begin(), found)) + 1;
+                }
+            } catch (const std::exception &) {
+            }
+            return wxNOT_FOUND;
+        }
+        return wxNOT_FOUND;
+    }
+
+    void refresh_spools(
+        std::optional<std::size_t> preferred_row = std::nullopt,
+        const std::string &preferred_spool_id = {})
+    {
+        std::vector<std::string> previous(m_choices.size());
+        for (std::size_t index = 0; index < m_choices.size(); ++index) {
+            const int selection = m_choices[index]->GetSelection();
+            if (selection > 0 && static_cast<std::size_t>(selection) <= m_spools.size())
+                previous[index] = m_spools[static_cast<std::size_t>(selection - 1)].id;
+        }
+
+        m_spools = m_store.list_spools();
+        for (std::size_t row = 0; row < m_choices.size(); ++row) {
+            wxChoice *choice = m_choices[row];
+            choice->Clear();
+            choice->Append(
+                m_context.usages[row].suggested_bambu_tag_uid.empty() ?
+                    _L("Select a spool...") :
+                    _L("Bambu RFID is not linked — select or create a spool..."));
+            for (const Spool &spool : m_spools) {
+                choice->Append(wxString::Format(
+                    "%s — %s, %s available",
+                    from_u8(spool.name), from_u8(spool.material_type),
+                    format_weight(spool.available_weight_mg)));
+            }
+
+            std::string desired = previous[row];
+            if (preferred_row && *preferred_row == row)
+                desired = preferred_spool_id;
+            int selection = wxNOT_FOUND;
+            if (!desired.empty()) {
+                const auto found = std::find_if(
+                    m_spools.begin(), m_spools.end(),
+                    [&desired](const Spool &spool) { return spool.id == desired; });
+                if (found != m_spools.end())
+                    selection = static_cast<int>(std::distance(m_spools.begin(), found)) + 1;
+            }
+            if (selection == wxNOT_FOUND)
+                selection = best_selection(m_context.usages[row]);
+            choice->SetSelection(selection == wxNOT_FOUND ? 0 : selection);
+        }
+        Layout();
+    }
+
+    void create_spool(std::size_t row)
+    {
+        const FilamentInventoryUsage &usage = m_context.usages[row];
+        SpoolInput defaults;
+        defaults.manufacturer = usage.manufacturer;
+        defaults.material_type = usage.material_type.empty() ? "Unknown" : usage.material_type;
+        defaults.name = usage.display_name.empty() ?
+                        defaults.material_type + " " + usage.color_hex : usage.display_name;
+        defaults.filament_preset_id = usage.filament_preset_id;
+        defaults.color_hex = usage.color_hex.empty() ? "#FFFFFF" : usage.color_hex;
+        defaults.diameter_mm = usage.diameter_mm;
+        defaults.density_g_cm3 = usage.density_g_cm3;
+        std::vector<SpoolIdentifierInput> identifiers;
+        if (!usage.suggested_bambu_tag_uid.empty())
+            identifiers.push_back({
+                IdentifierKind::bambu_tag_uid, usage.suggested_bambu_tag_uid
+            });
+        const auto created = create_filament_spool_interactively(
+            this, m_store, &defaults, identifiers.empty() ? nullptr : &identifiers);
+        if (created)
+            refresh_spools(row, created->id);
+    }
+
+    Store                              &m_store;
+    const FilamentReservationContext  &m_context;
+    wxFlexGridSizer                    *m_grid {nullptr};
+    wxChoice                           *m_customer_order {nullptr};
+    std::vector<wxChoice *>             m_choices;
+    std::vector<Spool>                  m_spools;
+    std::vector<CustomerOrder>          m_orders;
+};
+
+} // namespace
+
+FilamentReservationResult reserve_filament_for_print(
+    wxWindow *parent, Store &store, const FilamentReservationContext &context)
+{
+    if (context.usages.empty())
+        throw Error(ErrorCode::validation, "The sliced plate contains no measurable filament usage");
+
+    if (store.list_spools().empty()) {
+        wxMessageBox(
+            _L("No physical filament spool exists yet. Create a spool for each material "
+               "and enter its current fill level before starting the print."),
+            _L("Filament inventory"), wxOK | wxICON_INFORMATION, parent);
+    }
+
+    const std::string launch_key = make_launch_key();
+    FilamentAllocationDialog dialog(parent, store, context);
+    for (;;) {
+        const int modal_result = dialog.ShowModal();
+        if (modal_result == ID_CONTINUE_WITHOUT_TRACKING)
+            return {FilamentReservationDecision::without_tracking, std::nullopt};
+        if (modal_result != wxID_OK)
+            return {FilamentReservationDecision::cancelled, std::nullopt};
+
+        std::vector<AllocationInput> allocations;
+        wxString error;
+        if (!dialog.allocations(allocations, error)) {
+            wxMessageBox(error, _L("Assign filament spools"), wxOK | wxICON_WARNING, parent);
+            continue;
+        }
+        const wxString warning = dialog.low_stock_warning(allocations);
+        if (!warning.empty() &&
+            wxMessageBox(
+                warning + "\n\n" + _L("Continue with these spool assignments?"),
+                _L("Low filament warning"),
+                wxYES_NO | wxNO_DEFAULT | wxICON_WARNING, parent) != wxYES)
+            continue;
+        try {
+            PrintJobInput job_input {
+                launch_key,
+                context.job_name,
+                context.project_path,
+                context.printer_id
+            };
+            job_input.customer_order_id = dialog.selected_customer_order_id();
+            job_input.estimated_runtime_seconds =
+                context.estimated_runtime_seconds;
+            return {
+                FilamentReservationDecision::reserved,
+                store.reserve_job(job_input, allocations)
+            };
+        } catch (const std::exception &exception) {
+            wxMessageBox(
+                from_u8(exception.what()), _L("Assign filament spools"),
+                wxOK | wxICON_ERROR, parent);
+        }
+    }
+}
+
+} // namespace Slic3r::GUI

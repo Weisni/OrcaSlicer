@@ -496,7 +496,12 @@ DPIFrame(NULL, wxID_ANY, "", wxDefaultPosition, wxDefaultSize, BORDERLESS_FRAME_
     //BBS
     Bind(EVT_SELECT_TAB, [this](wxCommandEvent&evt) {
         TabPosition pos = (TabPosition)evt.GetInt();
-        m_tabpanel->SetSelection(pos);
+        if (pos == tpCalibration && m_calibration != nullptr)
+            select_tab(m_calibration);
+        else if (pos == tpFilamentManager && m_filament_manager != nullptr)
+            select_tab(m_filament_manager);
+        else
+            m_tabpanel->SetSelection(pos);
     });
 
     Bind(EVT_SYNC_CLOUD_PRESET, &MainFrame::on_select_default_preset, this);
@@ -1349,6 +1354,10 @@ void MainFrame::init_tabpanel() {
     m_project = new ProjectPanel(m_tabpanel, wxID_ANY, wxDefaultPosition, wxDefaultSize);
     m_project->SetBackgroundColour(*wxWHITE);
     m_tabpanel->AddPage(m_project, _L("Project"), std::string("tab_auxiliary_active"), std::string("tab_auxiliary_active"), false);
+
+    m_filament_manager = new FilamentManagerPanel(m_tabpanel, wxID_ANY, wxDefaultPosition, wxDefaultSize);
+    m_filament_manager->SetBackgroundColour(*wxWHITE);
+    m_tabpanel->AddPage(m_filament_manager, _L("Filaments"), std::string("spool"), std::string("spool"), false);
 
     m_calibration = new CalibrationPanel(m_tabpanel, wxID_ANY, wxDefaultPosition, wxDefaultSize);
     m_calibration->SetBackgroundColour(*wxWHITE);

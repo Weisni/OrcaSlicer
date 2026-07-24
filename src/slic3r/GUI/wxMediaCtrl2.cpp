@@ -591,6 +591,32 @@ wxSize wxMediaCtrl2::GetVideoSize() const
 #endif
 }
 
+void wxMediaCtrl2::SuspendNativeResize()
+{
+#ifdef __WIN32__
+    m_native_resize_suspended = true;
+#endif
+}
+
+void wxMediaCtrl2::ResumeNativeResize()
+{
+#ifdef __WIN32__
+    if (!m_native_resize_suspended)
+        return;
+
+    m_native_resize_suspended = false;
+    if (m_native_resize_pending) {
+        const int x = m_pending_x;
+        const int y = m_pending_y;
+        const int width = m_pending_width;
+        const int height = m_pending_height;
+        const int size_flags = m_pending_size_flags;
+        m_native_resize_pending = false;
+        DoSetSize(x, y, width, height, size_flags);
+    }
+#endif
+}
+
 wxSize wxMediaCtrl2::DoGetBestSize() const
 {
     return {-1, -1};

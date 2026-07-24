@@ -8,6 +8,8 @@
 #include "GUI_App.hpp"
 #include "GUI_Preview.hpp"
 #include "MainFrame.hpp"
+#include "FilamentAllocationDialog.hpp"
+#include "FilamentInventoryService.hpp"
 #include "format.hpp"
 #include "Widgets/ProgressDialog.hpp"
 #include "Widgets/RoundedRectangle.hpp"
@@ -33,6 +35,7 @@
 #include "DeviceCore/DevMappingNozzle.h"
 #include "DeviceCore/DevPrintOptions.h" // smart-nozzle-blob detection option
 #include "libslic3r/MultiNozzleUtils.hpp" // filament-change-gap model for the best-position popup
+#include "libslic3r/Format/bbs_3mf.hpp"
 #include "BackgroundSlicingProcess.hpp"   // complete type for background_process().get_current_gcode_result()
 #include "DeviceCore/DevStorage.h"
 
@@ -42,7 +45,11 @@
 #include <wx/mstream.h>
 #include <miniz.h>
 #include <algorithm>
+#include <cmath>
+#include <cstdlib>
+#include <stdexcept>
 #include <unordered_map>
+#include <utility>
 #include "Plater.hpp"
 #include "Notebook.hpp"
 #include "BitmapCache.hpp"
@@ -1874,6 +1881,7 @@ bool SelectMachineDialog::is_selected_ams_drying(MachineObject* obj)
 void SelectMachineDialog::prepare(int print_plate_idx)
 {
     m_print_plate_idx = print_plate_idx;
+    m_inventory_job_id.clear();
 }
 
 void SelectMachineDialog::update_print_status_msg()
@@ -3485,7 +3493,6 @@ void SelectMachineDialog::on_send_print()
 {
     BOOST_LOG_TRIVIAL(info) << "print_job: on_ok to send";
     m_is_canceled = false;
-    Enable_Send_Button(false);
 
     if (m_mapping_popup.IsShown())
         m_mapping_popup.Dismiss();
@@ -3502,8 +3509,249 @@ void SelectMachineDialog::on_send_print()
     if (!dev) return;
 
     MachineObject* obj_ = dev->get_selected_machine();
-    assert(obj_->get_dev_id() == m_printer_last_select);
     if (obj_ == nullptr) { return; }
+    if (obj_->get_dev_id() != m_printer_last_select) {
+        wxMessageBox(
+            _L("The selected printer changed while this dialog was open. "
+               "Refresh the printer selection before starting the print."),
+            _L("Print"), wxOK | wxICON_WARNING, this);
+        return;
+    }
+    assert(obj_->get_dev_id() == m_printer_last_select);
+
+    if (m_inventory_job_id.empty()) {
+        try {
+            std::vector<FilamentInfo> sliced_usages;
+            std::unordered_map<int, std::size_t> sliced_usage_by_id;
+            DynamicPrintConfig live_usage_config;
+            const DynamicPrintConfig *usage_config = nullptr;
+            const GCodeProcessorResult *gcode_result = nullptr;
+            double estimated_runtime_seconds = 0.0;
+
+            const bool inventory_all_plates = m_print_plate_idx == PLATE_ALL_IDX;
+            const int inventory_plate_idx = inventory_all_plates ?
+                m_plater->get_partplate_list().get_curr_plate_index() :
+                m_print_plate_idx;
+            const auto merge_sliced_usages =
+                [&sliced_usages, &sliced_usage_by_id](
+                    const std::vector<FilamentInfo> &plate_usages) {
+                    for (const FilamentInfo &usage : plate_usages) {
+                        const auto [position, inserted] = sliced_usage_by_id.emplace(
+                            usage.id, sliced_usages.size());
+                        if (inserted)
+                            sliced_usages.emplace_back(usage);
+                        else
+                            sliced_usages[position->second].used_g += usage.used_g;
+                    }
+                };
+
+            if (m_print_type == PrintFromType::FROM_NORMAL) {
+                PartPlateList &plates = m_plater->get_partplate_list();
+                const int first_plate = inventory_all_plates ? 0 : inventory_plate_idx;
+                const int plate_end = inventory_all_plates ?
+                    plates.get_plate_count() : inventory_plate_idx + 1;
+                for (int plate_index = first_plate; plate_index < plate_end; ++plate_index) {
+                    PartPlate *plate = plates.get_plate(plate_index);
+                    if (plate == nullptr || !plate->is_slice_result_valid())
+                        continue;
+                    const GCodeProcessorResult *plate_result = plate->get_slice_result();
+                    if (plate_result == nullptr)
+                        continue;
+                    if (gcode_result == nullptr)
+                        gcode_result = plate_result;
+                    merge_sliced_usages(collect_filament_usage(*plate_result));
+                    const double seconds = plate_result->print_statistics.modes[
+                        static_cast<std::size_t>(
+                            PrintEstimatedStatistics::ETimeMode::Normal)].time;
+                    if (std::isfinite(seconds) && seconds > 0.0)
+                        estimated_runtime_seconds += seconds;
+                }
+                live_usage_config = wxGetApp().preset_bundle->full_config();
+                usage_config = &live_usage_config;
+            } else {
+                const int first_plate = inventory_all_plates ? 0 : inventory_plate_idx;
+                const int plate_end = inventory_all_plates ?
+                    static_cast<int>(m_required_data_plate_data_list.size()) :
+                    inventory_plate_idx + 1;
+                for (int plate_index = first_plate; plate_index < plate_end; ++plate_index) {
+                    if (plate_index < 0 ||
+                        static_cast<std::size_t>(plate_index) >=
+                            m_required_data_plate_data_list.size())
+                        continue;
+                    const auto &plate = m_required_data_plate_data_list[plate_index];
+                    merge_sliced_usages(plate->slice_filaments_info);
+                    const double seconds = std::atof(plate->gcode_prediction.c_str());
+                    if (std::isfinite(seconds) && seconds > 0.0)
+                        estimated_runtime_seconds += seconds;
+                }
+                usage_config = &m_required_data_config;
+            }
+
+            FilamentReservationContext context;
+            context.job_name = into_u8(m_current_project_name);
+            if (context.job_name.empty())
+                context.job_name = m_required_data_file_name;
+            if (context.job_name.empty())
+                context.job_name = _u8L("Untitled");
+            context.project_path = m_print_type == PrintFromType::FROM_NORMAL ?
+                                   into_u8(m_plater->get_project_filename(".3mf")) :
+                                   m_required_data_file_path;
+            context.printer_id = obj_->get_dev_id();
+            if (std::isfinite(estimated_runtime_seconds) &&
+                estimated_runtime_seconds > 0.0)
+                context.estimated_runtime_seconds =
+                    static_cast<std::int64_t>(
+                        std::llround(estimated_runtime_seconds));
+
+            const auto *diameters = usage_config != nullptr ?
+                usage_config->option<ConfigOptionFloats>("filament_diameter") : nullptr;
+            const auto *densities = usage_config != nullptr ?
+                usage_config->option<ConfigOptionFloats>("filament_density") : nullptr;
+
+            for (const FilamentInfo &sliced : sliced_usages) {
+                if (!std::isfinite(sliced.used_g) || sliced.used_g <= 0.0f)
+                    continue;
+                FilamentInventoryUsage usage;
+                usage.filament_index = sliced.id;
+                usage.estimated_weight_mg = std::max<FilamentInventory::Milligrams>(
+                    1, static_cast<FilamentInventory::Milligrams>(
+                           std::llround(static_cast<double>(sliced.used_g) * 1'000.0)));
+
+                const auto project = std::find_if(
+                    m_filaments.begin(), m_filaments.end(),
+                    [&sliced](const FilamentInfo &item) { return item.id == sliced.id; });
+                const FilamentInfo &metadata =
+                    project != m_filaments.end() ? *project : sliced;
+                usage.manufacturer = metadata.brand;
+                usage.material_type = metadata.type.empty() ? sliced.type : metadata.type;
+                usage.filament_preset_id =
+                    metadata.filament_id.empty() ? sliced.filament_id : metadata.filament_id;
+                usage.color_hex = metadata.color.empty() ? sliced.color : metadata.color;
+                if (m_print_type == PrintFromType::FROM_NORMAL && sliced.id >= 0) {
+                    PresetBundle *bundle = wxGetApp().preset_bundle;
+                    const std::size_t filament_index =
+                        static_cast<std::size_t>(sliced.id);
+                    if (filament_index < bundle->filament_presets.size()) {
+                        const Preset *preset = bundle->filaments.find_preset(
+                            bundle->filament_presets[filament_index]);
+                        if (preset != nullptr) {
+                            if (usage.material_type.empty()) {
+                                const auto *types =
+                                    preset->config.option<ConfigOptionStrings>(
+                                        "filament_type");
+                                if (types != nullptr && !types->values.empty())
+                                    usage.material_type = types->values.front();
+                            }
+                            if (usage.filament_preset_id.empty())
+                                usage.filament_preset_id = preset->filament_id;
+                            if (usage.manufacturer.empty()) {
+                                const auto *vendors =
+                                    preset->config.option<ConfigOptionStrings>(
+                                        "filament_vendor");
+                                if (vendors != nullptr && !vendors->values.empty())
+                                    usage.manufacturer = vendors->values.front();
+                            }
+                        }
+                    }
+                    if (usage.color_hex.empty()) {
+                        const auto *colors =
+                            bundle->project_config.option<ConfigOptionStrings>(
+                                "filament_colour");
+                        if (colors != nullptr &&
+                            filament_index < colors->values.size())
+                            usage.color_hex = colors->values[filament_index];
+                    }
+                }
+                if (usage.color_hex.size() >= 7 && usage.color_hex.front() == '#')
+                    usage.color_hex.resize(7);
+                try {
+                    usage.color_hex = FilamentInventory::canonical_color(
+                        FilamentInventory::ColorModel::hex,
+                        usage.color_hex.empty() ? "#FFFFFF" : usage.color_hex);
+                } catch (const std::exception &) {
+                    usage.color_hex = "#FFFFFF";
+                }
+                usage.display_name = usage.manufacturer;
+                if (!usage.display_name.empty() && !usage.material_type.empty())
+                    usage.display_name += " ";
+                usage.display_name += usage.material_type;
+                if (usage.display_name.empty())
+                    usage.display_name = "Filament " + std::to_string(sliced.id + 1);
+
+                if (sliced.id >= 0 && diameters != nullptr &&
+                    static_cast<std::size_t>(sliced.id) < diameters->values.size())
+                    usage.diameter_mm = diameters->values[sliced.id];
+                else if (gcode_result != nullptr && sliced.id >= 0 &&
+                         static_cast<std::size_t>(sliced.id) <
+                             gcode_result->filament_diameters.size())
+                    usage.diameter_mm = gcode_result->filament_diameters[sliced.id];
+                if (sliced.id >= 0 && densities != nullptr &&
+                    static_cast<std::size_t>(sliced.id) < densities->values.size())
+                    usage.density_g_cm3 = densities->values[sliced.id];
+                else if (gcode_result != nullptr && sliced.id >= 0 &&
+                         static_cast<std::size_t>(sliced.id) <
+                             gcode_result->filament_densities.size())
+                    usage.density_g_cm3 = gcode_result->filament_densities[sliced.id];
+
+                const auto mapping = std::find_if(
+                    m_ams_mapping_result.begin(), m_ams_mapping_result.end(),
+                    [&sliced](const FilamentInfo &item) { return item.id == sliced.id; });
+                if (mapping != m_ams_mapping_result.end() && obj_->GetFilaSystem() != nullptr) {
+                    if (DevAms *ams = obj_->GetFilaSystem()->GetAmsById(mapping->ams_id)) {
+                        const auto tray = ams->GetTrays().find(mapping->slot_id);
+                        if (tray != ams->GetTrays().end() && tray->second != nullptr &&
+                            DevFilaSystem::IsBBL_Filament(tray->second->tag_uid))
+                            usage.suggested_bambu_tag_uid = tray->second->tag_uid;
+                    }
+                }
+                context.usages.emplace_back(std::move(usage));
+            }
+
+            if (context.usages.empty()) {
+                if (wxMessageBox(
+                        _L("QuackSlicer could not determine per-filament usage for this file. Continue printing without inventory tracking?"),
+                        _L("Filament inventory"), wxYES_NO | wxNO_DEFAULT | wxICON_WARNING,
+                        this) != wxYES)
+                    return;
+            } else {
+                const FilamentReservationResult reservation =
+                    reserve_filament_for_print(
+                    this, wxGetApp().filament_inventory().store(), context);
+                if (reservation.decision == FilamentReservationDecision::cancelled)
+                    return;
+                if (reservation.decision == FilamentReservationDecision::reserved) {
+                    if (!reservation.job)
+                        throw std::logic_error(
+                            "Reserved filament result does not contain a print job");
+                    m_inventory_job_id = reservation.job->id;
+                } else {
+                    m_inventory_job_id.clear();
+                }
+            }
+        } catch (const std::exception &error) {
+            if (wxMessageBox(
+                    wxString::Format(
+                        _L("Filament inventory could not be prepared:\n%s\n\nContinue without inventory tracking?"),
+                        from_u8(error.what())),
+                    _L("Filament inventory"), wxYES_NO | wxNO_DEFAULT | wxICON_ERROR,
+                    this) != wxYES)
+                return;
+        }
+    }
+
+    Enable_Send_Button(false);
+
+    const auto discard_pre_dispatch_inventory = [this] {
+        if (m_inventory_job_id.empty())
+            return;
+        try {
+            wxGetApp().filament_inventory().store().discard_job(m_inventory_job_id);
+        } catch (const std::exception &error) {
+            BOOST_LOG_TRIVIAL(error)
+                << "Could not release pre-dispatch filament reservation: " << error.what();
+        }
+        m_inventory_job_id.clear();
+    };
 
     BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << ", print_job: for send task, current printer id =  " << m_printer_last_select << std::endl;
     show_status(PrintDialogStatus::PrintStatusSending);
@@ -3521,6 +3769,7 @@ void SelectMachineDialog::on_send_print()
     if (m_is_canceled) {
         BOOST_LOG_TRIVIAL(info) << "print_job: m_is_canceled";
         m_status_bar->set_status_text(task_canceled_text);
+        discard_pre_dispatch_inventory();
         return;
     }
 
@@ -3547,12 +3796,14 @@ void SelectMachineDialog::on_send_print()
         if (m_is_canceled || m_export_3mf_cancel) {
             BOOST_LOG_TRIVIAL(info) << "print_job: m_export_3mf_cancel or m_is_canceled";
             m_status_bar->set_status_text(task_canceled_text);
+            discard_pre_dispatch_inventory();
             return;
         }
 
         if (result < 0) {
             wxString msg = _L("Abnormal print file data. Please slice again");
             m_status_bar->set_status_text(msg);
+            discard_pre_dispatch_inventory();
             return;
         }
 
@@ -3561,17 +3812,23 @@ void SelectMachineDialog::on_send_print()
             result = m_plater->export_config_3mf(m_print_plate_idx);
             if (result < 0) {
                 BOOST_LOG_TRIVIAL(info) << "export_config_3mf failed, result = " << result;
+                discard_pre_dispatch_inventory();
                 return;
             }
         }
         if (m_is_canceled || m_export_3mf_cancel) {
             BOOST_LOG_TRIVIAL(info) << "print_job: m_export_3mf_cancel or m_is_canceled";
             m_status_bar->set_status_text(task_canceled_text);
+            discard_pre_dispatch_inventory();
             return;
         }
     }
 
     m_print_job = std::make_shared<PrintJob>(m_printer_last_select);
+    m_print_job->m_inventory_bambu_baseline = {
+        obj_->print_status,
+        obj_->job_id_
+    };
     m_print_job->m_dev_ip = obj_->get_dev_ip();
     m_print_job->m_ftp_folder = obj_->get_ftp_folder();
     m_print_job->m_access_code = obj_->get_access_code();
@@ -3707,6 +3964,14 @@ void SelectMachineDialog::on_send_print()
         agent->track_update_property(dev_ota_str, obj_->get_ota_version());
     }
 
+    if (m_is_canceled) {
+        m_status_bar->set_status_text(task_canceled_text);
+        discard_pre_dispatch_inventory();
+        return;
+    }
+
+    m_print_job->m_inventory_job_id =
+        std::exchange(m_inventory_job_id, std::string());
     replace_job(*m_worker, m_print_job);
     BOOST_LOG_TRIVIAL(info) << "print_job: start print job";
 }

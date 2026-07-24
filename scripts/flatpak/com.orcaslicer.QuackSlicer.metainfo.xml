@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop">
+    <id>com.orcaslicer.QuackSlicer</id>
+    <launchable type="desktop-id">com.orcaslicer.QuackSlicer.desktop</launchable>
+    <name>QuackSlicer</name>
+    <summary>Slice, manage filament spools, and track print costs</summary>
+    <developer id="com.github.Weisni">
+        <name>QuackSlicer contributors</name>
+    </developer>
+    <url type="homepage">https://github.com/Weisni/OrcaSlicer</url>
+    <url type="bugtracker">https://github.com/Weisni/OrcaSlicer/issues</url>
+    <url type="vcs-browser">https://github.com/Weisni/OrcaSlicer</url>
+    <metadata_license>0BSD</metadata_license>
+    <project_license>AGPL-3.0-only</project_license>
+    <content_rating type="oars-1.1" />
+    <requires>
+        <display_length compare="gt">768</display_length>
+    </requires>
+    <recommends>
+        <control>keyboard</control>
+        <control>pointing</control>
+    </recommends>
+    <screenshots>
+        <screenshot type="default">
+            <image>https://raw.githubusercontent.com/OrcaSlicer/OrcaSlicer/v2.3.2/scripts/flatpak/images/1.png</image>
+            <caption>A model ready to be sliced on a build plate.</caption>
+        </screenshot>
+        <screenshot>
+            <image>https://raw.githubusercontent.com/OrcaSlicer/OrcaSlicer/v2.3.2/scripts/flatpak/images/2.png</image>
+            <caption>A calibration test ready to be printed.</caption>
+        </screenshot>
+    </screenshots>
+    <description>
+        <p>QuackSlicer is an OrcaSlicer-based, free and open-source 3D printer
+            slicer with integrated physical-spool, customer-order, material,
+            runtime, and electricity-cost tracking.</p>
+        <p>It retains OrcaSlicer's calibration, adaptive-layer, support,
+            multi-material, and network-printing capabilities while adding
+            QuackSlicer-specific project and inventory workflows.</p>
+    </description>
+    <branding>
+        <color type="primary" scheme_preference="light">#009688</color>
+        <color type="primary" scheme_preference="dark">#00695C</color>
+    </branding>
+    <releases>
+        <release version="2.5.1" date="2026-07-24">
+            <url type="details">https://github.com/Weisni/OrcaSlicer/releases/tag/v2.5.1</url>
+            <description>
+                <p>Adds filament spool inventory and customer-order cost tracking.</p>
+            </description>
+        </release>
+    </releases>
+</component>

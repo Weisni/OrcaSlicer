@@ -469,6 +469,8 @@ set(lisbslic3r_sources
     Zipper.hpp
     FilamentGroup.hpp
     FilamentGroup.cpp
+    FilamentInventory.hpp
+    FilamentInventory.cpp
     FilamentGroupUtils.hpp
     FilamentGroupUtils.cpp
     MultiNozzleUtils.hpp
@@ -604,6 +606,7 @@ target_link_libraries(libslic3r
         qhull
         qoi
         semver
+        SQLite3::SQLite3
         TBB::tbb
         TBB::tbbmalloc
         ZLIB::ZLIB
