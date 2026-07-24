@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <chrono>
 #include <cmath>
 #include <iomanip>
 #include <limits>
@@ -383,6 +384,31 @@ void exec_sql(sqlite3 *db, const char *sql)
     throw Error(ErrorCode::database, "Filament inventory database command failed: " + detail);
 }
 
+void exec_sql_retrying_busy(sqlite3 *db, const char *sql, std::chrono::milliseconds retry_window)
+{
+    const auto deadline = std::chrono::steady_clock::now() + retry_window;
+    int        delay_ms = 1;
+
+    for (;;) {
+        char     *error  = nullptr;
+        const int result = sqlite3_exec(db, sql, nullptr, nullptr, &error);
+        if (result == SQLITE_OK)
+            return;
+
+        const std::string detail = error != nullptr ? error : "unknown SQLite error";
+        sqlite3_free(error);
+
+        // SQLite may deliberately skip the configured busy handler when it
+        // detects a lock-upgrade deadlock. Retrying the complete command lets
+        // the competing connection finish without extending normal lock waits.
+        if ((result & 0xff) != SQLITE_BUSY || std::chrono::steady_clock::now() >= deadline)
+            throw Error(ErrorCode::database, "Filament inventory database command failed: " + detail);
+
+        sqlite3_sleep(delay_ms);
+        delay_ms = std::min(delay_ms * 2, 25);
+    }
+}
+
 class Statement
 {
 public:
@@ -593,7 +619,7 @@ struct Store::Impl
                 throw_sqlite(db, result, "Could not configure filament inventory busy timeout");
 
             exec_sql(db, "PRAGMA foreign_keys = ON");
-            exec_sql(db, "PRAGMA journal_mode = WAL");
+            exec_sql_retrying_busy(db, "PRAGMA journal_mode = WAL", std::chrono::seconds(1));
             exec_sql(db, "PRAGMA synchronous = NORMAL");
             migrate();
         } catch (...) {
