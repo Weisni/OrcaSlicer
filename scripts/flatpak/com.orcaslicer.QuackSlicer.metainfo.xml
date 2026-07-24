@@ -4,7 +4,7 @@
     <launchable type="desktop-id">com.orcaslicer.QuackSlicer.desktop</launchable>
     <name>QuackSlicer</name>
     <summary>Slice, manage filament spools, and track print costs</summary>
-    <developer id="com.github.Weisni">
+    <developer id="io.github.weisni">
         <name>QuackSlicer contributors</name>
     </developer>
     <url type="homepage">https://github.com/Weisni/OrcaSlicer</url>
