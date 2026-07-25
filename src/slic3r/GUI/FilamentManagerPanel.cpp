@@ -1,5 +1,6 @@
 #include "FilamentManagerPanel.hpp"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -15,8 +16,9 @@
 #include <wx/dataobj.h>
 #include <wx/dataview.h>
 #include <wx/dialog.h>
+#include <wx/icon.h>
 #include <wx/msgdlg.h>
-#include <wx/notebook.h>
+#include <wx/simplebook.h>
 #include <wx/sizer.h>
 #include <wx/statbox.h>
 #include <wx/stattext.h>
@@ -28,6 +30,8 @@
 #include "CustomerOrderDialogs.hpp"
 #include "FilamentInventoryService.hpp"
 #include "FilamentSpoolEditor.hpp"
+#include "Widgets/StateColor.hpp"
+#include "Widgets/TabCtrl.hpp"
 #include "wxExtensions.hpp"
 
 namespace Slic3r::GUI {
@@ -107,26 +111,56 @@ wxString format_duration(std::int64_t seconds)
                wxString::Format("%lld min", static_cast<long long>(minutes));
 }
 
-wxString warning_description(const Spool &spool)
+wxString em_dash()
+{
+    return wxString::FromUTF8("\xE2\x80\x94");
+}
+
+wxString em_dash_separator()
+{
+    return wxString::FromUTF8(" \xE2\x80\x94 ");
+}
+
+std::optional<Milligrams> warning_threshold(const Spool &spool)
 {
     if (spool.warning_mode == WarningMode::none)
+        return std::nullopt;
+    if (spool.warning_mode == WarningMode::grams)
+        return spool.warning_value;
+
+    const long double value =
+        static_cast<long double>(spool.nominal_capacity_mg) *
+        static_cast<long double>(spool.warning_value) / 10'000.0L;
+    return static_cast<Milligrams>(std::llround(value));
+}
+
+bool is_low_stock(const Spool &spool)
+{
+    const std::optional<Milligrams> threshold = warning_threshold(spool);
+    return threshold && spool.available_weight_mg <= *threshold;
+}
+
+long fill_level_percent(const Spool &spool)
+{
+    if (spool.nominal_capacity_mg <= 0)
+        return 0;
+
+    const long double percentage =
+        static_cast<long double>(spool.current_weight_mg) * 100.0L /
+        static_cast<long double>(spool.nominal_capacity_mg);
+    return static_cast<long>(std::llround(std::clamp(percentage, 0.0L, 100.0L)));
+}
+
+wxString warning_description(const Spool &spool)
+{
+    const std::optional<Milligrams> threshold = warning_threshold(spool);
+    if (!threshold)
         return _L("Off");
 
-    Milligrams threshold = 0;
-    if (spool.warning_mode == WarningMode::grams) {
-        threshold = spool.warning_value;
-    } else {
-        const long double value =
-            static_cast<long double>(spool.nominal_capacity_mg) *
-            static_cast<long double>(spool.warning_value) / 10'000.0L;
-        threshold = static_cast<Milligrams>(std::llround(value));
-    }
-
-    const bool low = spool.available_weight_mg <= threshold;
     wxString threshold_text = spool.warning_mode == WarningMode::grams ?
-                              format_weight(threshold) :
+                              format_weight(*threshold) :
                               wxString::Format("%.1f%%", static_cast<double>(spool.warning_value) / 100.0);
-    return low ? _L("Low") + " (" + threshold_text + ")" : threshold_text;
+    return is_low_stock(spool) ? _L("Low") + " (" + threshold_text + ")" : threshold_text;
 }
 
 void append_row(wxDataViewListCtrl *list, std::initializer_list<wxString> cells)
@@ -136,6 +170,43 @@ void append_row(wxDataViewListCtrl *list, std::initializer_list<wxString> cells)
     for (const wxString &cell : cells)
         values.emplace_back(cell);
     list->AppendItem(values);
+}
+
+void style_data_view(wxDataViewListCtrl *list)
+{
+    list->SetRowHeight(list->FromDIP(42));
+    wxGetApp().UpdateDVCDarkUI(list);
+    list->SetBackgroundColour(StateColor::darkModeColorFor(wxColour("#FFFFFF")));
+    list->SetForegroundColour(StateColor::darkModeColorFor(wxColour("#262E30")));
+    list->SetAlternateRowColour(StateColor::darkModeColorFor(wxColour("#F8F8F8")));
+}
+
+wxStaticText *add_summary_card(wxWindow *parent, wxBoxSizer *row, const wxString &caption)
+{
+    auto *card = new wxPanel(parent, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxBORDER_NONE);
+    const wxColour background = StateColor::darkModeColorFor(wxColour("#F8F8F8"));
+    card->SetBackgroundColour(background);
+
+    auto *card_sizer = new wxBoxSizer(wxVERTICAL);
+    auto *caption_text = new wxStaticText(card, wxID_ANY, caption);
+    caption_text->SetBackgroundColour(background);
+    caption_text->SetForegroundColour(
+        StateColor::darkModeColorFor(wxColour("#6B6B6B")));
+    auto *value = new wxStaticText(card, wxID_ANY, "0");
+    value->SetBackgroundColour(background);
+    value->SetForegroundColour(StateColor::darkModeColorFor(wxColour("#262E30")));
+    wxFont value_font = value->GetFont();
+    value_font.SetWeight(wxFONTWEIGHT_BOLD);
+    value_font.SetPointSize(value_font.GetPointSize() + 2);
+    value->SetFont(value_font);
+
+    card_sizer->Add(caption_text, 0, wxBOTTOM, parent->FromDIP(4));
+    card_sizer->Add(value);
+    card->SetSizer(card_sizer);
+    card_sizer->SetSizeHints(card);
+
+    row->Add(card, 1, wxEXPAND | wxALL, parent->FromDIP(6));
+    return value;
 }
 
 class SpoolEditorDialog : public wxDialog
@@ -573,21 +644,52 @@ FilamentManagerPanel::FilamentManagerPanel(wxWindow *parent, wxWindowID id,
     , m_refresh_timer(this)
 {
     auto *root = new wxBoxSizer(wxVERTICAL);
-    auto *heading = new wxStaticText(this, wxID_ANY, _L("Filament Manager"));
+    const wxColour page_background =
+        StateColor::darkModeColorFor(wxColour("#FFFFFF"));
+    const wxColour header_background =
+        StateColor::darkModeColorFor(wxColour("#F8F8F8"));
+    SetBackgroundColour(page_background);
+
+    auto *header = new wxPanel(this, wxID_ANY);
+    header->SetBackgroundColour(header_background);
+    auto *header_sizer = new wxBoxSizer(wxVERTICAL);
+    auto *heading = new wxStaticText(header, wxID_ANY, _L("Filament Manager"));
+    heading->SetBackgroundColour(header_background);
+    heading->SetForegroundColour(
+        StateColor::darkModeColorFor(wxColour("#009688")));
     wxFont heading_font = heading->GetFont();
     heading_font.SetWeight(wxFONTWEIGHT_BOLD);
     heading_font.SetPointSize(heading_font.GetPointSize() + 4);
     heading->SetFont(heading_font);
-    root->Add(heading, 0, wxLEFT | wxRIGHT | wxTOP, FromDIP(16));
+    header_sizer->Add(
+        heading, 0, wxLEFT | wxRIGHT | wxTOP, FromDIP(16));
 
     auto *description = new wxStaticText(
-        this, wxID_ANY,
+        header, wxID_ANY,
         _L("Track physical spools, reserve sliced material, and confirm completed print jobs."));
-    root->Add(description, 0, wxLEFT | wxRIGHT | wxTOP, FromDIP(16));
+    description->SetBackgroundColour(header_background);
+    description->SetForegroundColour(
+        StateColor::darkModeColorFor(wxColour("#6B6B6B")));
+    header_sizer->Add(
+        description, 0, wxLEFT | wxRIGHT | wxTOP | wxBOTTOM, FromDIP(16));
+    header->SetSizer(header_sizer);
+    root->Add(
+        header, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, FromDIP(16));
 
-    m_pages = new wxNotebook(this, wxID_ANY);
+    m_tabs = new TabCtrl(
+        this, wxID_ANY, wxDefaultPosition, wxDefaultSize,
+        wxTR_NO_BUTTONS | wxTR_HIDE_ROOT | wxTR_SINGLE | wxTR_NO_LINES |
+            wxBORDER_NONE | wxWANTS_CHARS | wxTR_FULL_ROW_HIGHLIGHT);
+    m_tabs->SetBackgroundColour(page_background);
+    root->Add(
+        m_tabs, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, FromDIP(16));
+
+    m_pages = new wxSimplebook(
+        this, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxBORDER_NONE);
+    m_pages->SetBackgroundColour(page_background);
 
     auto *spools_page = new wxPanel(m_pages);
+    spools_page->SetBackgroundColour(page_background);
     auto *spools_sizer = new wxBoxSizer(wxVERTICAL);
     auto *spools_heading = new wxStaticText(spools_page, wxID_ANY, _L("Physical spools"));
     wxFont spools_heading_font = spools_heading->GetFont();
@@ -601,6 +703,18 @@ FilamentManagerPanel::FilamentManagerPanel(wxWindow *parent, wxWindowID id,
         _L("Double-click a spool to edit its properties, colour, stock level, and warning."));
     spools_sizer->Add(
         spools_help, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, FromDIP(6));
+
+    auto *summary = new wxBoxSizer(wxHORIZONTAL);
+    m_active_spools_value =
+        add_summary_card(spools_page, summary, _L("Active spools"));
+    m_available_value =
+        add_summary_card(spools_page, summary, _L("Available material"));
+    m_reserved_value =
+        add_summary_card(spools_page, summary, _L("Reserved material"));
+    m_low_stock_value =
+        add_summary_card(spools_page, summary, _L("Low stock"));
+    spools_sizer->Add(
+        summary, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, FromDIP(4));
 
     auto *spool_buttons = new wxBoxSizer(wxHORIZONTAL);
     m_add_button = new wxButton(spools_page, wxID_ANY, _L("Add spool"));
@@ -626,21 +740,29 @@ FilamentManagerPanel::FilamentManagerPanel(wxWindow *parent, wxWindowID id,
     spools_sizer->Add(spool_buttons, 0, wxEXPAND | wxALL, FromDIP(10));
 
     m_spool_list = new wxDataViewListCtrl(spools_page, wxID_ANY, wxDefaultPosition, wxDefaultSize,
-                                          wxDV_ROW_LINES | wxDV_VERT_RULES);
-    m_spool_list->AppendTextColumn(_L("Name"), wxDATAVIEW_CELL_INERT, FromDIP(190));
+                                          wxDV_ROW_LINES | wxBORDER_NONE);
+    m_spool_list->AppendIconTextColumn(
+        _L("Spool"), wxDATAVIEW_CELL_INERT, FromDIP(210));
     m_spool_list->AppendTextColumn(_L("Manufacturer"), wxDATAVIEW_CELL_INERT, FromDIP(140));
     m_spool_list->AppendTextColumn(_L("Material"), wxDATAVIEW_CELL_INERT, FromDIP(90));
-    m_spool_list->AppendTextColumn(_L("sRGB colour"), wxDATAVIEW_CELL_INERT, FromDIP(105));
-    m_spool_list->AppendTextColumn(_L("Price/kg"), wxDATAVIEW_CELL_INERT, FromDIP(100));
-    m_spool_list->AppendTextColumn(_L("Remaining"), wxDATAVIEW_CELL_INERT, FromDIP(100));
-    m_spool_list->AppendTextColumn(_L("Reserved"), wxDATAVIEW_CELL_INERT, FromDIP(100));
-    m_spool_list->AppendTextColumn(_L("Available"), wxDATAVIEW_CELL_INERT, FromDIP(100));
+    m_spool_list->AppendTextColumn(
+        _L("Price/kg"), wxDATAVIEW_CELL_INERT, FromDIP(100), wxALIGN_RIGHT);
+    m_spool_list->AppendProgressColumn(
+        _L("Fill level"), wxDATAVIEW_CELL_INERT, FromDIP(125), wxALIGN_CENTER);
+    m_spool_list->AppendTextColumn(
+        _L("Remaining / capacity"), wxDATAVIEW_CELL_INERT, FromDIP(150), wxALIGN_RIGHT);
+    m_spool_list->AppendTextColumn(
+        _L("Reserved"), wxDATAVIEW_CELL_INERT, FromDIP(100), wxALIGN_RIGHT);
+    m_spool_list->AppendTextColumn(
+        _L("Available"), wxDATAVIEW_CELL_INERT, FromDIP(100), wxALIGN_RIGHT);
     m_spool_list->AppendTextColumn(_L("Warning"), wxDATAVIEW_CELL_INERT, FromDIP(110));
     m_spool_list->AppendTextColumn(_L("Identifiers"), wxDATAVIEW_CELL_INERT, FromDIP(140));
+    style_data_view(m_spool_list);
     spools_sizer->Add(m_spool_list, 1, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(10));
     spools_page->SetSizer(spools_sizer);
 
     auto *jobs_page = new wxPanel(m_pages);
+    jobs_page->SetBackgroundColour(page_background);
     auto *jobs_sizer = new wxBoxSizer(wxVERTICAL);
     auto *job_buttons = new wxBoxSizer(wxHORIZONTAL);
     m_confirm_button = new wxButton(jobs_page, wxID_ANY, _L("Confirm estimated usage"));
@@ -655,7 +777,7 @@ FilamentManagerPanel::FilamentManagerPanel(wxWindow *parent, wxWindowID id,
     jobs_sizer->Add(job_buttons, 0, wxEXPAND | wxALL, FromDIP(10));
 
     m_job_list = new wxDataViewListCtrl(jobs_page, wxID_ANY, wxDefaultPosition, wxDefaultSize,
-                                        wxDV_ROW_LINES | wxDV_VERT_RULES);
+                                        wxDV_ROW_LINES | wxBORDER_NONE);
     m_job_list->AppendTextColumn(_L("Job"), wxDATAVIEW_CELL_INERT, FromDIP(220));
     m_job_list->AppendTextColumn(_L("Customer order"), wxDATAVIEW_CELL_INERT, FromDIP(210));
     m_job_list->AppendTextColumn(_L("State"), wxDATAVIEW_CELL_INERT, FromDIP(110));
@@ -665,36 +787,40 @@ FilamentManagerPanel::FilamentManagerPanel(wxWindow *parent, wxWindowID id,
     m_job_list->AppendTextColumn(_L("Runtime"), wxDATAVIEW_CELL_INERT, FromDIP(110));
     m_job_list->AppendTextColumn(_L("Est. cost"), wxDATAVIEW_CELL_INERT, FromDIP(110));
     m_job_list->AppendTextColumn(_L("Created"), wxDATAVIEW_CELL_INERT, FromDIP(190));
+    style_data_view(m_job_list);
     jobs_sizer->Add(m_job_list, 1, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(10));
     jobs_page->SetSizer(jobs_sizer);
 
     auto *history_page = new wxPanel(m_pages);
+    history_page->SetBackgroundColour(page_background);
     auto *history_sizer = new wxBoxSizer(wxVERTICAL);
     auto *refresh_history_button = new wxButton(history_page, wxID_ANY, _L("Refresh"));
     history_sizer->Add(refresh_history_button, 0, wxALL, FromDIP(10));
     m_history_list = new wxDataViewListCtrl(history_page, wxID_ANY, wxDefaultPosition, wxDefaultSize,
-                                            wxDV_ROW_LINES | wxDV_VERT_RULES);
+                                            wxDV_ROW_LINES | wxBORDER_NONE);
     m_history_list->AppendTextColumn(_L("Time"), wxDATAVIEW_CELL_INERT, FromDIP(190));
     m_history_list->AppendTextColumn(_L("Spool"), wxDATAVIEW_CELL_INERT, FromDIP(180));
     m_history_list->AppendTextColumn(_L("Type"), wxDATAVIEW_CELL_INERT, FromDIP(120));
     m_history_list->AppendTextColumn(_L("Change"), wxDATAVIEW_CELL_INERT, FromDIP(100));
     m_history_list->AppendTextColumn(_L("Balance"), wxDATAVIEW_CELL_INERT, FromDIP(100));
     m_history_list->AppendTextColumn(_L("Note"), wxDATAVIEW_CELL_INERT, FromDIP(320));
+    style_data_view(m_history_list);
     history_sizer->Add(m_history_list, 1, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(10));
     history_page->SetSizer(history_sizer);
 
-    m_pages->AddPage(spools_page, _L("Spools"), true);
-    m_pages->AddPage(jobs_page, _L("Open print jobs"));
-    m_pages->AddPage(history_page, _L("Stock history"));
+    m_pages->AddPage(spools_page, wxEmptyString, true);
+    m_pages->AddPage(jobs_page, wxEmptyString);
+    m_pages->AddPage(history_page, wxEmptyString);
 
     auto *job_history_page = new wxPanel(m_pages);
+    job_history_page->SetBackgroundColour(page_background);
     auto *job_history_sizer = new wxBoxSizer(wxVERTICAL);
     auto *refresh_job_history_button = new wxButton(
         job_history_page, wxID_ANY, _L("Refresh"));
     job_history_sizer->Add(refresh_job_history_button, 0, wxALL, FromDIP(10));
     m_job_history_list = new wxDataViewListCtrl(
         job_history_page, wxID_ANY, wxDefaultPosition, wxDefaultSize,
-        wxDV_ROW_LINES | wxDV_VERT_RULES);
+        wxDV_ROW_LINES | wxBORDER_NONE);
     m_job_history_list->AppendTextColumn(_L("Job"), wxDATAVIEW_CELL_INERT, FromDIP(220));
     m_job_history_list->AppendTextColumn(_L("Customer order"), wxDATAVIEW_CELL_INERT, FromDIP(210));
     m_job_history_list->AppendTextColumn(_L("State"), wxDATAVIEW_CELL_INERT, FromDIP(110));
@@ -705,12 +831,14 @@ FilamentManagerPanel::FilamentManagerPanel(wxWindow *parent, wxWindowID id,
     m_job_history_list->AppendTextColumn(_L("Total cost"), wxDATAVIEW_CELL_INERT, FromDIP(110));
     m_job_history_list->AppendTextColumn(_L("Created"), wxDATAVIEW_CELL_INERT, FromDIP(190));
     m_job_history_list->AppendTextColumn(_L("Completed"), wxDATAVIEW_CELL_INERT, FromDIP(190));
+    style_data_view(m_job_history_list);
     job_history_sizer->Add(
         m_job_history_list, 1, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(10));
     job_history_page->SetSizer(job_history_sizer);
-    m_pages->AddPage(job_history_page, _L("Job history"));
+    m_pages->AddPage(job_history_page, wxEmptyString);
 
     auto *customers_page = new wxPanel(m_pages);
+    customers_page->SetBackgroundColour(page_background);
     auto *customers_sizer = new wxBoxSizer(wxVERTICAL);
 
     auto *cost_bar = new wxBoxSizer(wxHORIZONTAL);
@@ -739,12 +867,13 @@ FilamentManagerPanel::FilamentManagerPanel(wxWindow *parent, wxWindowID id,
 
     m_customer_list = new wxDataViewListCtrl(
         customers_page, wxID_ANY, wxDefaultPosition, wxSize(-1, FromDIP(170)),
-        wxDV_ROW_LINES | wxDV_VERT_RULES);
+        wxDV_ROW_LINES | wxBORDER_NONE);
     m_customer_list->AppendTextColumn(_L("Customer"), wxDATAVIEW_CELL_INERT, FromDIP(210));
     m_customer_list->AppendTextColumn(_L("Contact"), wxDATAVIEW_CELL_INERT, FromDIP(180));
     m_customer_list->AppendTextColumn(_L("Email"), wxDATAVIEW_CELL_INERT, FromDIP(220));
     m_customer_list->AppendTextColumn(_L("Phone"), wxDATAVIEW_CELL_INERT, FromDIP(140));
     m_customer_list->AppendTextColumn(_L("Accumulated cost"), wxDATAVIEW_CELL_INERT, FromDIP(140));
+    style_data_view(m_customer_list);
     customers_sizer->Add(
         m_customer_list, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(10));
 
@@ -767,7 +896,7 @@ FilamentManagerPanel::FilamentManagerPanel(wxWindow *parent, wxWindowID id,
 
     m_order_list = new wxDataViewListCtrl(
         customers_page, wxID_ANY, wxDefaultPosition, wxDefaultSize,
-        wxDV_ROW_LINES | wxDV_VERT_RULES);
+        wxDV_ROW_LINES | wxBORDER_NONE);
     m_order_list->AppendTextColumn(_L("Order"), wxDATAVIEW_CELL_INERT, FromDIP(210));
     m_order_list->AppendTextColumn(_L("Customer"), wxDATAVIEW_CELL_INERT, FromDIP(180));
     m_order_list->AppendTextColumn(_L("Status"), wxDATAVIEW_CELL_INERT, FromDIP(100));
@@ -777,12 +906,28 @@ FilamentManagerPanel::FilamentManagerPanel(wxWindow *parent, wxWindowID id,
     m_order_list->AppendTextColumn(_L("Total cost"), wxDATAVIEW_CELL_INERT, FromDIP(110));
     m_order_list->AppendTextColumn(_L("Quoted"), wxDATAVIEW_CELL_INERT, FromDIP(110));
     m_order_list->AppendTextColumn(_L("Invoice"), wxDATAVIEW_CELL_INERT, FromDIP(110));
+    style_data_view(m_order_list);
     customers_sizer->Add(
         m_order_list, 1, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(10));
     customers_page->SetSizer(customers_sizer);
-    m_pages->AddPage(customers_page, _L("Customers & orders"));
+    m_pages->AddPage(customers_page, wxEmptyString);
 
-    root->Add(m_pages, 1, wxEXPAND | wxALL, FromDIP(10));
+    m_tabs->AppendItem(_L("Spools"));
+    m_tabs->AppendItem(_L("Open print jobs"));
+    m_tabs->AppendItem(_L("Stock history"));
+    m_tabs->AppendItem(_L("Job history"));
+    m_tabs->AppendItem(_L("Customers & orders"));
+    m_tabs->Bind(wxEVT_TAB_SEL_CHANGED, [this](wxCommandEvent &event) {
+        const int selection = event.GetSelection();
+        if (selection >= 0 && selection < static_cast<int>(m_pages->GetPageCount()))
+            m_pages->SetSelection(selection);
+        for (unsigned int index = 0; index < m_tabs->GetCount(); ++index)
+            m_tabs->SetItemBold(index, static_cast<int>(index) == selection);
+    });
+    m_tabs->SelectItem(0);
+
+    root->Add(
+        m_pages, 1, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(16));
     SetSizer(root);
 
     m_add_button->Bind(wxEVT_BUTTON, [this](wxCommandEvent &) { add_spool(); });
@@ -900,6 +1045,11 @@ void FilamentManagerPanel::refresh()
 
 void FilamentManagerPanel::refresh_spools()
 {
+    std::string selected_spool_id;
+    const int selected_row = selected_spool_row();
+    if (selected_row >= 0 && selected_row < static_cast<int>(m_spools.size()))
+        selected_spool_id = m_spools[static_cast<std::size_t>(selected_row)].id;
+
     m_spools = m_store->list_spools();
     m_spool_list->DeleteAllItems();
     std::map<std::string, std::pair<bool, bool>> physical_tags;
@@ -908,7 +1058,13 @@ void FilamentManagerPanel::refresh_spools()
         tags.first  = tags.first || identifier.kind == IdentifierKind::nfc_uid;
         tags.second = tags.second || identifier.kind == IdentifierKind::bambu_tag_uid;
     }
-    for (const Spool &spool : m_spools) {
+
+    long double available_total_mg = 0.0L;
+    long double reserved_total_mg = 0.0L;
+    std::size_t low_stock_count = 0;
+    int restored_row = wxNOT_FOUND;
+    for (std::size_t row = 0; row < m_spools.size(); ++row) {
+        const Spool &spool = m_spools[row];
         const auto found = physical_tags.find(spool.id);
         const bool has_nfc = found != physical_tags.end() && found->second.first;
         const bool has_bambu = found != physical_tags.end() && found->second.second;
@@ -920,19 +1076,52 @@ void FilamentManagerPanel::refresh_spools()
             identifiers += "Bambu";
         }
 
-        append_row(m_spool_list, {
-            from_u8(spool.name),
-            from_u8(spool.manufacturer),
-            from_u8(spool.material_type),
-            from_u8(spool.color_hex),
-            format_money(spool.material_price_per_kg_micros, spool.price_currency),
-            format_weight(spool.current_weight_mg),
-            format_weight(spool.reserved_weight_mg),
-            format_weight(spool.available_weight_mg),
-            warning_description(spool),
-            identifiers
-        });
+        wxBitmap spool_bitmap =
+            create_scaled_bitmap("filament_green", m_spool_list, 30, false, spool.color_hex);
+        wxIcon spool_icon;
+        spool_icon.CopyFromBitmap(spool_bitmap);
+        wxVariant spool_cell;
+        spool_cell << wxDataViewIconText(from_u8(spool.name), spool_icon);
+
+        wxVector<wxVariant> values;
+        values.reserve(10);
+        values.emplace_back(spool_cell);
+        values.emplace_back(from_u8(spool.manufacturer));
+        values.emplace_back(from_u8(spool.material_type));
+        values.emplace_back(
+            format_money(spool.material_price_per_kg_micros, spool.price_currency));
+        values.emplace_back(fill_level_percent(spool));
+        values.emplace_back(
+            format_weight(spool.current_weight_mg) + " / " +
+            format_weight(spool.nominal_capacity_mg));
+        values.emplace_back(format_weight(spool.reserved_weight_mg));
+        values.emplace_back(format_weight(spool.available_weight_mg));
+        values.emplace_back(warning_description(spool));
+        values.emplace_back(identifiers);
+        m_spool_list->AppendItem(values);
+
+        available_total_mg += static_cast<long double>(spool.available_weight_mg);
+        reserved_total_mg += static_cast<long double>(spool.reserved_weight_mg);
+        if (is_low_stock(spool))
+            ++low_stock_count;
+        if (!selected_spool_id.empty() && spool.id == selected_spool_id)
+            restored_row = static_cast<int>(row);
     }
+
+    if (restored_row != wxNOT_FOUND)
+        m_spool_list->SelectRow(static_cast<unsigned int>(restored_row));
+
+    const auto format_total = [](long double milligrams) {
+        if (std::abs(milligrams) >= 1'000'000.0L)
+            return wxString::Format("%.2f kg", static_cast<double>(milligrams / 1'000'000.0L));
+        return wxString::Format("%.1f g", static_cast<double>(milligrams / 1'000.0L));
+    };
+    m_active_spools_value->SetLabel(wxString::Format("%zu", m_spools.size()));
+    m_available_value->SetLabel(format_total(available_total_mg));
+    m_reserved_value->SetLabel(format_total(reserved_total_mg));
+    m_low_stock_value->SetLabel(wxString::Format("%zu", low_stock_count));
+    m_low_stock_value->SetForegroundColour(StateColor::darkModeColorFor(
+        wxColour(low_stock_count > 0 ? "#FF6F00" : "#262E30")));
 }
 
 void FilamentManagerPanel::refresh_jobs()
@@ -958,7 +1147,9 @@ void FilamentManagerPanel::refresh_jobs()
             if (order != orders.end()) {
                 const auto customer = customers.find(order->second.customer_id);
                 order_label = customer != customers.end() ?
-                                  from_u8(customer->second.name) + " — " : wxString {};
+                                  from_u8(customer->second.name) +
+                                      em_dash_separator() :
+                                  wxString {};
                 order_label += from_u8(
                     order->second.order_number.empty() ?
                         order->second.title : order->second.order_number);
@@ -1026,7 +1217,9 @@ void FilamentManagerPanel::refresh_job_history()
             if (order != orders.end()) {
                 const auto customer = customers.find(order->second.customer_id);
                 order_label = customer != customers.end() ?
-                                  from_u8(customer->second.name) + " — " : wxString {};
+                                  from_u8(customer->second.name) +
+                                      em_dash_separator() :
+                                  wxString {};
                 order_label += from_u8(
                     order->second.order_number.empty() ?
                         order->second.title : order->second.order_number);
@@ -1039,11 +1232,11 @@ void FilamentManagerPanel::refresh_job_history()
             from_u8(to_string(job.state)),
             from_u8(job.printer_id),
             format_weight(estimated),
-            has_actual ? format_weight(actual) : wxString("—"),
+            has_actual ? format_weight(actual) : em_dash(),
             format_duration(job.estimated_runtime_seconds),
             format_money(costs.total_cost_micros, costs.currency),
             from_u8(job.created_at),
-            job.completed_at.empty() ? wxString("—") : from_u8(job.completed_at)
+            job.completed_at.empty() ? em_dash() : from_u8(job.completed_at)
         });
     }
 }
@@ -1081,7 +1274,7 @@ void FilamentManagerPanel::refresh_customers_and_orders()
         wxString order_label = from_u8(order.order_number);
         if (!order.title.empty()) {
             if (!order_label.empty())
-                order_label += " — ";
+                order_label += em_dash_separator();
             order_label += from_u8(order.title);
         }
         append_row(m_order_list, {

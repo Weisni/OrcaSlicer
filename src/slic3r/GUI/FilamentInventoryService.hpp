@@ -25,6 +25,7 @@ public:
     };
 
     FilamentInventoryService();
+    explicit FilamentInventoryService(std::string database_path);
     ~FilamentInventoryService();
 
     FilamentInventoryService(const FilamentInventoryService &) = delete;
@@ -46,6 +47,7 @@ public:
         const std::string &external_job_id);
     void mark_dispatch_failed(const std::string &inventory_job_id, bool ambiguous);
     void observe_bambu_status(BambuStatusSnapshot snapshot);
+    void wait_for_idle();
 
 private:
     using Task = std::function<void(FilamentInventory::Store &)>;
@@ -55,9 +57,11 @@ private:
 
     std::mutex                                  m_store_mutex;
     std::unique_ptr<FilamentInventory::Store>   m_store;
+    std::string                                 m_database_path;
 
     std::mutex              m_queue_mutex;
     std::condition_variable m_queue_condition;
+    std::condition_variable m_idle_condition;
     std::deque<Task>        m_tasks;
     struct PendingBambuJob {
         std::string         inventory_job_id;
@@ -69,6 +73,7 @@ private:
     // accepted Bambu dispatch and the first status message carrying its IDs.
     std::map<std::string, PendingBambuJob> m_pending_bambu_jobs;
     std::atomic<std::uint64_t> m_revision {0};
+    bool                    m_task_active {false};
     bool                    m_stopping {false};
     std::thread             m_worker;
 };

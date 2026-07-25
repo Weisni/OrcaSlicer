@@ -5,6 +5,8 @@
 #include <string>
 #include <vector>
 
+#include <wx/string.h>
+
 #include "libslic3r/FilamentInventory.hpp"
 
 class wxWindow;
@@ -42,6 +44,12 @@ struct FilamentReservationResult {
     FilamentReservationDecision decision {FilamentReservationDecision::cancelled};
     std::optional<FilamentInventory::PrintJob> job;
 };
+
+namespace FilamentAllocationDetail {
+
+wxString format_spool_choice_label(const FilamentInventory::Spool &spool);
+
+} // namespace FilamentAllocationDetail
 
 // A reserved result contains a job which has already been reserved atomically,
 // so the caller may start dispatch immediately. Continuing without tracking

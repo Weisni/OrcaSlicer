@@ -42,6 +42,11 @@ wxString format_weight(Milligrams milligrams)
     return wxString::Format("%.1f g", static_cast<double>(milligrams) / 1'000.0);
 }
 
+wxString em_dash_separator()
+{
+    return wxString::FromUTF8(" \xE2\x80\x94 ");
+}
+
 class FilamentAllocationDialog : public wxDialog
 {
 public:
@@ -73,11 +78,12 @@ public:
         for (const CustomerOrder &order : m_orders) {
             const auto customer = customer_names.find(order.customer_id);
             wxString label = customer != customer_names.end() ?
-                                 from_u8(customer->second) + " — " : wxString {};
+                                 from_u8(customer->second) + em_dash_separator() :
+                                 wxString {};
             label += from_u8(
                 order.order_number.empty() ? order.title : order.order_number);
             if (!order.title.empty() && !order.order_number.empty())
-                label += " — " + from_u8(order.title);
+                label += em_dash_separator() + from_u8(order.title);
             m_customer_order->Append(label);
         }
         m_customer_order->SetSelection(0);
@@ -289,12 +295,9 @@ private:
                 m_context.usages[row].suggested_bambu_tag_uid.empty() ?
                     _L("Select a spool...") :
                     _L("Bambu RFID is not linked — select or create a spool..."));
-            for (const Spool &spool : m_spools) {
-                choice->Append(wxString::Format(
-                    "%s — %s, %s available",
-                    from_u8(spool.name), from_u8(spool.material_type),
-                    format_weight(spool.available_weight_mg)));
-            }
+            for (const Spool &spool : m_spools)
+                choice->Append(
+                    FilamentAllocationDetail::format_spool_choice_label(spool));
 
             std::string desired = previous[row];
             if (preferred_row && *preferred_row == row)
@@ -347,6 +350,15 @@ private:
 };
 
 } // namespace
+
+wxString FilamentAllocationDetail::format_spool_choice_label(
+    const FilamentInventory::Spool &spool)
+{
+    return wxString::Format(
+        _L("%s — %s, %s available"),
+        from_u8(spool.name), from_u8(spool.material_type),
+        format_weight(spool.available_weight_mg));
+}
 
 FilamentReservationResult reserve_filament_for_print(
     wxWindow *parent, Store &store, const FilamentReservationContext &context)

@@ -201,11 +201,14 @@ if (WIN32)
     if(MSVC)
         target_link_options(OrcaSlicer_app_gui PUBLIC "$<$<CONFIG:RELEASE>:/DEBUG>")
     endif()
-    target_compile_definitions(OrcaSlicer_app_gui PRIVATE "$<$<NOT:$<CONFIG:RelWithDebInfo>>:SLIC3R_WRAPPER_NOCONSOLE>")
+    # Keep diagnostics in the regular log files for every configuration.
+    # A console-subsystem RelWithDebInfo wrapper leaves an unwanted terminal
+    # attached to the GUI and closing that terminal also terminates QuackSlicer.
+    target_compile_definitions(OrcaSlicer_app_gui PRIVATE SLIC3R_WRAPPER_NOCONSOLE)
     add_dependencies(OrcaSlicer_app_gui OrcaSlicer)
     set_target_properties(OrcaSlicer_app_gui PROPERTIES
         OUTPUT_NAME "quack-slicer"
-        WIN32_EXECUTABLE "$<NOT:$<CONFIG:RelWithDebInfo>>"
+        WIN32_EXECUTABLE TRUE
     )
     target_link_libraries(OrcaSlicer_app_gui PRIVATE boost_headeronly)
 endif ()
@@ -253,13 +256,17 @@ if (WIN32)
             )
         endforeach ()
 
-        if ("${CMAKE_BUILD_TYPE}" STREQUAL "Debug")
-            orcaslicer_copy_dlls(COPY_DLLS "Debug" "d" output_dlls_Debug)
-        elseif("${CMAKE_BUILD_TYPE}" STREQUAL "RelWithDebInfo")
-            orcaslicer_copy_dlls(COPY_DLLS "RelWithDebInfo" "" output_dlls_Release)
-        else()
-            orcaslicer_copy_dlls(COPY_DLLS "Release" "" output_dlls_Release)
-        endif()
+        # Multi-config generators leave CMAKE_BUILD_TYPE empty. Stage the
+        # runtime DLLs for every configuration instead of silently populating
+        # only Release, otherwise Debug and RelWithDebInfo executables cannot
+        # be started directly from their build directories.
+        foreach (CONF ${CMAKE_CONFIGURATION_TYPES})
+            if ("${CONF}" STREQUAL "Debug")
+                orcaslicer_copy_dlls(COPY_DLLS "${CONF}" "d" output_dlls_Debug)
+            else ()
+                orcaslicer_copy_dlls(COPY_DLLS "${CONF}" "" output_dlls_${CONF})
+            endif ()
+        endforeach ()
     else ()
         file(TO_NATIVE_PATH "${CMAKE_CURRENT_BINARY_DIR}/resources" WIN_RESOURCES_SYMLINK)
         add_custom_command(TARGET OrcaSlicer POST_BUILD
@@ -267,6 +274,16 @@ if (WIN32)
             COMMENT "Symlinking the resources directory into the build tree"
             VERBATIM
         )
+
+        set(_runtime_config "${CMAKE_BUILD_TYPE}")
+        if ("${_runtime_config}" STREQUAL "")
+            set(_runtime_config "Release")
+        endif ()
+        if ("${_runtime_config}" STREQUAL "Debug")
+            orcaslicer_copy_dlls(COPY_DLLS "${_runtime_config}" "d" output_dlls_Debug)
+        else ()
+            orcaslicer_copy_dlls(COPY_DLLS "${_runtime_config}" "" output_dlls_${_runtime_config})
+        endif ()
     endif ()
     # copy libpython to the bin folder for Windows
     add_custom_command(TARGET OrcaSlicer POST_BUILD

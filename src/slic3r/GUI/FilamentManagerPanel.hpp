@@ -12,7 +12,9 @@
 
 class wxButton;
 class wxDataViewListCtrl;
-class wxNotebook;
+class wxSimplebook;
+class wxStaticText;
+class TabCtrl;
 
 namespace Slic3r::GUI {
 
@@ -75,7 +77,8 @@ private:
     std::vector<Customer>           m_customers;
     std::vector<CustomerOrder>      m_customer_orders;
 
-    wxNotebook         *m_pages {nullptr};
+    TabCtrl            *m_tabs {nullptr};
+    wxSimplebook       *m_pages {nullptr};
     wxDataViewListCtrl *m_spool_list {nullptr};
     wxDataViewListCtrl *m_job_list {nullptr};
     wxDataViewListCtrl *m_history_list {nullptr};
@@ -100,6 +103,10 @@ private:
     wxButton           *m_complete_order_button {nullptr};
     wxButton           *m_cancel_order_button {nullptr};
     wxButton           *m_delete_order_button {nullptr};
+    wxStaticText       *m_active_spools_value {nullptr};
+    wxStaticText       *m_available_value {nullptr};
+    wxStaticText       *m_reserved_value {nullptr};
+    wxStaticText       *m_low_stock_value {nullptr};
     std::vector<wxButton *> m_refresh_buttons;
     wxTimer             m_refresh_timer;
     std::uint64_t       m_seen_service_revision {0};

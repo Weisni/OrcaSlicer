@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <stdexcept>
 #include <utility>
 
 #include <boost/filesystem.hpp>
@@ -39,6 +40,21 @@ bool active_bambu_status(const std::string &status)
            status == "SLICING" || status == "PREPARE";
 }
 
+bool active_status_transition(
+    const FilamentInventoryService::BambuStatusSnapshot &baseline,
+    const FilamentInventoryService::BambuStatusSnapshot &current)
+{
+    return !active_bambu_status(baseline.status) &&
+           active_bambu_status(current.status);
+}
+
+bool non_live_job_state(FilamentInventory::JobState state)
+{
+    return state == FilamentInventory::JobState::completed ||
+           state == FilamentInventory::JobState::discarded ||
+           state == FilamentInventory::JobState::needs_review;
+}
+
 bool active_evidence(
     const FilamentInventoryService::BambuStatusSnapshot &baseline,
     const FilamentInventoryService::BambuStatusSnapshot &current)
@@ -68,7 +84,12 @@ std::string bambu_provider(const std::string &printer_id)
 } // namespace
 
 FilamentInventoryService::FilamentInventoryService()
-    : m_worker([this] { worker_loop(); })
+    : FilamentInventoryService(std::string())
+{}
+
+FilamentInventoryService::FilamentInventoryService(std::string database_path)
+    : m_database_path(std::move(database_path))
+    , m_worker([this] { worker_loop(); })
 {}
 
 FilamentInventoryService::~FilamentInventoryService()
@@ -86,12 +107,14 @@ FilamentInventory::Store &FilamentInventoryService::store()
 {
     std::lock_guard<std::mutex> lock(m_store_mutex);
     if (!m_store) {
-        const boost::filesystem::path directory =
-            boost::filesystem::path(Slic3r::data_dir()) / "filament_inventory";
-        boost::filesystem::create_directories(directory);
-        const std::string database_path =
-            Slic3r::data_dir() + "/filament_inventory/inventory.sqlite3";
-        m_store = std::make_unique<FilamentInventory::Store>(database_path);
+        if (m_database_path.empty()) {
+            const boost::filesystem::path directory =
+                boost::filesystem::path(Slic3r::data_dir()) / "filament_inventory";
+            boost::filesystem::create_directories(directory);
+            m_database_path =
+                Slic3r::data_dir() + "/filament_inventory/inventory.sqlite3";
+        }
+        m_store = std::make_unique<FilamentInventory::Store>(m_database_path);
     }
     return *m_store;
 }
@@ -155,21 +178,26 @@ void FilamentInventoryService::mark_bambu_dispatch_accepted(
             m_revision.fetch_add(1, std::memory_order_release);
             return;
         }
-        if ((current.status == "FINISH" || current.status == "FAILED") &&
-            trim_copy(pending.baseline.status) != trim_copy(current.status)) {
-            store.mark_needs_review(inventory_job_id);
-            m_revision.fetch_add(1, std::memory_order_release);
-            return;
-        }
-
+        const bool stale_cached_id =
+            exact && exact->id != inventory_job_id &&
+            usable_external_id(pending.baseline.job_id) &&
+            trim_copy(pending.baseline.job_id) == trim_copy(current.job_id);
+        const bool correlated_active_status =
+            active_status_transition(pending.baseline, current) &&
+            (!exact || exact->id == inventory_job_id || stale_cached_id);
         if ((identity_available && active_evidence(pending.baseline, current)) ||
             (exact && exact->id == inventory_job_id &&
-             active_bambu_status(current.status))) {
-            if (usable_external_id(current.job_id) &&
+             active_bambu_status(current.status)) ||
+            correlated_active_status) {
+            if (correlated_current_id && usable_external_id(current.job_id) &&
                 pending.external_job_id.empty()) {
                 pending.external_job_id = trim_copy(current.job_id);
                 store.bind_job_identifier(
                     inventory_job_id, provider, "job_id", pending.external_job_id);
+            }
+            if (stale_cached_id && !non_live_job_state(exact->state)) {
+                store.mark_needs_review(exact->id);
+                m_revision.fetch_add(1, std::memory_order_release);
             }
             if (job.state == FilamentInventory::JobState::reserved) {
                 store.mark_printing(inventory_job_id);
@@ -227,10 +255,18 @@ void FilamentInventoryService::observe_bambu_status(BambuStatusSnapshot snapshot
         std::optional<FilamentInventory::PrintJob> job;
         if (usable_external_id(snapshot.job_id))
             job = store.find_job(provider, "job_id", trim_copy(snapshot.job_id));
-        const bool resolved_by_exact_id = job.has_value();
+        bool resolved_by_exact_id = job.has_value();
+        bool snapshot_id_correlated = resolved_by_exact_id;
 
-        bool matched_pending = false;
         auto pending = m_pending_bambu_jobs.find(snapshot.printer_id);
+        const auto stale_cached_exact_id = [&] {
+            return job && pending != m_pending_bambu_jobs.end() &&
+                   job->id != pending->second.inventory_job_id &&
+                   usable_external_id(pending->second.baseline.job_id) &&
+                   usable_external_id(snapshot.job_id) &&
+                   trim_copy(pending->second.baseline.job_id) ==
+                       trim_copy(snapshot.job_id);
+        };
         const auto pending_has_different_generation = [&] {
             return pending != m_pending_bambu_jobs.end() &&
                    pending->second.active_seen &&
@@ -239,8 +275,7 @@ void FilamentInventoryService::observe_bambu_status(BambuStatusSnapshot snapshot
                    trim_copy(pending->second.external_job_id) !=
                        trim_copy(snapshot.job_id);
         };
-        if (pending_has_different_generation() &&
-            (!job || job->id == pending->second.inventory_job_id)) {
+        if (pending_has_different_generation()) {
             const FilamentInventory::PrintJob pending_job =
                 store.get_job(pending->second.inventory_job_id);
             if (pending_job.state != FilamentInventory::JobState::completed &&
@@ -253,9 +288,46 @@ void FilamentInventoryService::observe_bambu_status(BambuStatusSnapshot snapshot
             return;
         }
 
+        if (stale_cached_exact_id() &&
+            !pending->second.active_seen &&
+            (snapshot.status == "FINISH" ||
+             snapshot.status == "FAILED" ||
+             snapshot.status == "IDLE")) {
+            // A newly dispatched print may initially receive the preceding
+            // terminal snapshot with its still-cached job_id. Until a new
+            // active lifecycle is observed, do not complete either job and
+            // keep the pending correlation intact.
+            return;
+        }
+
+        if (stale_cached_exact_id() &&
+            (active_status_transition(pending->second.baseline, snapshot) ||
+             (pending->second.active_seen &&
+              (snapshot.status == "FINISH" ||
+               snapshot.status == "FAILED" ||
+               snapshot.status == "IDLE")))) {
+            // Some LAN firmware keeps the preceding job_id cached while the
+            // status already belongs to the newly dispatched print. Prefer the
+            // single pending job only after observing its new active lifecycle;
+            // never rebind the stale identifier to it.
+            if (active_bambu_status(snapshot.status))
+                pending->second.active_seen = true;
+            if (!non_live_job_state(job->state)) {
+                store.mark_needs_review(job->id);
+                m_revision.fetch_add(1, std::memory_order_release);
+            }
+            job = store.get_job(pending->second.inventory_job_id);
+            resolved_by_exact_id = false;
+            snapshot_id_correlated = false;
+        }
+
         if (!job) {
             if (pending != m_pending_bambu_jobs.end()) {
-                if (active_evidence(pending->second.baseline, snapshot)) {
+                const bool active_match =
+                    active_evidence(pending->second.baseline, snapshot) ||
+                    active_status_transition(pending->second.baseline, snapshot);
+                bool matched_pending = false;
+                if (active_match) {
                     pending->second.active_seen = true;
                     matched_pending = true;
                 } else if (pending->second.active_seen &&
@@ -264,8 +336,18 @@ void FilamentInventoryService::observe_bambu_status(BambuStatusSnapshot snapshot
                             snapshot.status == "IDLE")) {
                     matched_pending = true;
                 }
-                if (matched_pending)
+                if (matched_pending) {
                     job = store.get_job(pending->second.inventory_job_id);
+                    const bool pending_id_matches =
+                        usable_external_id(pending->second.external_job_id) &&
+                        usable_external_id(snapshot.job_id) &&
+                        trim_copy(pending->second.external_job_id) ==
+                            trim_copy(snapshot.job_id);
+                    snapshot_id_correlated =
+                        usable_external_id(snapshot.job_id) &&
+                        (pending_id_matches ||
+                         new_generation_id(pending->second.baseline, snapshot));
+                }
             }
         }
         if (!job)
@@ -274,11 +356,12 @@ void FilamentInventoryService::observe_bambu_status(BambuStatusSnapshot snapshot
         pending = m_pending_bambu_jobs.find(snapshot.printer_id);
         if (pending != m_pending_bambu_jobs.end() &&
             pending->second.inventory_job_id == job->id &&
+            snapshot_id_correlated &&
             usable_external_id(snapshot.job_id) &&
             pending->second.external_job_id.empty())
             pending->second.external_job_id = trim_copy(snapshot.job_id);
 
-        if (usable_external_id(snapshot.job_id))
+        if (snapshot_id_correlated && usable_external_id(snapshot.job_id))
             store.bind_job_identifier(
                 job->id, provider, "job_id", trim_copy(snapshot.job_id));
 
@@ -295,8 +378,14 @@ void FilamentInventoryService::observe_bambu_status(BambuStatusSnapshot snapshot
             clear_matching_pending();
         } else if (active_bambu_status(snapshot.status)) {
             store.mark_printing(job->id);
-            if (job->state == FilamentInventory::JobState::reserved)
+            if (job->state == FilamentInventory::JobState::reserved) {
                 m_revision.fetch_add(1, std::memory_order_release);
+                BOOST_LOG_TRIVIAL(info)
+                    << "Filament inventory observed print start for job "
+                    << job->id << " on printer " << snapshot.printer_id
+                    << (snapshot_id_correlated ? " with external id" :
+                                                      " without external id");
+            }
             if (pending != m_pending_bambu_jobs.end() &&
                 pending->second.inventory_job_id == job->id)
                 pending->second.active_seen = true;
@@ -305,12 +394,21 @@ void FilamentInventoryService::observe_bambu_status(BambuStatusSnapshot snapshot
                 resolved_by_exact_id ||
                 (pending != m_pending_bambu_jobs.end() &&
                  pending->second.inventory_job_id == job->id &&
-                 pending->second.active_seen &&
-                 usable_external_id(pending->second.external_job_id));
-            if (safe_terminal)
+                 pending->second.active_seen);
+            if (safe_terminal) {
                 store.commit_job(job->id);
-            else
+                BOOST_LOG_TRIVIAL(info)
+                    << "Filament inventory automatically completed job "
+                    << job->id << " on printer " << snapshot.printer_id
+                    << (resolved_by_exact_id ? " by external id" :
+                                                   " by observed active lifecycle");
+            } else {
                 store.mark_needs_review(job->id);
+                BOOST_LOG_TRIVIAL(warning)
+                    << "Filament inventory requires review for FINISH without "
+                       "a correlated active print, job "
+                    << job->id << " on printer " << snapshot.printer_id;
+            }
             m_revision.fetch_add(1, std::memory_order_release);
             clear_matching_pending();
         } else if (snapshot.status == "FAILED") {
@@ -323,6 +421,17 @@ void FilamentInventoryService::observe_bambu_status(BambuStatusSnapshot snapshot
             m_revision.fetch_add(1, std::memory_order_release);
             clear_matching_pending();
         }
+    });
+}
+
+void FilamentInventoryService::wait_for_idle()
+{
+    if (std::this_thread::get_id() == m_worker.get_id())
+        throw std::logic_error(
+            "Filament inventory worker cannot wait for its own queue");
+    std::unique_lock<std::mutex> lock(m_queue_mutex);
+    m_idle_condition.wait(lock, [this] {
+        return m_tasks.empty() && !m_task_active;
     });
 }
 
@@ -344,10 +453,13 @@ void FilamentInventoryService::worker_loop()
         {
             std::unique_lock<std::mutex> lock(m_queue_mutex);
             m_queue_condition.wait(lock, [this] { return m_stopping || !m_tasks.empty(); });
-            if (m_stopping && m_tasks.empty())
+            if (m_stopping && m_tasks.empty()) {
+                m_idle_condition.notify_all();
                 return;
+            }
             task = std::move(m_tasks.front());
             m_tasks.pop_front();
+            m_task_active = true;
         }
 
         try {
@@ -355,6 +467,15 @@ void FilamentInventoryService::worker_loop()
         } catch (const std::exception &error) {
             BOOST_LOG_TRIVIAL(error)
                 << "Filament inventory background operation failed: " << error.what();
+        } catch (...) {
+            BOOST_LOG_TRIVIAL(error)
+                << "Filament inventory background operation failed with an unknown exception";
+        }
+        {
+            std::lock_guard<std::mutex> lock(m_queue_mutex);
+            m_task_active = false;
+            if (m_tasks.empty())
+                m_idle_condition.notify_all();
         }
     }
 }
