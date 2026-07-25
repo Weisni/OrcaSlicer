@@ -15,10 +15,12 @@
 #include <wx/sizer.h>
 #include <wx/stattext.h>
 
+#include "BitmapComboBox.hpp"
 #include "FilamentSpoolEditor.hpp"
 #include "GUI.hpp"
 #include "GUI_Utils.hpp"
 #include "I18N.hpp"
+#include "wxExtensions.hpp"
 
 namespace Slic3r::GUI {
 
@@ -132,7 +134,9 @@ public:
                             scroll, wxID_ANY, format_weight(usage.estimated_weight_mg)),
                         0, wxALIGN_CENTER_VERTICAL);
 
-            auto *choice = new wxChoice(scroll, wxID_ANY, wxDefaultPosition, wxSize(FromDIP(330), -1));
+            auto *choice = new BitmapComboBox(
+                scroll, wxID_ANY, wxEmptyString, wxDefaultPosition,
+                wxSize(FromDIP(330), -1), 0, nullptr, wxCB_READONLY);
             m_choices.push_back(choice);
             m_grid->Add(choice, 1, wxEXPAND | wxALIGN_CENTER_VERTICAL);
 
@@ -289,15 +293,25 @@ private:
 
         m_spools = m_store.list_spools();
         for (std::size_t row = 0; row < m_choices.size(); ++row) {
-            wxChoice *choice = m_choices[row];
+            BitmapComboBox *choice = m_choices[row];
             choice->Clear();
+            const int swatch_size = FromDIP(18);
             choice->Append(
                 m_context.usages[row].suggested_bambu_tag_uid.empty() ?
                     _L("Select a spool...") :
-                    _L("Bambu RFID is not linked — select or create a spool..."));
-            for (const Spool &spool : m_spools)
+                    _L("Bambu RFID is not linked — select or create a spool..."),
+                wxNullBitmap);
+            for (const Spool &spool : m_spools) {
+                const wxColour spool_color(from_u8(spool.color_hex));
+                const std::string swatch_color =
+                    spool_color.IsOk() ? spool.color_hex : "#636363";
+                const wxBitmap *color_swatch = get_extruder_color_icon(
+                    std::vector<std::string> {swatch_color}, false, "",
+                    swatch_size, swatch_size);
                 choice->Append(
-                    FilamentAllocationDetail::format_spool_choice_label(spool));
+                    FilamentAllocationDetail::format_spool_choice_label(spool),
+                    color_swatch != nullptr ? *color_swatch : wxNullBitmap);
+            }
 
             std::string desired = previous[row];
             if (preferred_row && *preferred_row == row)
@@ -344,7 +358,7 @@ private:
     const FilamentReservationContext  &m_context;
     wxFlexGridSizer                    *m_grid {nullptr};
     wxChoice                           *m_customer_order {nullptr};
-    std::vector<wxChoice *>             m_choices;
+    std::vector<BitmapComboBox *>       m_choices;
     std::vector<Spool>                  m_spools;
     std::vector<CustomerOrder>          m_orders;
 };
