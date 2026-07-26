@@ -437,7 +437,9 @@ void TreeModelVolumes::calculateCollision(const coord_t radius, const LayerIndex
             const TreeSupportMeshGroupSettings  &settings = m_layer_outlines[outline_idx].first;
             const coord_t       layer_height              = settings.layer_height;
             const int           z_distance_bottom_layers  = int(round(double(settings.support_bottom_distance) / double(layer_height)));
-            const int           z_distance_top_layers     = int(round(double(settings.support_top_distance) / double(layer_height)));
+            const int           z_distance_top_layers     = settings.independent_support_layer_height ?
+                int(std::ceil(std::max(0., double(settings.support_top_distance) - double(SCALED_EPSILON)) / double(layer_height))) :
+                int(round(double(settings.support_top_distance) / double(layer_height)));
             const coord_t       xy_distance               = outline_idx == m_current_outline_idx ? m_current_min_xy_dist : 
                 // technically this causes collision for the normal xy_distance to be larger by m_current_min_xy_dist_delta for all 
                 // not currently processing meshes as this delta will be added at request time.

@@ -54,6 +54,7 @@ class Line : public UndoValueUIManager
 public:
     wxString	label;
     wxString	label_tooltip;
+    wxStaticText* label_widget{nullptr};
 	std::string	label_path;
     bool        undo_to_sys{false}; // BBS: object config
     bool        toggle_visible{true}; // BBS: hide some line

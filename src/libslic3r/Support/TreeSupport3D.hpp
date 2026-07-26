@@ -314,6 +314,7 @@ void organic_draw_branches(
     TreeModelVolumes                &volumes, 
     const TreeSupportSettings       &config,
     std::vector<SupportElements>    &move_bounds,
+    const OrganicSupportLayerSchedule &layer_schedule,
 
     // I/O:
     SupportGeneratorLayersPtr       &bottom_contacts,

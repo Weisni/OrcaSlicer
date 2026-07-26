@@ -374,6 +374,7 @@ void OptionsGroup::activate_line(Line& line)
                 label->SetBackgroundStyle(wxBG_STYLE_PAINT);
                 label->SetFont(wxGetApp().normal_font());
                 label->Wrap(label_width * wxGetApp().em_unit()); // avoid a Linux/GTK bug
+                line.label_widget = label;
             }
             if (!line.near_label_widget)
                 grid_sizer->Add(label, 0, (staticbox ? 0 : wxALIGN_RIGHT | wxRIGHT) | wxALIGN_CENTER_VERTICAL, line.label.IsEmpty() ? 0 : 5);
@@ -572,8 +573,8 @@ void OptionsGroup::clear(bool destroy_custom_ctrl)
     stb          = nullptr; // BBS: fix pointer
 
     for (Line& line : m_lines) {
-        if (line.near_label_widget_win)
-            line.near_label_widget_win = nullptr;
+        line.near_label_widget_win = nullptr;
+        line.label_widget          = nullptr;
 
         if (line.widget_sizer) {
             line.widget_sizer->Clear(true);

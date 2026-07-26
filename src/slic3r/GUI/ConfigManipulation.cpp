@@ -7,8 +7,10 @@
 #include "libslic3r/Model.hpp"
 #include "libslic3r/PresetBundle.hpp"
 #include "libslic3r/MaterialType.hpp"
+#include "libslic3r/Print.hpp"
 #include "MsgDialog.hpp"
 #include "libslic3r/PrintConfig.hpp"
+#include "libslic3r/Slicing.hpp"
 #include "libslic3r/GCode/AdaptivePAProcessor.hpp"
 #include "Plater.hpp"
 
@@ -28,6 +30,55 @@ std::string trim_copy(const std::string& text)
 
     const auto last = text.find_last_not_of(" \t\r\n");
     return text.substr(first, last - first + 1);
+}
+
+bool organic_support_interval_is_printable(
+    coordf_t distance, coordf_t min_layer_height, coordf_t max_layer_height)
+{
+    if (distance < min_layer_height - EPSILON ||
+        min_layer_height <= 0. || max_layer_height <= 0.)
+        return false;
+
+    const size_t min_steps = std::max<size_t>(
+        1, size_t(std::ceil((distance - EPSILON) / max_layer_height)));
+    const size_t max_steps =
+        size_t(std::floor((distance + EPSILON) / min_layer_height));
+    return min_steps <= max_steps;
+}
+
+bool organic_support_intervals_are_printable(
+    coordf_t layer_height,
+    coordf_t top_gap,
+    coordf_t min_layer_height,
+    coordf_t max_layer_height)
+{
+    if (layer_height <= 0.)
+        return false;
+
+    top_gap = std::max<coordf_t>(0., top_gap);
+    const size_t top_gap_layers = size_t(std::ceil(
+        std::max<coordf_t>(0., top_gap - EPSILON) / layer_height));
+    const coordf_t contact_phase = std::clamp<coordf_t>(
+        top_gap_layers * layer_height - top_gap, 0., layer_height);
+    return organic_support_interval_is_printable(
+               layer_height, min_layer_height, max_layer_height) &&
+           organic_support_interval_is_printable(
+               layer_height + contact_phase, min_layer_height, max_layer_height);
+}
+
+bool has_variable_layer_height(
+    const ModelObject &model_object, const DynamicPrintConfig &config)
+{
+    if (! model_object.has_custom_layering())
+        return false;
+
+    SlicingParameters slicing_params = PrintObject::slicing_parameters(
+        config, model_object, float(model_object.max_z()), Vec3d::Ones());
+    std::vector<coordf_t> layer_height_profile;
+    PrintObject::update_layer_height_profile(
+        model_object, slicing_params, layer_height_profile);
+    return layer_height_profile.size() < 4 ||
+           ! check_object_layers_fixed(slicing_params, layer_height_profile);
 }
 
 } // namespace
@@ -68,6 +119,14 @@ void ConfigManipulation::toggle_line(const std::string& opt_key, const bool togg
     }
     if (cb_toggle_line)
         cb_toggle_line(opt_key, toggle, opt_index);
+}
+
+void ConfigManipulation::set_tooltip(const std::string &opt_key, const wxString &tooltip)
+{
+    if (local_config && local_config->option(opt_key) == nullptr)
+        return;
+    if (cb_set_tooltip)
+        cb_set_tooltip(opt_key, tooltip);
 }
 
 void ConfigManipulation::check_nozzle_recommended_temperature_range(DynamicPrintConfig *config) {
@@ -830,7 +889,7 @@ void ConfigManipulation::toggle_print_fff_options(DynamicPrintConfig *config, in
         "support_interface_pattern", "support_interface_top_layers", "support_interface_bottom_layers",
         "bridge_no_support", "max_bridge_length", "support_top_z_distance", "support_bottom_z_distance",
         "support_type", "support_on_build_plate_only", "support_critical_regions_only", "support_interface_not_for_body",
-        "support_object_xy_distance", "support_object_first_layer_gap", "independent_support_layer_height"})
+        "support_object_xy_distance", "support_object_first_layer_gap"})
         toggle_field(el, have_support_material);
     toggle_field("support_threshold_angle", have_support_material && is_auto(support_type));
     toggle_field("support_threshold_overlap", config->opt_int("support_threshold_angle") == 0 && have_support_material && is_auto(support_type));
@@ -848,9 +907,97 @@ void ConfigManipulation::toggle_print_fff_options(DynamicPrintConfig *config, in
     // settings specific to organic trees
     for (auto el : {"tree_support_branch_angle_organic", "tree_support_branch_distance_organic", "tree_support_branch_diameter_organic", "tree_support_angle_slow", "tree_support_tip_diameter", "tree_support_top_rate", "tree_support_branch_diameter_angle"})
         toggle_line(el, support_is_organic);
-    // ORCA: Independent support layer height is not compatible with organic tree supports,
-    // as they rely on the support layers being the same as the object layers to determine where to place branches.
-    toggle_line("independent_support_layer_height", have_support_material && !support_is_organic);
+    // Keep this option discoverable and describe every reason why it cannot currently be changed.
+    const bool independent_support_conflicts_with_prime_tower =
+        config->has("enable_prime_tower") && config->opt_bool("enable_prime_tower");
+    const bool independent_organic_support_conflicts_with_raft =
+        support_is_organic && config->has("raft_layers") && config->opt_int("raft_layers") > 0;
+    const bool independent_organic_support_conflicts_with_precise_z =
+        support_is_organic && config->has("precise_z_height") && config->opt_bool("precise_z_height");
+    const bool independent_organic_support_conflicts_with_thick_bridges =
+        support_is_organic && config->has("thick_bridges") && config->opt_bool("thick_bridges");
+    bool independent_organic_support_conflicts_with_layer_intervals = false;
+    bool independent_organic_support_conflicts_with_interface_stack = false;
+    if (support_is_organic &&
+        config->has("layer_height") &&
+        config->has("support_top_z_distance") &&
+        config->has("support_filament") &&
+        config->has("support_interface_filament") &&
+        config->has("support_interface_top_layers")) {
+        const coordf_t layer_height = config->opt_float("layer_height");
+        const int support_extruder = config->opt_int("support_filament");
+        const int interface_extruder = config->opt_int("support_interface_filament");
+        const coordf_t min_support_layer_height = std::min(
+            layer_height,
+            std::max(
+                Slicing::min_layer_height_from_nozzle(*config, support_extruder),
+                Slicing::min_layer_height_from_nozzle(*config, interface_extruder)));
+        const coordf_t max_support_layer_height = std::min(
+            Slicing::max_layer_height_from_nozzle(*config, support_extruder),
+            Slicing::max_layer_height_from_nozzle(*config, interface_extruder));
+        if (layer_height > EPSILON && max_support_layer_height > EPSILON) {
+            independent_organic_support_conflicts_with_layer_intervals =
+                ! organic_support_intervals_are_printable(
+                    layer_height,
+                    config->opt_float("support_top_z_distance"),
+                    min_support_layer_height,
+                    max_support_layer_height);
+            independent_organic_support_conflicts_with_interface_stack =
+                config->opt_int("support_interface_top_layers") > 1 &&
+                max_support_layer_height < layer_height - EPSILON;
+        }
+    }
+    bool independent_organic_support_conflicts_with_variable_layers = false;
+    if (support_is_organic) {
+        if (model_object != nullptr) {
+            independent_organic_support_conflicts_with_variable_layers =
+                has_variable_layer_height(*model_object, *config);
+        } else if (Plater *plater = wxGetApp().plater(); plater != nullptr) {
+            independent_organic_support_conflicts_with_variable_layers =
+                std::any_of(
+                    plater->model().objects.begin(),
+                    plater->model().objects.end(),
+                    [config](const ModelObject *object) {
+                        return object != nullptr &&
+                               has_variable_layer_height(*object, *config);
+                    });
+        }
+    }
+    const bool independent_support_layer_height_available =
+        !independent_support_conflicts_with_prime_tower &&
+        !independent_organic_support_conflicts_with_raft &&
+        !independent_organic_support_conflicts_with_precise_z &&
+        !independent_organic_support_conflicts_with_thick_bridges &&
+        !independent_organic_support_conflicts_with_layer_intervals &&
+        !independent_organic_support_conflicts_with_interface_stack &&
+        !independent_organic_support_conflicts_with_variable_layers;
+
+    toggle_line("independent_support_layer_height", true);
+    toggle_field("independent_support_layer_height", independent_support_layer_height_available);
+
+    if (const ConfigOptionDef *opt_def = config->def()->get("independent_support_layer_height")) {
+        wxString tooltip = get_formatted_tooltip_text(*opt_def, "independent_support_layer_height");
+        tooltip += "\n\n" + _L("Current conflicts:");
+        if (independent_support_layer_height_available) {
+            tooltip += " " + _L("None.");
+        } else {
+            if (independent_support_conflicts_with_prime_tower)
+                tooltip += "\n- " + _L("Prime tower is enabled.");
+            if (independent_organic_support_conflicts_with_raft)
+                tooltip += "\n- " + _L("Organic tree supports with a raft currently require synchronized support layers.");
+            if (independent_organic_support_conflicts_with_precise_z)
+                tooltip += "\n- " + _L("Organic tree supports with precise Z height currently require synchronized support layers.");
+            if (independent_organic_support_conflicts_with_thick_bridges)
+                tooltip += "\n- " + _L("Organic tree supports with thick bridges currently require synchronized support layers.");
+            if (independent_organic_support_conflicts_with_layer_intervals)
+                tooltip += "\n- " + _L("The configured minimum and maximum layer heights cannot represent every exact Organic support Z interval.");
+            if (independent_organic_support_conflicts_with_interface_stack)
+                tooltip += "\n- " + _L("Multiple Organic interface layers require a maximum support layer height at least as large as the object layer height.");
+            if (independent_organic_support_conflicts_with_variable_layers)
+                tooltip += "\n- " + _L("Variable object layer heights are not supported with Organic tree supports.");
+        }
+        set_tooltip("independent_support_layer_height", tooltip);
+    }
 
     toggle_field("tree_support_brim_width", support_is_tree && !config->opt_bool("tree_support_auto_brim"));
     // tree support use max_bridge_length instead of bridge_no_support

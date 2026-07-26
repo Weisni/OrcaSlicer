@@ -295,7 +295,19 @@ bool ObjectTableSettings::update_settings_list(bool is_object, bool is_multiple_
             Line* line = optgroup->get_line(opt_key);
             if (line) line->toggle_visible = toggle;
         };
-        ConfigManipulation config_manipulation(nullptr, toggle_field, toggle_line, nullptr, &m_current_config);
+        auto set_tooltip = [optgroup](const t_config_option_key &opt_key, const wxString &tooltip)
+        {
+            if (Line *line = optgroup->get_line(opt_key)) {
+                line->label_tooltip = tooltip;
+                if (line->label_widget)
+                    line->label_widget->SetToolTip(tooltip);
+            }
+            if (Field *field = optgroup->get_fieldc(opt_key, -1); field && field->getWindow())
+                field->getWindow()->SetToolTip(tooltip);
+        };
+        ConfigManipulation config_manipulation(
+            nullptr, toggle_field, toggle_line, nullptr,
+            &m_current_config, nullptr, set_tooltip, object);
 
         bool is_BBL_printer = wxGetApp().preset_bundle->is_bbl_vendor();
         config_manipulation.set_is_BBL_Printer(is_BBL_printer);
@@ -399,7 +411,22 @@ void ObjectTableSettings::update_config_values(bool is_object, ModelObject* obje
         }
     };
 
-    ConfigManipulation config_manipulation(nullptr, toggle_field, toggle_line, nullptr, &m_current_config);
+    auto set_tooltip = [this](const t_config_option_key &opt_key, const wxString &tooltip) {
+        for (auto og : m_og_settings) {
+            if (Line *line = og->get_line(opt_key)) {
+                line->label_tooltip = tooltip;
+                if (line->label_widget)
+                    line->label_widget->SetToolTip(tooltip);
+                if (Field *field = og->get_fieldc(opt_key, -1); field && field->getWindow())
+                    field->getWindow()->SetToolTip(tooltip);
+                break;
+            }
+        }
+    };
+
+    ConfigManipulation config_manipulation(
+        nullptr, toggle_field, toggle_line, nullptr,
+        &m_current_config, nullptr, set_tooltip, object);
 
     config_manipulation.set_is_BBL_Printer(wxGetApp().preset_bundle->is_bbl_vendor());
 

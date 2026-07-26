@@ -10,6 +10,7 @@
 #define slic3r_TreeSupportCommon_hpp
 
 #include "../libslic3r.h"
+#include "../Exception.hpp"
 #include "../Polygon.hpp"
 #include "SupportCommon.hpp"
 
@@ -32,6 +33,44 @@ enum class InterfacePreference
     SupportLinesOverwriteInterface,
     Nothing
 };
+
+inline bool organic_support_interval_is_printable(
+    coordf_t distance, coordf_t min_layer_height, coordf_t max_layer_height)
+{
+    if (distance < min_layer_height - EPSILON ||
+        min_layer_height <= 0. || max_layer_height <= 0.)
+        return false;
+
+    const size_t min_steps = std::max<size_t>(
+        1, size_t(std::ceil((distance - EPSILON) / max_layer_height)));
+    const size_t max_steps =
+        size_t(std::floor((distance + EPSILON) / min_layer_height));
+    return min_steps <= max_steps;
+}
+
+inline bool organic_support_intervals_are_printable(const SlicingParameters &slicing_params)
+{
+    const coordf_t layer_height = slicing_params.layer_height;
+    if (layer_height <= 0.)
+        return false;
+
+    const coordf_t top_gap = std::max<coordf_t>(0., slicing_params.gap_support_object);
+    const size_t top_gap_layers = size_t(std::ceil(
+        std::max<coordf_t>(0., top_gap - EPSILON) / layer_height));
+    const coordf_t contact_phase = std::clamp<coordf_t>(
+        top_gap_layers * layer_height - top_gap, 0., layer_height);
+
+    // Exact Organic contacts form a phase-shifted grid. All possible distances
+    // can be composed from one initial shifted interval and nominal intervals.
+    return organic_support_interval_is_printable(
+               layer_height,
+               slicing_params.min_layer_height,
+               slicing_params.max_suport_layer_height) &&
+           organic_support_interval_is_printable(
+               layer_height + contact_phase,
+               slicing_params.min_layer_height,
+               slicing_params.max_suport_layer_height);
+}
 
 struct TreeSupportMeshGroupSettings {
     TreeSupportMeshGroupSettings() = default;
@@ -88,6 +127,31 @@ struct TreeSupportMeshGroupSettings {
         this->support_tree_branch_diameter = scaled<coord_t>(config.tree_support_branch_diameter_organic.value);
         this->support_tree_branch_diameter_angle  = std::clamp<double>(config.tree_support_branch_diameter_angle * M_PI / 180., 0., 0.5 * M_PI - EPSILON);
         this->support_tree_top_rate       = config.tree_support_top_rate.value; // percent
+        const bool organic_interface_stack_is_printable =
+            config.support_interface_top_layers.value <= 1 ||
+            slicing_params.max_suport_layer_height >= slicing_params.layer_height - EPSILON;
+        const bool organic_layer_intervals_are_printable =
+            organic_support_intervals_are_printable(slicing_params);
+        bool organic_object_layers_match_construction_grid = true;
+        for (size_t layer_idx = 0; layer_idx < print_object.layer_count(); ++ layer_idx) {
+            const coordf_t expected_print_z =
+                slicing_params.object_print_z_min +
+                slicing_params.first_object_layer_height +
+                layer_idx * slicing_params.layer_height;
+            if (std::abs(print_object.get_layer(layer_idx)->print_z - expected_print_z) > EPSILON) {
+                organic_object_layers_match_construction_grid = false;
+                break;
+            }
+        }
+        this->independent_support_layer_height =
+            print_config.independent_support_layer_height &&
+            ! print_config.enable_prime_tower &&
+            slicing_params.raft_layers() == 0 &&
+            ! config.precise_z_height &&
+            ! config.thick_bridges &&
+            organic_interface_stack_is_printable &&
+            organic_layer_intervals_are_printable &&
+            organic_object_layers_match_construction_grid;
     //    this->support_tree_tip_diameter = this->support_line_width;
         this->support_tree_tip_diameter = std::clamp(scaled<coord_t>(config.tree_support_tip_diameter.value), (coord_t)0, this->support_tree_branch_diameter);
     }
@@ -251,6 +315,10 @@ struct TreeSupportMeshGroupSettings {
     // The diameter of the top of the tip of the branches of tree support.
     // minimum: min_wall_line_width, minimum warning: min_wall_line_width+0.05, maximum_value: support_tree_branch_diameter, value: support_line_width
     coord_t                         support_tree_tip_diameter               { scaled<coord_t>(0.4) };
+    // Organic support may use a separate printable Z schedule. Rafts are kept on
+    // the legacy synchronized schedule until their contact stack can be planned
+    // together with the Organic output layers.
+    bool                            independent_support_layer_height        { false };
 
     // Support Interface Priority
     // How support interface and support will interact when they overlap. Currently only implemented for support roof.
@@ -286,7 +354,9 @@ public:
           // Increase by half a line overlap, but not faster than 40 degrees angle (0 degrees means zero increase in radius).
           bp_radius_increase_per_layer(std::min(tan(0.7) * layer_height, 0.5 * support_line_width)),
           z_distance_bottom_layers(size_t(round(double(mesh_group_settings.support_bottom_distance) / double(layer_height)))),
-          z_distance_top_layers(size_t(round(double(mesh_group_settings.support_top_distance) / double(layer_height)))),
+          z_distance_top_layers(mesh_group_settings.independent_support_layer_height ?
+              size_t(std::ceil(std::max(0., double(mesh_group_settings.support_top_distance) - double(SCALED_EPSILON)) / double(layer_height))) :
+              size_t(round(double(mesh_group_settings.support_top_distance) / double(layer_height)))),
     //              support_infill_angles(mesh_group_settings.support_infill_angles),
           support_roof_angles(mesh_group_settings.support_roof_angles),
           roof_pattern(mesh_group_settings.support_roof_pattern),
@@ -298,7 +368,8 @@ public:
           resolution(mesh_group_settings.resolution),
           support_roof_line_distance(mesh_group_settings.support_roof_line_distance), // in the end the actual infill has to be calculated to subtract interface from support areas according to interface_preference.
           settings(mesh_group_settings),
-          min_feature_size(mesh_group_settings.min_feature_size)
+          min_feature_size(mesh_group_settings.min_feature_size),
+          independent_support_layer_height(mesh_group_settings.independent_support_layer_height)
     {
         // At least one tip layer must be defined.
         assert(tip_layers > 0);
@@ -496,6 +567,10 @@ public:
      */
     coord_t min_feature_size;
 
+    // Keep the tree construction grid conservative while allowing its printable
+    // slices to be generated on exact contact Z coordinates.
+    bool independent_support_layer_height { false };
+
     // Extra raft layers below the object.
     std::vector<coordf_t> raft_layers;
 
@@ -514,6 +589,7 @@ public:
                increase_radius_until_radius == other.increase_radius_until_radius && support_bottom_layers == other.support_bottom_layers && layer_height == other.layer_height && z_distance_top_layers == other.z_distance_top_layers && resolution == other.resolution && // Infill generation depends on deviation and resolution.
                support_roof_line_distance == other.support_roof_line_distance && interface_preference == other.interface_preference
                && min_feature_size == other.min_feature_size // interface_preference should be identical to ensure the tree will correctly interact with the roof.
+               && independent_support_layer_height == other.independent_support_layer_height
                // The infill class now wants the settings object and reads a lot of settings, and as the infill class is used to calculate support roof lines for interface-preference. Not all of these may be required to be identical, but as I am not sure, better safe than sorry
 #if 0
                 && (interface_preference == InterfacePreference::InterfaceAreaOverwritesSupport || interface_preference == InterfacePreference::SupportAreaOverwritesInterface
@@ -656,6 +732,271 @@ inline SupportGeneratorLayer& layer_initialize(
     return layer_new;
 }
 
+struct OrganicSupportLayerHeight
+{
+    coordf_t bottom_z { 0. };
+    coordf_t print_z  { 0. };
+    coordf_t height   { 0. };
+};
+
+// Printable Z schedule for Organic supports. Tree construction and collision
+// calculations continue to use their nominal integer layer grid. This schedule
+// adds exact top-contact Z coordinates and evenly subdivides the intervals
+// between them without exceeding the configured maximum support layer height.
+class OrganicSupportLayerSchedule
+{
+public:
+    OrganicSupportLayerSchedule(
+        std::vector<coordf_t> internal_print_z,
+        std::vector<coordf_t> contact_print_z_by_internal_layer,
+        coordf_t              min_layer_height,
+        coordf_t              max_layer_height,
+        size_t                contact_stack_layers,
+        bool                  independent) :
+        m_internal_print_z(std::move(internal_print_z)),
+        m_contact_print_z_by_internal_layer(std::move(contact_print_z_by_internal_layer))
+    {
+        assert(m_internal_print_z.size() == m_contact_print_z_by_internal_layer.size());
+        if (m_internal_print_z.empty())
+            return;
+
+        struct RoofBound {
+            size_t   anchor_internal_idx;
+            size_t   depth;
+            coordf_t print_z;
+        };
+        std::vector<RoofBound> roof_bounds;
+
+        if (! independent) {
+            coordf_t bottom_z = 0.;
+            for (coordf_t print_z : m_internal_print_z) {
+                m_layers.push_back({ bottom_z, print_z, print_z - bottom_z });
+                bottom_z = print_z;
+            }
+        } else {
+            std::vector<coordf_t> bounds;
+            bounds.reserve(m_contact_print_z_by_internal_layer.size() * (contact_stack_layers + 1) + 1);
+            bounds.emplace_back(m_internal_print_z.front());
+            for (size_t internal_idx = 0; internal_idx < m_contact_print_z_by_internal_layer.size(); ++ internal_idx) {
+                const coordf_t contact_print_z = m_contact_print_z_by_internal_layer[internal_idx];
+                if (! std::isfinite(contact_print_z))
+                    continue;
+
+                // Preserve the complete interface stack on the construction
+                // grid's physical spacing. This keeps roof polygons close to
+                // the Z levels where their collisions were evaluated, while
+                // base-support intervals may still use larger independent layers.
+                const size_t max_depth = std::min(contact_stack_layers, internal_idx > 0 ? internal_idx - 1 : size_t(0));
+                for (size_t depth = 0; depth <= max_depth; ++ depth) {
+                    const coordf_t print_z = contact_print_z -
+                        (m_internal_print_z[internal_idx] - m_internal_print_z[internal_idx - depth]);
+                    if (print_z > bounds.front() + EPSILON) {
+                        bounds.emplace_back(print_z);
+                        roof_bounds.push_back({ internal_idx, depth, print_z });
+                    }
+                }
+            }
+            std::sort(bounds.begin(), bounds.end());
+            bounds.erase(std::unique(bounds.begin(), bounds.end(),
+                [](coordf_t lhs, coordf_t rhs) { return std::abs(lhs - rhs) < EPSILON; }), bounds.end());
+
+            coordf_t bottom_z = 0.;
+            m_layers.push_back({ bottom_z, bounds.front(), bounds.front() - bottom_z });
+            bottom_z = bounds.front();
+            for (size_t bound_idx = 1; bound_idx < bounds.size(); ++ bound_idx) {
+                const coordf_t distance = bounds[bound_idx] - bottom_z;
+                const size_t steps = std::max<size_t>(
+                    1, size_t(std::ceil((distance - EPSILON) / max_layer_height)));
+                const size_t max_steps = size_t(std::floor((distance + EPSILON) / min_layer_height));
+                if (steps > max_steps)
+                    throw SlicingError(
+                        "The exact Organic support Z schedule is incompatible with the configured minimum and maximum layer heights.");
+                const coordf_t height = distance / coordf_t(steps);
+                for (size_t step_idx = 0; step_idx < steps; ++ step_idx) {
+                    const coordf_t print_z = step_idx + 1 == steps ?
+                        bounds[bound_idx] : bottom_z + height;
+                    m_layers.push_back({ bottom_z, print_z, print_z - bottom_z });
+                    bottom_z = print_z;
+                }
+            }
+        }
+
+        m_internal_to_output.reserve(m_internal_print_z.size());
+        for (size_t internal_idx = 0; internal_idx < m_internal_print_z.size(); ++ internal_idx) {
+            const coordf_t scheduled_z =
+                internal_idx > 0 && std::isfinite(m_contact_print_z_by_internal_layer[internal_idx]) ?
+                    m_contact_print_z_by_internal_layer[internal_idx] :
+                    m_internal_print_z[internal_idx];
+            m_internal_to_output.emplace_back(this->closest_layer_idx(scheduled_z));
+        }
+
+        m_roof_to_output.resize(m_internal_print_z.size());
+        for (const RoofBound &bound : roof_bounds) {
+            std::vector<size_t> &depths = m_roof_to_output[bound.anchor_internal_idx];
+            if (depths.size() <= bound.depth)
+                depths.resize(bound.depth + 1, size_t(-1));
+            const size_t output_idx = this->closest_layer_idx(bound.print_z);
+            depths[bound.depth] = output_idx;
+            m_internal_to_output[bound.anchor_internal_idx - bound.depth] = output_idx;
+        }
+
+        m_output_to_internal.resize(m_layers.size());
+        for (size_t output_idx = 0; output_idx < m_layers.size(); ++ output_idx) {
+            auto it = std::lower_bound(
+                m_internal_print_z.begin(), m_internal_print_z.end(), m_layers[output_idx].print_z);
+            if (it == m_internal_print_z.end()) {
+                m_output_to_internal[output_idx] = m_internal_print_z.size() - 1;
+            } else {
+                m_output_to_internal[output_idx] =
+                    size_t(std::distance(m_internal_print_z.begin(), it));
+            }
+        }
+        std::vector<size_t> explicit_output_to_internal(m_layers.size(), size_t(-1));
+        for (const RoofBound &bound : roof_bounds) {
+            const size_t output_idx = this->closest_layer_idx(bound.print_z);
+            const size_t internal_idx = bound.anchor_internal_idx - bound.depth;
+            if (explicit_output_to_internal[output_idx] != size_t(-1) &&
+                explicit_output_to_internal[output_idx] != internal_idx)
+                throw SlicingError(
+                    "Organic support contacts require incompatible printable Z mappings.");
+            explicit_output_to_internal[output_idx] = internal_idx;
+            m_output_to_internal[output_idx] = internal_idx;
+        }
+        size_t previous_explicit_internal_idx = 0;
+        bool have_explicit_internal_idx = false;
+        for (size_t internal_idx : explicit_output_to_internal)
+            if (internal_idx != size_t(-1)) {
+                if (have_explicit_internal_idx && internal_idx < previous_explicit_internal_idx)
+                    throw SlicingError(
+                        "Organic support contacts require a non-monotonic printable Z mapping.");
+                previous_explicit_internal_idx = internal_idx;
+                have_explicit_internal_idx = true;
+            }
+
+        // A thick printable layer may initially ceil-map above the next exact
+        // contact anchor. Clamp non-anchor mappings between their surrounding
+        // explicit anchors so the collision-layer mapping never runs backward.
+        size_t upper_internal_idx = m_internal_print_z.size() - 1;
+        for (size_t output_idx = m_output_to_internal.size(); output_idx-- > 0;) {
+            if (explicit_output_to_internal[output_idx] != size_t(-1))
+                upper_internal_idx = explicit_output_to_internal[output_idx];
+            else
+                m_output_to_internal[output_idx] =
+                    std::min(m_output_to_internal[output_idx], upper_internal_idx);
+        }
+        size_t lower_internal_idx = 0;
+        for (size_t output_idx = 0; output_idx < m_output_to_internal.size(); ++ output_idx) {
+            if (explicit_output_to_internal[output_idx] != size_t(-1))
+                lower_internal_idx = explicit_output_to_internal[output_idx];
+            else
+                m_output_to_internal[output_idx] =
+                    std::max(m_output_to_internal[output_idx], lower_internal_idx);
+        }
+
+        assert(std::is_sorted(m_internal_to_output.begin(), m_internal_to_output.end()));
+        assert(std::is_sorted(m_output_to_internal.begin(), m_output_to_internal.end()));
+    }
+
+    bool empty() const { return m_layers.empty(); }
+    size_t size() const { return m_layers.size(); }
+    const OrganicSupportLayerHeight& operator[](size_t idx) const { return m_layers[idx]; }
+
+    size_t output_layer_for_internal(size_t internal_idx) const
+    {
+        assert(internal_idx < m_internal_to_output.size());
+        return m_internal_to_output[internal_idx];
+    }
+
+    size_t output_layer_for_roof(size_t insert_internal_idx, size_t distance_to_top) const
+    {
+        const size_t anchor_internal_idx = insert_internal_idx + distance_to_top;
+        if (anchor_internal_idx < m_roof_to_output.size() &&
+            distance_to_top < m_roof_to_output[anchor_internal_idx].size() &&
+            m_roof_to_output[anchor_internal_idx][distance_to_top] != size_t(-1))
+            return m_roof_to_output[anchor_internal_idx][distance_to_top];
+        return this->output_layer_for_internal(std::min(insert_internal_idx, m_internal_to_output.size() - 1));
+    }
+
+    size_t internal_layer_for_output(size_t output_idx) const
+    {
+        assert(output_idx < m_output_to_internal.size());
+        return m_output_to_internal[output_idx];
+    }
+
+    size_t closest_layer_idx(coordf_t print_z) const
+    {
+        auto it = std::lower_bound(m_layers.begin(), m_layers.end(), print_z,
+            [](const OrganicSupportLayerHeight &layer, coordf_t z) { return layer.print_z < z; });
+        if (it == m_layers.begin())
+            return 0;
+        if (it == m_layers.end())
+            return m_layers.size() - 1;
+        const size_t upper_idx = size_t(std::distance(m_layers.begin(), it));
+        return print_z - m_layers[upper_idx - 1].print_z <= m_layers[upper_idx].print_z - print_z ?
+            upper_idx - 1 : upper_idx;
+    }
+
+    coordf_t slice_z(size_t idx) const
+    {
+        return 0.5 * (m_layers[idx].bottom_z + m_layers[idx].print_z);
+    }
+
+    size_t first_layer_with_slice_z_at_least(coordf_t z) const
+    {
+        auto it = std::lower_bound(m_layers.begin(), m_layers.end(), z,
+            [](const OrganicSupportLayerHeight &layer, coordf_t value) {
+                return 0.5 * (layer.bottom_z + layer.print_z) < value;
+            });
+        return size_t(std::distance(m_layers.begin(), it));
+    }
+
+    size_t first_layer_with_slice_z_above(coordf_t z) const
+    {
+        auto it = std::upper_bound(m_layers.begin(), m_layers.end(), z,
+            [](coordf_t value, const OrganicSupportLayerHeight &layer) {
+                return value < 0.5 * (layer.bottom_z + layer.print_z);
+            });
+        return size_t(std::distance(m_layers.begin(), it));
+    }
+
+    SupportGeneratorLayer& initialize(SupportGeneratorLayer &layer, size_t output_idx) const
+    {
+        const OrganicSupportLayerHeight &height = m_layers[output_idx];
+        layer.print_z  = height.print_z;
+        layer.bottom_z = height.bottom_z;
+        layer.height   = height.height;
+        return layer;
+    }
+
+private:
+    std::vector<OrganicSupportLayerHeight> m_layers;
+    std::vector<coordf_t>                  m_internal_print_z;
+    std::vector<coordf_t>                  m_contact_print_z_by_internal_layer;
+    std::vector<size_t>                    m_internal_to_output;
+    std::vector<size_t>                    m_output_to_internal;
+    std::vector<std::vector<size_t>>       m_roof_to_output;
+};
+
+inline SupportGeneratorLayer& layer_allocate(
+    SupportGeneratorLayerStorage       &layer_storage,
+    SupporLayerType                     layer_type,
+    const OrganicSupportLayerSchedule  &schedule,
+    size_t                              output_layer_idx)
+{
+    SupportGeneratorLayer &layer = layer_storage.allocate(layer_type);
+    return schedule.initialize(layer, output_layer_idx);
+}
+
+inline SupportGeneratorLayer& layer_allocate_unguarded(
+    SupportGeneratorLayerStorage       &layer_storage,
+    SupporLayerType                     layer_type,
+    const OrganicSupportLayerSchedule  &schedule,
+    size_t                              output_layer_idx)
+{
+    SupportGeneratorLayer &layer = layer_storage.allocate_unguarded(layer_type);
+    return schedule.initialize(layer, output_layer_idx);
+}
+
 // Using the std::deque as an allocator.
 inline SupportGeneratorLayer& layer_allocate_unguarded(
     SupportGeneratorLayerStorage      &layer_storage,
@@ -686,22 +1027,24 @@ public:
         const SlicingParameters         &slicing_parameters, 
         const SupportParameters         &support_parameters,
         const TreeSupportSettings       &config, 
+        const OrganicSupportLayerSchedule &layer_schedule,
         SupportGeneratorLayerStorage    &layer_storage, 
         SupportGeneratorLayersPtr       &top_contacts,
         SupportGeneratorLayersPtr       &top_interfaces,
         SupportGeneratorLayersPtr       &top_base_interfaces) 
     :
-        slicing_parameters(slicing_parameters), support_parameters(support_parameters), config(config),
+        slicing_parameters(slicing_parameters), support_parameters(support_parameters), config(config), layer_schedule(layer_schedule),
         layer_storage(layer_storage), top_contacts(top_contacts), top_interfaces(top_interfaces), top_base_interfaces(top_base_interfaces)  
     {}
     InterfacePlacer(const InterfacePlacer& rhs) :
-        slicing_parameters(rhs.slicing_parameters), support_parameters(rhs.support_parameters), config(rhs.config),
+        slicing_parameters(rhs.slicing_parameters), support_parameters(rhs.support_parameters), config(rhs.config), layer_schedule(rhs.layer_schedule),
         layer_storage(rhs.layer_storage), top_contacts(rhs.top_contacts), top_interfaces(rhs.top_interfaces), top_base_interfaces(rhs.top_base_interfaces) 
     {}
 
     const SlicingParameters    &slicing_parameters;
     const SupportParameters    &support_parameters;
     const TreeSupportSettings  &config;
+    const OrganicSupportLayerSchedule &layer_schedule;
     SupportGeneratorLayersPtr&  top_contacts_mutable() { return this->top_contacts; }
 
 public:
@@ -726,10 +1069,21 @@ public:
     void add_roof_build_plate(Polygons &&overhang_areas, size_t dtt_roof)
     {
         std::lock_guard<std::mutex> lock(m_mutex_layer_storage);
-        this->add_roof_unguarded(std::move(overhang_areas), 0, std::min(dtt_roof, this->support_parameters.num_top_interface_layers));
+        this->add_roof_to_output_unguarded(
+            std::move(overhang_areas),
+            layer_schedule.output_layer_for_internal(0),
+            std::min(dtt_roof, this->support_parameters.num_top_interface_layers));
     }
 
     void add_roof_unguarded(Polygons &&new_roofs, const size_t insert_layer_idx, const size_t dtt_roof)
+    {
+        this->add_roof_to_output_unguarded(
+            std::move(new_roofs),
+            layer_schedule.output_layer_for_roof(insert_layer_idx, dtt_roof),
+            dtt_roof);
+    }
+
+    void add_roof_to_output_unguarded(Polygons &&new_roofs, const size_t output_layer_idx, const size_t dtt_roof)
     {
         assert(support_parameters.has_top_contacts);
         assert(dtt_roof <= support_parameters.num_top_interface_layers);
@@ -742,10 +1096,10 @@ public:
         SupportGeneratorLayersPtr &layers =
             dtt_roof == 0 ? this->top_contacts :
             dtt_roof <= interface_threshold ? this->top_interfaces : this->top_base_interfaces;
-        SupportGeneratorLayer*& l = layers[insert_layer_idx];
+        SupportGeneratorLayer*& l = layers[output_layer_idx];
         if (l == nullptr)
             l = &layer_allocate_unguarded(layer_storage, dtt_roof == 0 ? SupporLayerType::TopContact : SupporLayerType::TopInterface, 
-                    slicing_parameters, config, insert_layer_idx);
+                    layer_schedule, output_layer_idx);
         // will be unioned in finalize_interface_and_support_areas()
         append(l->polygons, std::move(new_roofs));
     }
