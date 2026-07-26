@@ -19,9 +19,9 @@ struct FilamentInventoryUsage {
     std::string manufacturer;
     std::string material_type;
     std::string filament_preset_id;
-    std::string color_hex {"#FFFFFF"};
-    double      diameter_mm {1.75};
-    double      density_g_cm3 {1.24};
+    std::string color_hex;
+    double      diameter_mm {0.0};
+    double      density_g_cm3 {0.0};
     FilamentInventory::Milligrams estimated_weight_mg {0};
     std::string suggested_bambu_tag_uid;
 };
@@ -48,6 +48,13 @@ struct FilamentReservationResult {
 namespace FilamentAllocationDetail {
 
 wxString format_spool_choice_label(const FilamentInventory::Spool &spool);
+
+// Returns a spool only when exactly one listed spool agrees with all known
+// material-identity metadata. Stock is deliberately validated later and never
+// used to choose between otherwise identical physical spools.
+std::optional<std::string> find_unique_compatible_spool_id(
+    const FilamentInventoryUsage &usage,
+    const std::vector<FilamentInventory::Spool> &spools);
 
 } // namespace FilamentAllocationDetail
 

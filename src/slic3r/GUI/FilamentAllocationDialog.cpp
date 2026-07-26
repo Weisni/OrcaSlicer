@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <chrono>
 #include <cmath>
 #include <limits>
@@ -47,6 +48,70 @@ wxString format_weight(Milligrams milligrams)
 wxString em_dash_separator()
 {
     return wxString::FromUTF8(" \xE2\x80\x94 ");
+}
+
+std::string trim_copy(const std::string &value)
+{
+    const auto first = std::find_if_not(
+        value.begin(), value.end(),
+        [](unsigned char ch) { return std::isspace(ch) != 0; });
+    const auto last = std::find_if_not(
+        value.rbegin(), value.rend(),
+        [](unsigned char ch) { return std::isspace(ch) != 0; }).base();
+    return first < last ? std::string(first, last) : std::string {};
+}
+
+std::string normalized_metadata(std::string value)
+{
+    value = trim_copy(value);
+    std::transform(
+        value.begin(), value.end(), value.begin(),
+        [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+    return value;
+}
+
+bool optional_metadata_agrees(
+    const std::string &usage_value, const std::string &spool_value)
+{
+    const std::string normalized_usage = normalized_metadata(usage_value);
+    const std::string normalized_spool = normalized_metadata(spool_value);
+    return normalized_usage.empty() || normalized_spool.empty() ||
+           normalized_usage == normalized_spool;
+}
+
+bool spool_is_compatible(
+    const FilamentInventoryUsage &usage, const Spool &spool)
+{
+    if (spool.id.empty() || spool.status == SpoolStatus::archived)
+        return false;
+
+    const std::string usage_material = normalized_metadata(usage.material_type);
+    if (usage_material.empty() ||
+        usage_material != normalized_metadata(spool.material_type))
+        return false;
+
+    if (!optional_metadata_agrees(usage.manufacturer, spool.manufacturer))
+        return false;
+
+    const std::string usage_preset = trim_copy(usage.filament_preset_id);
+    const std::string spool_preset = trim_copy(spool.filament_preset_id);
+    if (!usage_preset.empty() && !spool_preset.empty() &&
+        usage_preset != spool_preset)
+        return false;
+
+    const std::string usage_color = normalized_metadata(usage.color_hex);
+    if (!usage_color.empty() &&
+        usage_color != normalized_metadata(spool.color_hex))
+        return false;
+
+    if (std::isfinite(usage.diameter_mm) && usage.diameter_mm > 0.0) {
+        if (!std::isfinite(spool.diameter_mm) || spool.diameter_mm <= 0.0 ||
+            std::abs(usage.diameter_mm - spool.diameter_mm) > 0.01)
+            return false;
+    }
+    // Density affects the weight estimate but does not identify which physical
+    // spool is loaded; the sliced usage is already expressed in milligrams.
+    return true;
 }
 
 class FilamentAllocationDialog : public wxDialog
@@ -272,10 +337,28 @@ private:
                         [&matched](const Spool &spool) { return spool.id == matched->id; });
                     if (found != m_spools.end())
                         return static_cast<int>(std::distance(m_spools.begin(), found)) + 1;
+                    // A linked but archived spool remains the authoritative
+                    // identity. Do not silently charge a different spool.
+                    return wxNOT_FOUND;
                 }
             } catch (const std::exception &) {
+                return wxNOT_FOUND;
             }
-            return wxNOT_FOUND;
+            // An unlinked tag does not identify an inventory entry. The
+            // conservative metadata matcher below may still find one unique
+            // physical spool, making repeated print starts deterministic.
+        }
+
+        const auto matched =
+            FilamentAllocationDetail::find_unique_compatible_spool_id(
+                usage, m_spools);
+        if (matched) {
+            const auto found = std::find_if(
+                m_spools.begin(), m_spools.end(),
+                [&matched](const Spool &spool) { return spool.id == *matched; });
+            if (found != m_spools.end())
+                return static_cast<int>(
+                           std::distance(m_spools.begin(), found)) + 1;
         }
         return wxNOT_FOUND;
     }
@@ -341,8 +424,12 @@ private:
                         defaults.material_type + " " + usage.color_hex : usage.display_name;
         defaults.filament_preset_id = usage.filament_preset_id;
         defaults.color_hex = usage.color_hex.empty() ? "#FFFFFF" : usage.color_hex;
-        defaults.diameter_mm = usage.diameter_mm;
-        defaults.density_g_cm3 = usage.density_g_cm3;
+        defaults.diameter_mm =
+            std::isfinite(usage.diameter_mm) && usage.diameter_mm > 0.0 ?
+                usage.diameter_mm : 1.75;
+        defaults.density_g_cm3 =
+            std::isfinite(usage.density_g_cm3) && usage.density_g_cm3 > 0.0 ?
+                usage.density_g_cm3 : 1.24;
         std::vector<SpoolIdentifierInput> identifiers;
         if (!usage.suggested_bambu_tag_uid.empty())
             identifiers.push_back({
@@ -372,6 +459,23 @@ wxString FilamentAllocationDetail::format_spool_choice_label(
         _L("%s — %s, %s available"),
         from_u8(spool.name), from_u8(spool.material_type),
         format_weight(spool.available_weight_mg));
+}
+
+std::optional<std::string>
+FilamentAllocationDetail::find_unique_compatible_spool_id(
+    const FilamentInventoryUsage &usage,
+    const std::vector<FilamentInventory::Spool> &spools)
+{
+    const Spool *match = nullptr;
+    for (const Spool &spool : spools) {
+        if (!spool_is_compatible(usage, spool))
+            continue;
+        if (match != nullptr)
+            return std::nullopt;
+        match = &spool;
+    }
+    return match != nullptr ? std::optional<std::string>(match->id) :
+                              std::nullopt;
 }
 
 FilamentReservationResult reserve_filament_for_print(

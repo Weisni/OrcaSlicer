@@ -3662,14 +3662,17 @@ void SelectMachineDialog::on_send_print()
                             usage.color_hex = colors->values[filament_index];
                     }
                 }
-                if (usage.color_hex.size() >= 7 && usage.color_hex.front() == '#')
-                    usage.color_hex.resize(7);
-                try {
-                    usage.color_hex = FilamentInventory::canonical_color(
-                        FilamentInventory::ColorModel::hex,
-                        usage.color_hex.empty() ? "#FFFFFF" : usage.color_hex);
-                } catch (const std::exception &) {
-                    usage.color_hex = "#FFFFFF";
+                if (!usage.color_hex.empty()) {
+                    if (usage.color_hex.size() >= 7 &&
+                        usage.color_hex.front() == '#')
+                        usage.color_hex.resize(7);
+                    try {
+                        usage.color_hex = FilamentInventory::canonical_color(
+                            FilamentInventory::ColorModel::hex,
+                            usage.color_hex);
+                    } catch (const std::exception &) {
+                        usage.color_hex.clear();
+                    }
                 }
                 usage.display_name = usage.manufacturer;
                 if (!usage.display_name.empty() && !usage.material_type.empty())
@@ -3679,18 +3682,26 @@ void SelectMachineDialog::on_send_print()
                     usage.display_name = "Filament " + std::to_string(sliced.id + 1);
 
                 if (sliced.id >= 0 && diameters != nullptr &&
-                    static_cast<std::size_t>(sliced.id) < diameters->values.size())
+                    static_cast<std::size_t>(sliced.id) < diameters->values.size() &&
+                    std::isfinite(diameters->values[sliced.id]) &&
+                    diameters->values[sliced.id] > 0.0)
                     usage.diameter_mm = diameters->values[sliced.id];
                 else if (gcode_result != nullptr && sliced.id >= 0 &&
                          static_cast<std::size_t>(sliced.id) <
-                             gcode_result->filament_diameters.size())
+                             gcode_result->filament_diameters.size() &&
+                         std::isfinite(gcode_result->filament_diameters[sliced.id]) &&
+                         gcode_result->filament_diameters[sliced.id] > 0.0)
                     usage.diameter_mm = gcode_result->filament_diameters[sliced.id];
                 if (sliced.id >= 0 && densities != nullptr &&
-                    static_cast<std::size_t>(sliced.id) < densities->values.size())
+                    static_cast<std::size_t>(sliced.id) < densities->values.size() &&
+                    std::isfinite(densities->values[sliced.id]) &&
+                    densities->values[sliced.id] > 0.0)
                     usage.density_g_cm3 = densities->values[sliced.id];
                 else if (gcode_result != nullptr && sliced.id >= 0 &&
                          static_cast<std::size_t>(sliced.id) <
-                             gcode_result->filament_densities.size())
+                             gcode_result->filament_densities.size() &&
+                         std::isfinite(gcode_result->filament_densities[sliced.id]) &&
+                         gcode_result->filament_densities[sliced.id] > 0.0)
                     usage.density_g_cm3 = gcode_result->filament_densities[sliced.id];
 
                 const auto mapping = std::find_if(
