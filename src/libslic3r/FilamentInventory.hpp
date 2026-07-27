@@ -155,9 +155,20 @@ struct Allocation {
     std::string id;
     std::string job_id;
     std::string spool_id;
+    // Historical snapshots keep completed jobs understandable when a spool is
+    // renamed or its material metadata is corrected later.
+    std::string spool_name;
+    std::string manufacturer;
+    std::string material_type;
+    std::string filament_preset_id;
+    std::string color_hex;
     int         filament_index {0};
     Milligrams estimated_weight_mg {0};
     std::optional<Milligrams> actual_weight_mg;
+    // Price and calculated costs are resolved from the currently referenced
+    // spool whenever currencies match. The spool UUID remains stable, while
+    // price corrections are reflected in every compatible linked job. Legacy
+    // cross-currency allocations retain their booked price.
     MoneyMicros material_price_per_kg_micros {0};
     std::string cost_currency {"EUR"};
     MoneyMicros estimated_material_cost_micros {0};
@@ -184,10 +195,13 @@ struct PrintJob {
     MoneyMicros electricity_price_per_kwh_micros {400'000};
     std::int64_t machine_power_watts {0};
     std::int64_t estimated_runtime_seconds {0};
+    // Estimated from sliced runtime at reservation time.
     MoneyMicros electricity_cost_micros {0};
     std::string created_at;
     std::string updated_at;
+    std::string started_at;
     std::string completed_at;
+    std::optional<std::int64_t> actual_runtime_seconds;
     std::vector<Allocation> allocations;
 };
 
@@ -247,6 +261,25 @@ struct CostSummary {
     std::optional<MoneyMicros> invoice_amount_micros;
 };
 
+struct MaterialUsageSummary {
+    // These fields are allocation snapshots, not live spool metadata.
+    // spool_name is only populated when no stable material identity is known.
+    std::string spool_name;
+    std::string manufacturer;
+    std::string material_type;
+    std::string filament_preset_id;
+    std::string color_hex;
+    std::string cost_currency {"EUR"};
+    Milligrams estimated_weight_mg {0};
+    // Confirmed values are used where present; open allocations retain their
+    // sliced estimates. A confirmed zero remains a valid zero.
+    Milligrams best_known_weight_mg {0};
+    MoneyMicros estimated_material_cost_micros {0};
+    MoneyMicros best_known_material_cost_micros {0};
+    bool weight_fully_confirmed {true};
+    bool cost_fully_confirmed {true};
+};
+
 struct ActualConsumption {
     int         filament_index {0};
     Milligrams weight_mg {0};
@@ -268,7 +301,7 @@ struct StockEvent {
 class Store
 {
 public:
-    static constexpr int schema_version = 2;
+    static constexpr int schema_version = 4;
 
     // database_path is UTF-8. Parent directories must already exist.
     explicit Store(const std::string &database_path);
@@ -331,6 +364,8 @@ public:
     PrintJob get_job(const std::string &job_id) const;
     std::vector<PrintJob> list_jobs(bool include_closed = true, std::size_t limit = 0) const;
     std::vector<PrintJob> list_open_jobs() const;
+    std::vector<PrintJob> list_customer_order_jobs(
+        const std::string &order_id, bool include_discarded = true) const;
 
     void bind_job_identifier(const std::string &job_id, const std::string &provider,
                              const std::string &kind, const std::string &value);
@@ -358,6 +393,12 @@ std::string to_string(IdentifierKind value);
 std::string to_string(JobState value);
 std::string to_string(ColorModel value);
 std::string to_string(CustomerOrderStatus value);
+
+// Aggregates multiple physical spools of the same snapshotted filament while
+// keeping manufacturer, preset, colour and currency boundaries intact.
+// Discarded print jobs are excluded.
+std::vector<MaterialUsageSummary> summarize_material_usage(
+    const std::vector<PrintJob> &jobs);
 
 // Converts a user-entered color to the canonical sRGB #RRGGBB representation.
 // CMYK conversion is device-independent and therefore an approximation.

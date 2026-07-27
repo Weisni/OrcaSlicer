@@ -1,7 +1,9 @@
 #pragma once
 
 #include <cstdint>
+#include <map>
 #include <memory>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -46,6 +48,7 @@ private:
 
     int selected_spool_row() const;
     int selected_job_row() const;
+    int selected_job_history_row() const;
     int selected_customer_row() const;
     int selected_order_row() const;
 
@@ -63,6 +66,8 @@ private:
     void archive_customer();
     void add_customer_order();
     void edit_customer_order();
+    void show_material_breakdown();
+    void show_selected_job_materials(bool history);
     void set_customer_order_status(FilamentInventory::CustomerOrderStatus status);
     void delete_customer_order();
     void edit_cost_settings();
@@ -74,8 +79,11 @@ private:
     std::string                     m_store_error;
     std::vector<Spool>              m_spools;
     std::vector<PrintJob>           m_jobs;
+    std::vector<PrintJob>           m_job_history;
     std::vector<Customer>           m_customers;
     std::vector<CustomerOrder>      m_customer_orders;
+    std::map<std::string, std::size_t> m_order_job_counts;
+    std::set<std::string>           m_orders_with_open_jobs;
 
     TabCtrl            *m_tabs {nullptr};
     wxSimplebook       *m_pages {nullptr};
@@ -95,10 +103,13 @@ private:
     wxButton           *m_correct_button {nullptr};
     wxButton           *m_review_button {nullptr};
     wxButton           *m_discard_button {nullptr};
+    wxButton           *m_job_materials_button {nullptr};
+    wxButton           *m_job_history_materials_button {nullptr};
     wxButton           *m_edit_customer_button {nullptr};
     wxButton           *m_archive_customer_button {nullptr};
     wxButton           *m_add_order_button {nullptr};
     wxButton           *m_edit_order_button {nullptr};
+    wxButton           *m_material_breakdown_button {nullptr};
     wxButton           *m_activate_order_button {nullptr};
     wxButton           *m_complete_order_button {nullptr};
     wxButton           *m_cancel_order_button {nullptr};

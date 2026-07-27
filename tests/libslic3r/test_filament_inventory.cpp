@@ -1,5 +1,6 @@
 #include <catch2/catch_all.hpp>
 
+#include <algorithm>
 #include <atomic>
 #include <exception>
 #include <functional>
@@ -120,6 +121,17 @@ void create_v1_database(const fs::path &path)
         INSERT INTO stock_events (
             id, spool_id, event_type, delta_mg, balance_after_mg, operation_key
         ) VALUES ('legacy-event', 'legacy-spool', 'initial', 500000, 500000, 'legacy-initial');
+        INSERT INTO print_jobs (
+            id, idempotency_key, job_name, project_path, printer_id, state
+        ) VALUES (
+            'legacy-job', 'legacy:key', 'Legacy print', 'legacy.3mf',
+            'legacy-printer', 'printing'
+        );
+        INSERT INTO allocations (
+            id, job_id, spool_id, filament_index, estimated_weight_mg
+        ) VALUES (
+            'legacy-allocation', 'legacy-job', 'legacy-spool', 0, 100000
+        );
         PRAGMA user_version = 1;
     )SQL";
     char *error = nullptr;
@@ -137,6 +149,31 @@ void check_error_code(const std::function<void()> &operation, ErrorCode expected
     } catch (const Error &error) {
         CHECK(error.code() == expected);
     }
+}
+
+void set_job_updated_at_seconds_ago(
+    const fs::path &path, const std::string &job_id, int seconds)
+{
+    sqlite3 *db = nullptr;
+    REQUIRE(sqlite3_open(path.string().c_str(), &db) == SQLITE_OK);
+    sqlite3_stmt *statement = nullptr;
+    REQUIRE(
+        sqlite3_prepare_v2(
+            db,
+            "UPDATE print_jobs "
+            "SET updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now', ?) "
+            "WHERE id = ?",
+            -1, &statement, nullptr) == SQLITE_OK);
+    const std::string modifier = "-" + std::to_string(seconds) + " seconds";
+    REQUIRE(
+        sqlite3_bind_text(
+            statement, 1, modifier.c_str(), -1, SQLITE_TRANSIENT) == SQLITE_OK);
+    REQUIRE(
+        sqlite3_bind_text(
+            statement, 2, job_id.c_str(), -1, SQLITE_TRANSIENT) == SQLITE_OK);
+    CHECK(sqlite3_step(statement) == SQLITE_DONE);
+    CHECK(sqlite3_finalize(statement) == SQLITE_OK);
+    CHECK(sqlite3_close(db) == SQLITE_OK);
 }
 
 } // namespace
@@ -204,7 +241,7 @@ TEST_CASE("filament inventory migrates v1 data with safe cost defaults", "[Filam
 
     {
         Store store(path.string());
-        CHECK(store.current_schema_version() == 2);
+        CHECK(store.current_schema_version() == Store::schema_version);
         const InventorySettings settings = store.get_settings();
         CHECK(settings.currency == "EUR");
         CHECK(settings.electricity_price_per_kwh_micros == 400'000);
@@ -214,12 +251,90 @@ TEST_CASE("filament inventory migrates v1 data with safe cost defaults", "[Filam
         CHECK(legacy.current_weight_mg == 500'000);
         CHECK(legacy.material_price_per_kg_micros == 0);
         CHECK(legacy.price_currency == "EUR");
+
+        const PrintJob legacy_job = store.get_job("legacy-job");
+        CHECK(legacy_job.started_at.empty());
+        CHECK_FALSE(legacy_job.actual_runtime_seconds);
+        REQUIRE(legacy_job.allocations.size() == 1);
+        CHECK(legacy_job.allocations.front().spool_name == "Legacy");
+        CHECK(legacy_job.allocations.front().material_type == "PLA");
+        CHECK(legacy_job.allocations.front().color_hex == "#FFFFFF");
+        CHECK(
+            legacy_job.allocations.front()
+                .estimated_material_cost_micros == 10'000);
+        store.mark_printing(legacy_job.id);
+        CHECK_FALSE(store.get_job(legacy_job.id).started_at.empty());
     }
 
     boost::system::error_code cleanup_error;
     fs::remove(path, cleanup_error);
     fs::remove(path.string() + "-wal", cleanup_error);
     fs::remove(path.string() + "-shm", cleanup_error);
+}
+
+TEST_CASE("filament inventory migrates allocation snapshots to cent costs",
+          "[FilamentInventory][Migration][Cost]")
+{
+    TemporaryInventory inventory;
+    SpoolInput input = spool_input("Migration cent");
+    input.material_price_per_kg_micros = 20'000'000;
+    const Spool spool = inventory.store->create_spool(input);
+    const PrintJob completed = inventory.store->reserve_job(
+        job_input("migration:completed"),
+        {{spool.id, 0, 800}, {spool.id, 1, 1}});
+    inventory.store->commit_job(completed.id, {{0, 800}, {1, 0}});
+    const PrintJob open = inventory.store->reserve_job(
+        job_input("migration:open"), {{spool.id, 0, 1}});
+
+    inventory.store.reset();
+    sqlite3 *db = nullptr;
+    REQUIRE(sqlite3_open(inventory.path.string().c_str(), &db) == SQLITE_OK);
+    char *error = nullptr;
+    const int result = sqlite3_exec(
+        db,
+        "UPDATE allocations "
+        "SET estimated_material_cost_micros = 1, "
+        "    actual_material_cost_micros = "
+        "        CASE WHEN actual_weight_mg IS NULL THEN NULL ELSE 1 END;"
+        "PRAGMA user_version = 3;",
+        nullptr, nullptr, &error);
+    const std::string sqlite_error =
+        error != nullptr ? error : std::string {};
+    INFO(sqlite_error);
+    REQUIRE(result == SQLITE_OK);
+    sqlite3_free(error);
+    REQUIRE(sqlite3_close(db) == SQLITE_OK);
+
+    inventory.store = std::make_unique<Store>(inventory.path.string());
+    CHECK(inventory.store->current_schema_version() == Store::schema_version);
+    const PrintJob migrated_completed =
+        inventory.store->get_job(completed.id);
+    REQUIRE(migrated_completed.allocations.size() == 2);
+    CHECK(
+        migrated_completed.allocations[0]
+            .estimated_material_cost_micros == 20'000);
+    CHECK(
+        migrated_completed.allocations[0]
+            .actual_material_cost_micros == 20'000);
+    CHECK(
+        migrated_completed.allocations[1]
+            .estimated_material_cost_micros == 10'000);
+    CHECK(
+        migrated_completed.allocations[1]
+            .actual_material_cost_micros == 0);
+    const PrintJob migrated_open = inventory.store->get_job(open.id);
+    REQUIRE(migrated_open.allocations.size() == 1);
+    CHECK(
+        migrated_open.allocations[0]
+            .estimated_material_cost_micros == 10'000);
+    CHECK_FALSE(
+        migrated_open.allocations[0].actual_material_cost_micros);
+
+    inventory.store.reset();
+    inventory.store = std::make_unique<Store>(inventory.path.string());
+    CHECK(
+        inventory.store->get_job(completed.id).allocations[0]
+            .estimated_material_cost_micros == 20'000);
 }
 
 TEST_CASE("first-use schema migration is serialized across connections", "[FilamentInventory]")
@@ -383,7 +498,171 @@ TEST_CASE("inventory money uses normalized three-letter currencies", "[FilamentI
 
     SpoolInput input = spool_input("Currency");
     input.price_currency = "usd";
-    CHECK(inventory.store->create_spool(input).price_currency == "USD");
+    const Spool spool = inventory.store->create_spool(input);
+    CHECK(spool.price_currency == "USD");
+
+    settings.currency = "usd";
+    inventory.store->update_settings(settings);
+    const Customer customer =
+        inventory.store->create_customer(customer_input("USD customer"));
+    CustomerOrderInput order = order_input(customer.id, "USD order");
+    order.currency = settings.currency;
+    const CustomerOrder created_order =
+        inventory.store->create_customer_order(order);
+    PrintJobInput job = job_input("currency:usd", "USD print");
+    job.customer_order_id = created_order.id;
+    CHECK(
+        inventory.store->reserve_job(job, {{spool.id, 0, 10'000}})
+            .cost_currency == "USD");
+}
+
+TEST_CASE("material usage summaries combine rolls and preserve material boundaries",
+          "[FilamentInventory][MaterialSummary]")
+{
+    PrintJob completed;
+    completed.state = JobState::completed;
+    Allocation first;
+    first.spool_name = "Black roll 1";
+    first.manufacturer = "Quack Materials";
+    first.material_type = "PLA";
+    first.filament_preset_id = "quack-pla";
+    first.color_hex = "#111111";
+    first.cost_currency = "EUR";
+    first.estimated_weight_mg = 100'000;
+    first.actual_weight_mg = 80'000;
+    first.estimated_material_cost_micros = 2'000'000;
+    first.actual_material_cost_micros = 1'600'000;
+    completed.allocations.emplace_back(first);
+
+    PrintJob open;
+    open.state = JobState::printing;
+    Allocation second = first;
+    second.spool_name = "Black roll 2";
+    second.estimated_weight_mg = 50'000;
+    second.actual_weight_mg.reset();
+    second.estimated_material_cost_micros = 1'500'000;
+    second.actual_material_cost_micros.reset();
+    open.allocations.emplace_back(second);
+
+    Allocation zero = first;
+    zero.spool_name = "Orange roll";
+    zero.color_hex = "#FF6600";
+    zero.estimated_weight_mg = 10'000;
+    zero.actual_weight_mg = 0;
+    zero.estimated_material_cost_micros = 200'000;
+    zero.actual_material_cost_micros = 0;
+    completed.allocations.emplace_back(zero);
+
+    PrintJob discarded;
+    discarded.state = JobState::discarded;
+    Allocation ignored = first;
+    ignored.estimated_weight_mg = 999'000;
+    ignored.estimated_material_cost_micros = 99'000'000;
+    discarded.allocations.emplace_back(ignored);
+
+    const std::vector<MaterialUsageSummary> summaries =
+        summarize_material_usage({completed, open, discarded});
+    REQUIRE(summaries.size() == 2);
+    const auto black = std::find_if(
+        summaries.begin(), summaries.end(),
+        [](const MaterialUsageSummary &summary) {
+            return summary.color_hex == "#111111";
+        });
+    REQUIRE(black != summaries.end());
+    CHECK(black->spool_name.empty());
+    CHECK(black->estimated_weight_mg == 150'000);
+    CHECK(black->best_known_weight_mg == 130'000);
+    CHECK(black->estimated_material_cost_micros == 3'500'000);
+    CHECK(black->best_known_material_cost_micros == 3'100'000);
+    CHECK_FALSE(black->weight_fully_confirmed);
+    CHECK_FALSE(black->cost_fully_confirmed);
+
+    const auto orange = std::find_if(
+        summaries.begin(), summaries.end(),
+        [](const MaterialUsageSummary &summary) {
+            return summary.color_hex == "#FF6600";
+        });
+    REQUIRE(orange != summaries.end());
+    CHECK(orange->best_known_weight_mg == 0);
+    CHECK(orange->best_known_material_cost_micros == 0);
+    CHECK(orange->weight_fully_confirmed);
+    CHECK(orange->cost_fully_confirmed);
+}
+
+TEST_CASE("material usage summaries keep identity and currency boundaries",
+          "[FilamentInventory][MaterialSummary]")
+{
+    Allocation base;
+    base.spool_name = "Base roll";
+    base.manufacturer = "Maker";
+    base.material_type = "PLA";
+    base.filament_preset_id = "maker-pla";
+    base.color_hex = "#111111";
+    base.cost_currency = "EUR";
+    base.estimated_weight_mg = 1'000;
+    base.actual_weight_mg = 1'000;
+    base.estimated_material_cost_micros = 10'000;
+    base.actual_material_cost_micros = 10'000;
+
+    PrintJob job;
+    job.state = JobState::completed;
+    job.allocations.emplace_back(base);
+    Allocation same = base;
+    same.spool_name = "Second physical roll";
+    same.cost_currency = "eur";
+    job.allocations.emplace_back(same);
+    Allocation other_manufacturer = base;
+    other_manufacturer.manufacturer = "Other maker";
+    job.allocations.emplace_back(other_manufacturer);
+    Allocation other_type = base;
+    other_type.material_type = "PETG";
+    job.allocations.emplace_back(other_type);
+    Allocation other_preset = base;
+    other_preset.filament_preset_id = "maker-pla-tough";
+    job.allocations.emplace_back(other_preset);
+    Allocation other_color = base;
+    other_color.color_hex = "#222222";
+    job.allocations.emplace_back(other_color);
+    Allocation other_currency = base;
+    other_currency.cost_currency = "USD";
+    job.allocations.emplace_back(other_currency);
+    Allocation unknown_a = base;
+    unknown_a.spool_name = "Unknown A";
+    unknown_a.manufacturer.clear();
+    unknown_a.material_type.clear();
+    unknown_a.filament_preset_id.clear();
+    job.allocations.emplace_back(unknown_a);
+    Allocation unknown_b = unknown_a;
+    unknown_b.spool_name = "Unknown B";
+    job.allocations.emplace_back(unknown_b);
+
+    const std::vector<MaterialUsageSummary> summaries =
+        summarize_material_usage({job});
+    REQUIRE(summaries.size() == 8);
+    const auto combined = std::find_if(
+        summaries.begin(), summaries.end(),
+        [](const MaterialUsageSummary &summary) {
+            return summary.manufacturer == "Maker" &&
+                   summary.material_type == "PLA" &&
+                   summary.filament_preset_id == "maker-pla" &&
+                   summary.color_hex == "#111111" &&
+                   summary.cost_currency == "EUR";
+        });
+    REQUIRE(combined != summaries.end());
+    CHECK(combined->spool_name.empty());
+    CHECK(combined->best_known_weight_mg == 2'000);
+    CHECK(combined->best_known_material_cost_micros == 20'000);
+    CHECK(std::count_if(
+              summaries.begin(), summaries.end(),
+              [](const MaterialUsageSummary &summary) {
+                  return summary.color_hex == "#111111";
+              }) == 7);
+    CHECK(std::count_if(
+              summaries.begin(), summaries.end(),
+              [](const MaterialUsageSummary &summary) {
+                  return summary.spool_name == "Unknown A" ||
+                         summary.spool_name == "Unknown B";
+              }) == 2);
 }
 
 TEST_CASE("job costs combine fixed-point material and machine electricity", "[FilamentInventory][Cost]")
@@ -435,6 +714,83 @@ TEST_CASE("job costs combine fixed-point material and machine electricity", "[Fi
     CHECK_FALSE(actual.invoice_amount_micros);
 }
 
+TEST_CASE("positive material usage is booked in rounded whole cents",
+          "[FilamentInventory][Cost][Reservation]")
+{
+    TemporaryInventory inventory;
+    SpoolInput priced_input = spool_input("Cent-priced");
+    priced_input.material_price_per_kg_micros = 20'000'000;
+    const Spool priced = inventory.store->create_spool(priced_input);
+    SpoolInput zero_price_input = spool_input("Minimum-charge");
+    zero_price_input.material_price_per_kg_micros = 0;
+    const Spool zero_price =
+        inventory.store->create_spool(zero_price_input);
+    const Customer customer =
+        inventory.store->create_customer(customer_input("Cent customer"));
+    const CustomerOrder order =
+        inventory.store->create_customer_order(
+            order_input(customer.id, "Cent order"));
+
+    PrintJobInput input = job_input("cost:cent-rounding");
+    input.customer_order_id = order.id;
+    const PrintJob reserved = inventory.store->reserve_job(
+        input,
+        {
+            {priced.id, 0, 1},       // 0.00002 EUR -> minimum 0.01 EUR.
+            {priced.id, 1, 500},     // Exactly 0.01 EUR.
+            {priced.id, 2, 800},     // 0.016 EUR -> 0.02 EUR.
+            {zero_price.id, 3, 1'000} // Positive use always costs at least 0.01.
+        });
+    REQUIRE(reserved.allocations.size() == 4);
+    CHECK(reserved.allocations[0].estimated_material_cost_micros == 10'000);
+    CHECK(reserved.allocations[1].estimated_material_cost_micros == 10'000);
+    CHECK(reserved.allocations[2].estimated_material_cost_micros == 20'000);
+    CHECK(reserved.allocations[3].estimated_material_cost_micros == 10'000);
+    CHECK(
+        inventory.store->job_cost_summary(reserved.id)
+            .material_cost_micros == 50'000);
+    CHECK(
+        inventory.store->customer_order_cost_summary(order.id)
+            .material_cost_micros == 50'000);
+
+    inventory.store->commit_job(
+        reserved.id,
+        {{0, 0}, {1, 1}, {2, 800}, {3, 1'000}});
+    const PrintJob completed = inventory.store->get_job(reserved.id);
+    REQUIRE(completed.allocations[0].actual_material_cost_micros);
+    CHECK(*completed.allocations[0].actual_material_cost_micros == 0);
+    CHECK(*completed.allocations[1].actual_material_cost_micros == 10'000);
+    CHECK(*completed.allocations[2].actual_material_cost_micros == 20'000);
+    CHECK(*completed.allocations[3].actual_material_cost_micros == 10'000);
+    CHECK(
+        inventory.store->customer_cost_summary(customer.id)
+            .material_cost_micros == 40'000);
+
+    const std::vector<MaterialUsageSummary> usage =
+        summarize_material_usage({completed});
+    REQUIRE(usage.size() == 1);
+    CHECK(usage.front().best_known_weight_mg == 1'801);
+    CHECK(usage.front().best_known_material_cost_micros == 40'000);
+    CHECK(usage.front().weight_fully_confirmed);
+    CHECK(usage.front().cost_fully_confirmed);
+
+    PrintJobInput discarded_input = job_input(
+        "cost:cent-discarded", "Discarded cent");
+    discarded_input.customer_order_id = order.id;
+    const PrintJob discarded = inventory.store->reserve_job(
+        discarded_input, {{zero_price.id, 0, 1}});
+    CHECK(
+        discarded.allocations.front().estimated_material_cost_micros ==
+        10'000);
+    inventory.store->discard_job(discarded.id);
+    CHECK(
+        inventory.store->job_cost_summary(discarded.id)
+            .material_cost_micros == 0);
+    CHECK(
+        inventory.store->customer_order_cost_summary(order.id)
+            .material_cost_micros == 40'000);
+}
+
 TEST_CASE("one customer order aggregates several print jobs", "[FilamentInventory][Customer][Cost]")
 {
     TemporaryInventory inventory;
@@ -467,6 +823,79 @@ TEST_CASE("one customer order aggregates several print jobs", "[FilamentInventor
     check_error_code(
         [&] { inventory.store->delete_customer_order(order.id); },
         ErrorCode::conflict);
+}
+
+TEST_CASE("customer order job details stay scoped and can include discarded jobs",
+          "[FilamentInventory][Customer][Reservation]")
+{
+    TemporaryInventory inventory;
+    const Spool spool =
+        inventory.store->create_spool(spool_input("Order details"));
+    SpoolInput accent_input = spool_input("Order accent");
+    accent_input.manufacturer = "Accent Materials";
+    accent_input.material_type = "PETG";
+    accent_input.color_hex = "#FF6600";
+    const Spool accent = inventory.store->create_spool(accent_input);
+    const Customer customer =
+        inventory.store->create_customer(customer_input("Order details customer"));
+    const CustomerOrder first_order =
+        inventory.store->create_customer_order(
+            order_input(customer.id, "First order"));
+    CustomerOrderInput second_order_input =
+        order_input(customer.id, "Second order");
+    second_order_input.order_number = "Q-2026-002";
+    const CustomerOrder second_order =
+        inventory.store->create_customer_order(second_order_input);
+
+    PrintJobInput kept_input = job_input("order-details:kept", "Kept");
+    kept_input.customer_order_id = first_order.id;
+    const PrintJob kept = inventory.store->reserve_job(
+        kept_input,
+        {{spool.id, 0, 10'000}, {accent.id, 1, 15'000}});
+    PrintJobInput discarded_input =
+        job_input("order-details:discarded", "Discarded");
+    discarded_input.customer_order_id = first_order.id;
+    const PrintJob discarded = inventory.store->reserve_job(
+        discarded_input, {{spool.id, 0, 20'000}});
+    inventory.store->discard_job(discarded.id);
+    PrintJobInput other_input = job_input("order-details:other", "Other");
+    other_input.customer_order_id = second_order.id;
+    inventory.store->reserve_job(
+        other_input, {{spool.id, 0, 30'000}});
+    inventory.store->reserve_job(
+        job_input("order-details:personal", "Personal"),
+        {{spool.id, 0, 40'000}});
+
+    const std::vector<PrintJob> all =
+        inventory.store->list_customer_order_jobs(first_order.id);
+    REQUIRE(all.size() == 2);
+    CHECK(std::count_if(
+              all.begin(), all.end(),
+              [&kept](const PrintJob &job) { return job.id == kept.id; }) == 1);
+    CHECK(std::count_if(
+              all.begin(), all.end(),
+              [&discarded](const PrintJob &job) {
+                  return job.id == discarded.id;
+              }) == 1);
+    const auto kept_details = std::find_if(
+        all.begin(), all.end(),
+        [&kept](const PrintJob &job) { return job.id == kept.id; });
+    REQUIRE(kept_details != all.end());
+    REQUIRE(kept_details->allocations.size() == 2);
+    CHECK(kept_details->allocations[0].material_type == "PLA");
+    CHECK(kept_details->allocations[0].estimated_weight_mg == 10'000);
+    CHECK(kept_details->allocations[1].manufacturer == "Accent Materials");
+    CHECK(kept_details->allocations[1].material_type == "PETG");
+    CHECK(kept_details->allocations[1].color_hex == "#FF6600");
+    CHECK(kept_details->allocations[1].estimated_weight_mg == 15'000);
+
+    const std::vector<PrintJob> active =
+        inventory.store->list_customer_order_jobs(first_order.id, false);
+    REQUIRE(active.size() == 1);
+    CHECK(active.front().id == kept.id);
+    check_error_code(
+        [&] { inventory.store->list_customer_order_jobs("missing-order"); },
+        ErrorCode::not_found);
 }
 
 TEST_CASE("customer orders only close after their print jobs", "[FilamentInventory][Customer]")
@@ -511,7 +940,9 @@ TEST_CASE("customer orders only close after their print jobs", "[FilamentInvento
         ErrorCode::conflict);
 }
 
-TEST_CASE("job cost snapshots ignore later price changes", "[FilamentInventory][Cost]")
+TEST_CASE(
+    "job material costs follow current spool prices while other snapshots remain stable",
+    "[FilamentInventory][Cost]")
 {
     TemporaryInventory inventory;
     SpoolInput input = spool_input("Snapshot");
@@ -524,9 +955,18 @@ TEST_CASE("job cost snapshots ignore later price changes", "[FilamentInventory][
         inventory.store->reserve_job(print, {{spool.id, 0, 100'000}});
     CHECK(reserved.electricity_cost_micros == 60'000);
     CHECK(reserved.allocations.front().estimated_material_cost_micros == 2'000'000);
+    CHECK(reserved.allocations.front().spool_name == "Snapshot");
+    CHECK(reserved.allocations.front().manufacturer == "Quack Materials");
+    CHECK(reserved.allocations.front().material_type == "PLA");
+    CHECK(reserved.allocations.front().color_hex == "#12ABEF");
 
     input.material_price_per_kg_micros = 50'000'000;
     input.initial_weight_mg = spool.current_weight_mg;
+    input.name = "Renamed snapshot spool";
+    input.manufacturer = "Different manufacturer";
+    input.material_type = "PETG";
+    input.filament_preset_id = "different-preset";
+    input.color_hex = "#AABBCC";
     inventory.store->update_spool(spool.id, input, "snapshot-price-edit");
     InventorySettings settings = inventory.store->get_settings();
     settings.electricity_price_per_kwh_micros = 900'000;
@@ -539,13 +979,251 @@ TEST_CASE("job cost snapshots ignore later price changes", "[FilamentInventory][
     CHECK(repeated.electricity_price_per_kwh_micros == 400'000);
     CHECK(repeated.machine_power_watts == 150);
     CHECK(repeated.electricity_cost_micros == 60'000);
-    CHECK(repeated.allocations.front().material_price_per_kg_micros == 20'000'000);
+    CHECK(repeated.allocations.front().material_price_per_kg_micros == 50'000'000);
+    CHECK(repeated.allocations.front().estimated_material_cost_micros == 5'000'000);
+    CHECK(repeated.allocations.front().spool_name == "Snapshot");
+    CHECK(repeated.allocations.front().manufacturer == "Quack Materials");
+    CHECK(repeated.allocations.front().material_type == "PLA");
+    CHECK(repeated.allocations.front().filament_preset_id.empty());
+    CHECK(repeated.allocations.front().color_hex == "#12ABEF");
 
     inventory.store->commit_job(reserved.id, {{0, 80'000}});
-    const CostSummary summary = inventory.store->job_cost_summary(reserved.id);
-    REQUIRE(summary.actual_material_cost_micros);
-    CHECK(*summary.actual_material_cost_micros == 1'600'000);
-    CHECK(summary.total_cost_micros == 1'660'000);
+    const CostSummary repriced_summary =
+        inventory.store->job_cost_summary(reserved.id);
+    REQUIRE(repriced_summary.actual_material_cost_micros);
+    CHECK(*repriced_summary.actual_material_cost_micros == 4'000'000);
+    CHECK(repriced_summary.total_cost_micros == 4'060'000);
+
+    input.material_price_per_kg_micros = 20'000'000;
+    input.initial_weight_mg =
+        inventory.store->get_spool(spool.id).current_weight_mg;
+    inventory.store->update_spool(
+        spool.id, input, "snapshot-second-price-edit");
+    const CostSummary historical_summary =
+        inventory.store->job_cost_summary(reserved.id);
+    REQUIRE(historical_summary.actual_material_cost_micros);
+    CHECK(*historical_summary.actual_material_cost_micros == 1'600'000);
+    CHECK(historical_summary.total_cost_micros == 1'660'000);
+}
+
+TEST_CASE(
+    "customer order material costs recalculate from the referenced spool UUID",
+    "[FilamentInventory][Cost][Customer]")
+{
+    TemporaryInventory inventory;
+    SpoolInput input = spool_input("Green order spool");
+    input.material_price_per_kg_micros = 0;
+    const Spool spool = inventory.store->create_spool(input);
+    const std::optional<Spool> by_uuid =
+        inventory.store->find_spool(
+            IdentifierKind::quack_ndef_uuid, spool.id);
+    REQUIRE(by_uuid);
+    CHECK(by_uuid->id == spool.id);
+
+    const Customer customer =
+        inventory.store->create_customer(customer_input("UUID customer"));
+    const CustomerOrder order =
+        inventory.store->create_customer_order(
+            order_input(customer.id, "Green filament order"));
+    PrintJobInput print = job_input("cost:live-spool-price");
+    print.customer_order_id = order.id;
+    const PrintJob reserved = inventory.store->reserve_job(
+        print, {{spool.id, 0, 21'300}});
+    REQUIRE(reserved.allocations.size() == 1);
+    CHECK(reserved.allocations.front().spool_id == spool.id);
+    CHECK(
+        reserved.allocations.front().estimated_material_cost_micros ==
+        10'000);
+
+    input.material_price_per_kg_micros = 20'000'000;
+    input.initial_weight_mg = spool.current_weight_mg;
+    inventory.store->update_spool(
+        spool.id, input, "live-price-20-eur");
+
+    const PrintJob repriced = inventory.store->get_job(reserved.id);
+    REQUIRE(repriced.allocations.size() == 1);
+    CHECK(repriced.allocations.front().spool_id == spool.id);
+    CHECK(
+        repriced.allocations.front().material_price_per_kg_micros ==
+        20'000'000);
+    CHECK(
+        repriced.allocations.front().estimated_material_cost_micros ==
+        430'000);
+    CHECK(
+        inventory.store->job_cost_summary(reserved.id)
+            .material_cost_micros == 430'000);
+    CHECK(
+        inventory.store->customer_order_cost_summary(order.id)
+            .material_cost_micros == 430'000);
+    CHECK(
+        inventory.store->customer_cost_summary(customer.id)
+            .material_cost_micros == 430'000);
+
+    inventory.store->commit_job(reserved.id, {{0, 21'300}});
+    const PrintJob completed = inventory.store->get_job(reserved.id);
+    REQUIRE(
+        completed.allocations.front().actual_material_cost_micros);
+    CHECK(
+        *completed.allocations.front().actual_material_cost_micros ==
+        430'000);
+
+    input.material_price_per_kg_micros = 25'000'000;
+    input.initial_weight_mg =
+        inventory.store->get_spool(spool.id).current_weight_mg;
+    inventory.store->update_spool(
+        spool.id, input, "live-price-25-eur");
+    const PrintJob historical = inventory.store->get_job(reserved.id);
+    CHECK(
+        historical.allocations.front().material_price_per_kg_micros ==
+        25'000'000);
+    REQUIRE(
+        historical.allocations.front().actual_material_cost_micros);
+    CHECK(
+        *historical.allocations.front().actual_material_cost_micros ==
+        530'000);
+    CHECK(
+        inventory.store->customer_order_cost_summary(order.id)
+            .material_cost_micros == 530'000);
+    CHECK(
+        inventory.store->customer_cost_summary(customer.id)
+            .material_cost_micros == 530'000);
+
+    const std::vector<PrintJob> order_jobs =
+        inventory.store->list_customer_order_jobs(order.id, true);
+    REQUIRE(order_jobs.size() == 1);
+    CHECK(
+        order_jobs.front().allocations.front().spool_id ==
+        spool.id);
+    const std::vector<MaterialUsageSummary> usage =
+        summarize_material_usage(order_jobs);
+    REQUIRE(usage.size() == 1);
+    CHECK(usage.front().best_known_weight_mg == 21'300);
+    CHECK(usage.front().best_known_material_cost_micros == 530'000);
+
+    SpoolInput incompatible_currency = input;
+    incompatible_currency.price_currency = "USD";
+    check_error_code(
+        [&] {
+            inventory.store->update_spool(
+                spool.id, incompatible_currency,
+                "live-price-currency-change");
+        },
+        ErrorCode::conflict);
+    CHECK(
+        inventory.store->get_spool(spool.id)
+            .material_price_per_kg_micros == 25'000'000);
+    CHECK(
+        inventory.store->customer_order_cost_summary(order.id)
+            .material_cost_micros == 530'000);
+
+    inventory.store.reset();
+    inventory.store =
+        std::make_unique<Store>(inventory.path.string());
+    CHECK(
+        inventory.store->get_job(reserved.id)
+            .allocations.front().material_price_per_kg_micros ==
+        25'000'000);
+    CHECK(
+        inventory.store->customer_order_cost_summary(order.id)
+            .material_cost_micros == 530'000);
+}
+
+TEST_CASE(
+    "legacy spool currency changes preserve booked prices without blocking matching jobs",
+    "[FilamentInventory][Cost][Migration]")
+{
+    TemporaryInventory inventory;
+    SpoolInput input = spool_input("Legacy currency spool");
+    input.material_price_per_kg_micros = 20'000'000;
+    const Spool spool = inventory.store->create_spool(input);
+    const PrintJob eur_job = inventory.store->reserve_job(
+        job_input("cost:legacy-eur"), {{spool.id, 0, 100'000}});
+    CHECK(
+        inventory.store->job_cost_summary(eur_job.id)
+            .material_cost_micros == 2'000'000);
+
+    inventory.store.reset();
+    sqlite3 *db = nullptr;
+    REQUIRE(
+        sqlite3_open(inventory.path.string().c_str(), &db) ==
+        SQLITE_OK);
+    sqlite3_stmt *statement = nullptr;
+    REQUIRE(
+        sqlite3_prepare_v2(
+            db,
+            "UPDATE spools "
+            "SET material_price_per_kg_micros = ?, price_currency = ? "
+            "WHERE id = ?",
+            -1, &statement, nullptr) == SQLITE_OK);
+    REQUIRE(
+        sqlite3_bind_int64(statement, 1, 50'000'000) ==
+        SQLITE_OK);
+    REQUIRE(
+        sqlite3_bind_text(
+            statement, 2, "USD", -1, SQLITE_STATIC) ==
+        SQLITE_OK);
+    REQUIRE(
+        sqlite3_bind_text(
+            statement, 3, spool.id.c_str(), -1, SQLITE_TRANSIENT) ==
+        SQLITE_OK);
+    REQUIRE(sqlite3_step(statement) == SQLITE_DONE);
+    REQUIRE(sqlite3_finalize(statement) == SQLITE_OK);
+    REQUIRE(sqlite3_close(db) == SQLITE_OK);
+
+    inventory.store =
+        std::make_unique<Store>(inventory.path.string());
+    const PrintJob legacy = inventory.store->get_job(eur_job.id);
+    REQUIRE(legacy.allocations.size() == 1);
+    CHECK(
+        legacy.allocations.front().material_price_per_kg_micros ==
+        20'000'000);
+    CHECK(legacy.allocations.front().cost_currency == "EUR");
+    CHECK(
+        legacy.allocations.front().estimated_material_cost_micros ==
+        2'000'000);
+
+    input.material_price_per_kg_micros = 60'000'000;
+    input.price_currency = "USD";
+    input.initial_weight_mg =
+        inventory.store->get_spool(spool.id).current_weight_mg;
+    inventory.store->update_spool(
+        spool.id, input, "legacy-usd-price-edit");
+    CHECK(
+        inventory.store->job_cost_summary(eur_job.id)
+            .material_cost_micros == 2'000'000);
+
+    InventorySettings settings = inventory.store->get_settings();
+    settings.currency = "USD";
+    inventory.store->update_settings(settings);
+    const PrintJob usd_job = inventory.store->reserve_job(
+        job_input("cost:matching-usd"), {{spool.id, 0, 100'000}});
+    CHECK(
+        inventory.store->job_cost_summary(usd_job.id)
+            .material_cost_micros == 6'000'000);
+
+    input.material_price_per_kg_micros = 70'000'000;
+    inventory.store->update_spool(
+        spool.id, input, "matching-usd-price-edit");
+    CHECK(
+        inventory.store->job_cost_summary(eur_job.id)
+            .material_cost_micros == 2'000'000);
+    CHECK(
+        inventory.store->job_cost_summary(usd_job.id)
+            .material_cost_micros == 7'000'000);
+
+    SpoolInput incompatible = input;
+    incompatible.material_price_per_kg_micros = 30'000'000;
+    incompatible.price_currency = "EUR";
+    check_error_code(
+        [&] {
+            inventory.store->update_spool(
+                spool.id, incompatible,
+                "mixed-currency-change");
+        },
+        ErrorCode::conflict);
+    CHECK(
+        inventory.store->get_spool(spool.id)
+            .material_price_per_kg_micros == 70'000'000);
 }
 
 TEST_CASE("reserving filament changes availability but not physical stock", "[FilamentInventory][Reservation]")
@@ -604,9 +1282,17 @@ TEST_CASE("committing a print consumes corrected weight exactly once", "[Filamen
         job_input("slice:commit"), {{spool.id, 0, 100'000}});
 
     inventory.store->mark_printing(job.id);
+    const PrintJob printing = inventory.store->get_job(job.id);
+    CHECK_FALSE(printing.started_at.empty());
+    CHECK_FALSE(printing.actual_runtime_seconds);
+    inventory.store->mark_printing(job.id);
+    CHECK(inventory.store->get_job(job.id).started_at == printing.started_at);
     inventory.store->commit_job(job.id, {{0, 82'500}});
 
-    CHECK(inventory.store->get_job(job.id).state == JobState::completed);
+    const PrintJob completed = inventory.store->get_job(job.id);
+    CHECK(completed.state == JobState::completed);
+    REQUIRE(completed.actual_runtime_seconds);
+    CHECK(*completed.actual_runtime_seconds >= 0);
     CHECK(inventory.store->get_spool(spool.id).current_weight_mg == 417'500);
     CHECK(inventory.store->get_spool(spool.id).reserved_weight_mg == 0);
 
@@ -634,6 +1320,66 @@ TEST_CASE("committing a print consumes corrected weight exactly once", "[Filamen
     CHECK(events.front().delta_mg == -82'500);
     REQUIRE(inventory.store->list_stock_events(spool.id, 1).size() == 1);
     REQUIRE(inventory.store->list_jobs(true, 1).size() == 1);
+}
+
+TEST_CASE("manual review freezes the observed print duration",
+          "[FilamentInventory][Reservation][Runtime]")
+{
+    TemporaryInventory inventory;
+    const Spool spool =
+        inventory.store->create_spool(spool_input("Runtime review"));
+    const PrintJob job = inventory.store->reserve_job(
+        job_input("slice:runtime-review"),
+        {{spool.id, 0, 50'000}});
+
+    inventory.store->mark_printing(job.id);
+    inventory.store->mark_needs_review(job.id);
+    const PrintJob review = inventory.store->get_job(job.id);
+    REQUIRE(review.actual_runtime_seconds);
+    CHECK(*review.actual_runtime_seconds >= 0);
+
+    inventory.store->mark_needs_review(job.id);
+    CHECK(inventory.store->get_job(job.id).actual_runtime_seconds ==
+          review.actual_runtime_seconds);
+    inventory.store->commit_job(job.id);
+    CHECK(inventory.store->get_job(job.id).actual_runtime_seconds ==
+          review.actual_runtime_seconds);
+
+    const PrintJob resumed = inventory.store->reserve_job(
+        job_input("slice:runtime-resume", "Resumed runtime"),
+        {{spool.id, 0, 25'000}});
+    inventory.store->mark_printing(resumed.id);
+    set_job_updated_at_seconds_ago(inventory.path, resumed.id, 60);
+    inventory.store->mark_needs_review(resumed.id);
+    const PrintJob first_segment = inventory.store->get_job(resumed.id);
+    REQUIRE(first_segment.actual_runtime_seconds);
+    CHECK(*first_segment.actual_runtime_seconds >= 58);
+    CHECK(*first_segment.actual_runtime_seconds <= 61);
+
+    set_job_updated_at_seconds_ago(inventory.path, resumed.id, 3'600);
+    inventory.store->mark_printing(resumed.id);
+    const PrintJob resumed_printing = inventory.store->get_job(resumed.id);
+    CHECK(resumed_printing.started_at == first_segment.started_at);
+    CHECK(
+        resumed_printing.actual_runtime_seconds ==
+        first_segment.actual_runtime_seconds);
+    set_job_updated_at_seconds_ago(inventory.path, resumed.id, 10);
+    inventory.store->commit_job(resumed.id);
+    const PrintJob resumed_completed = inventory.store->get_job(resumed.id);
+    REQUIRE(resumed_completed.actual_runtime_seconds);
+    CHECK(
+        *resumed_completed.actual_runtime_seconds >=
+        *first_segment.actual_runtime_seconds + 8);
+    CHECK(
+        *resumed_completed.actual_runtime_seconds <=
+        *first_segment.actual_runtime_seconds + 11);
+
+    const PrintJob no_start = inventory.store->reserve_job(
+        job_input("slice:no-runtime", "No runtime"),
+        {{spool.id, 0, 25'000}});
+    inventory.store->commit_job(no_start.id);
+    CHECK_FALSE(
+        inventory.store->get_job(no_start.id).actual_runtime_seconds);
 }
 
 TEST_CASE("discarding a print releases reservations without changing stock", "[FilamentInventory][Reservation]")

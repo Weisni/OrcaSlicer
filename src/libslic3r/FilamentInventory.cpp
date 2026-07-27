@@ -14,6 +14,7 @@
 #include <mutex>
 #include <set>
 #include <sstream>
+#include <tuple>
 #include <utility>
 
 #include <boost/multiprecision/cpp_int.hpp>
@@ -330,7 +331,30 @@ MoneyMicros scaled_cost(const std::vector<std::int64_t> &factors, std::int64_t d
 
 MoneyMicros material_cost(MoneyMicros price_per_kg_micros, Milligrams weight_mg)
 {
-    return scaled_cost({price_per_kg_micros, weight_mg}, 1'000'000, "Material cost");
+    if (price_per_kg_micros < 0 || weight_mg < 0)
+        throw Error(ErrorCode::validation, "Material cost must not be negative");
+    if (weight_mg == 0)
+        return 0;
+
+    // Material costs are booked per allocation in the same two-decimal unit
+    // shown throughout the UI. This keeps the sum of visible line items equal
+    // to the job total and applies the business minimum of one cent whenever
+    // a positive amount of material is used.
+    constexpr MoneyMicros micros_per_cent = 10'000;
+    const boost::multiprecision::cpp_int cent_divisor =
+        boost::multiprecision::cpp_int(1'000'000) * micros_per_cent;
+    const boost::multiprecision::cpp_int product =
+        boost::multiprecision::cpp_int(price_per_kg_micros) * weight_mg;
+    boost::multiprecision::cpp_int cents =
+        (product + cent_divisor / 2) / cent_divisor;
+    if (cents == 0)
+        cents = 1;
+    const boost::multiprecision::cpp_int value = cents * micros_per_cent;
+    if (value > std::numeric_limits<MoneyMicros>::max())
+        throw Error(
+            ErrorCode::validation,
+            "Material cost exceeds the supported money range");
+    return value.convert_to<MoneyMicros>();
 }
 
 MoneyMicros electricity_cost(MoneyMicros price_per_kwh_micros,
@@ -821,6 +845,90 @@ struct Store::Impl
                 PRAGMA user_version = 2;
             )SQL");
         }
+        if (version < 3) {
+            exec_sql(db, R"SQL(
+                ALTER TABLE print_jobs
+                    ADD COLUMN started_at TEXT NOT NULL DEFAULT '';
+                ALTER TABLE print_jobs
+                    ADD COLUMN actual_runtime_seconds INTEGER
+                    CHECK (actual_runtime_seconds >= 0);
+
+                ALTER TABLE allocations
+                    ADD COLUMN spool_name TEXT NOT NULL DEFAULT '';
+                ALTER TABLE allocations
+                    ADD COLUMN manufacturer TEXT NOT NULL DEFAULT '';
+                ALTER TABLE allocations
+                    ADD COLUMN material_type TEXT NOT NULL DEFAULT '';
+                ALTER TABLE allocations
+                    ADD COLUMN filament_preset_id TEXT NOT NULL DEFAULT '';
+                ALTER TABLE allocations
+                    ADD COLUMN color_hex TEXT NOT NULL DEFAULT '#FFFFFF';
+                UPDATE allocations
+                    SET spool_name = COALESCE(
+                            (SELECT name FROM spools WHERE spools.id = allocations.spool_id),
+                            ''),
+                        manufacturer = COALESCE(
+                            (SELECT manufacturer FROM spools
+                             WHERE spools.id = allocations.spool_id),
+                            ''),
+                        material_type = COALESCE(
+                            (SELECT material_type FROM spools
+                             WHERE spools.id = allocations.spool_id),
+                            ''),
+                        filament_preset_id = COALESCE(
+                            (SELECT filament_preset_id FROM spools
+                             WHERE spools.id = allocations.spool_id),
+                            ''),
+                        color_hex = COALESCE(
+                            (SELECT color_hex FROM spools
+                             WHERE spools.id = allocations.spool_id),
+                            '#FFFFFF');
+
+                PRAGMA user_version = 3;
+            )SQL");
+        }
+        if (version < 4) {
+            struct AllocationCostMigration {
+                std::string id;
+                MoneyMicros estimated_cost_micros {0};
+                std::optional<MoneyMicros> actual_cost_micros;
+            };
+            std::vector<AllocationCostMigration> corrected_costs;
+            Statement allocations(db, R"SQL(
+                SELECT id, material_price_per_kg_micros,
+                       estimated_weight_mg, actual_weight_mg
+                FROM allocations
+            )SQL");
+            while (allocations.step()) {
+                AllocationCostMigration corrected;
+                corrected.id = allocations.text(0);
+                const MoneyMicros price_per_kg_micros =
+                    allocations.integer64(1);
+                corrected.estimated_cost_micros = material_cost(
+                    price_per_kg_micros, allocations.integer64(2));
+                if (!allocations.is_null(3))
+                    corrected.actual_cost_micros = material_cost(
+                        price_per_kg_micros, allocations.integer64(3));
+                corrected_costs.emplace_back(std::move(corrected));
+            }
+
+            for (const AllocationCostMigration &corrected : corrected_costs) {
+                Statement update_costs(db, R"SQL(
+                    UPDATE allocations
+                    SET estimated_material_cost_micros = ?,
+                        actual_material_cost_micros = ?
+                    WHERE id = ?
+                )SQL");
+                update_costs.bind(1, corrected.estimated_cost_micros);
+                if (corrected.actual_cost_micros)
+                    update_costs.bind(2, *corrected.actual_cost_micros);
+                else
+                    update_costs.bind_null(2);
+                update_costs.bind(3, corrected.id);
+                update_costs.execute();
+            }
+            exec_sql(db, "PRAGMA user_version = 4;");
+        }
         transaction.commit();
     }
 
@@ -986,15 +1094,44 @@ struct Store::Impl
         allocation.id                  = statement.text(0);
         allocation.job_id              = statement.text(1);
         allocation.spool_id            = statement.text(2);
-        allocation.filament_index      = statement.integer(3);
-        allocation.estimated_weight_mg = statement.integer64(4);
-        if (!statement.is_null(5))
-            allocation.actual_weight_mg = statement.integer64(5);
-        allocation.material_price_per_kg_micros = statement.integer64(6);
-        allocation.cost_currency = statement.text(7);
-        allocation.estimated_material_cost_micros = statement.integer64(8);
-        if (!statement.is_null(9))
-            allocation.actual_material_cost_micros = statement.integer64(9);
+        allocation.spool_name           = statement.text(3);
+        allocation.manufacturer         = statement.text(4);
+        allocation.material_type        = statement.text(5);
+        allocation.filament_preset_id   = statement.text(6);
+        allocation.color_hex            = statement.text(7);
+        allocation.filament_index       = statement.integer(8);
+        allocation.estimated_weight_mg  = statement.integer64(9);
+        if (!statement.is_null(10))
+            allocation.actual_weight_mg = statement.integer64(10);
+        if (statement.is_null(11))
+            throw Error(
+                ErrorCode::database,
+                "Allocation references a missing spool: " +
+                    allocation.spool_id);
+        const MoneyMicros live_price_per_kg_micros =
+            statement.integer64(11);
+        const std::string live_currency = statement.text(12);
+        const MoneyMicros booked_price_per_kg_micros =
+            statement.integer64(13);
+        const std::string booked_currency = statement.text(14);
+        const bool live_price_is_compatible =
+            normalize_currency(live_currency) ==
+            normalize_currency(booked_currency);
+        allocation.material_price_per_kg_micros =
+            live_price_is_compatible ?
+                live_price_per_kg_micros :
+                booked_price_per_kg_micros;
+        allocation.cost_currency =
+            live_price_is_compatible ?
+                live_currency :
+                booked_currency;
+        allocation.estimated_material_cost_micros = material_cost(
+            allocation.material_price_per_kg_micros,
+            allocation.estimated_weight_mg);
+        if (allocation.actual_weight_mg)
+            allocation.actual_material_cost_micros = material_cost(
+                allocation.material_price_per_kg_micros,
+                *allocation.actual_weight_mg);
         return allocation;
     }
 
@@ -1016,15 +1153,28 @@ struct Store::Impl
         job.electricity_cost_micros = statement.integer64(11);
         job.created_at      = statement.text(12);
         job.updated_at      = statement.text(13);
-        job.completed_at    = statement.text(14);
+        job.started_at      = statement.text(14);
+        job.completed_at    = statement.text(15);
+        if (!statement.is_null(16))
+            job.actual_runtime_seconds = statement.integer64(16);
 
+        // Allocation metadata remains a booking-time snapshot, but price and
+        // calculated costs deliberately follow the stable spool UUID. Legacy
+        // allocations whose spool was changed to another currency retain
+        // their booked price because no implicit currency conversion is safe.
+        // The legacy cost columns stay for backward compatibility and are no
+        // longer authoritative when jobs are read.
         Statement allocations_statement(db, R"SQL(
-            SELECT id, job_id, spool_id, filament_index, estimated_weight_mg, actual_weight_mg,
-                   material_price_per_kg_micros, cost_currency,
-                   estimated_material_cost_micros, actual_material_cost_micros
-            FROM allocations
-            WHERE job_id = ?
-            ORDER BY filament_index
+            SELECT a.id, a.job_id, a.spool_id, a.spool_name,
+                   a.manufacturer, a.material_type, a.filament_preset_id,
+                   a.color_hex, a.filament_index, a.estimated_weight_mg,
+                   a.actual_weight_mg, s.material_price_per_kg_micros,
+                   s.price_currency, a.material_price_per_kg_micros,
+                   a.cost_currency
+            FROM allocations a
+            LEFT JOIN spools s ON s.id = a.spool_id
+            WHERE a.job_id = ?
+            ORDER BY a.filament_index
         )SQL");
         allocations_statement.bind(1, job.id);
         while (allocations_statement.step())
@@ -1039,7 +1189,8 @@ struct Store::Impl
                    customer_order_id, state, cost_currency,
                    electricity_price_per_kwh_micros, machine_power_watts,
                    estimated_runtime_seconds, electricity_cost_micros,
-                   created_at, updated_at, completed_at
+                   created_at, updated_at, started_at, completed_at,
+                   actual_runtime_seconds
             FROM print_jobs
             WHERE id = ?
         )SQL");
@@ -1056,7 +1207,8 @@ struct Store::Impl
                    customer_order_id, state, cost_currency,
                    electricity_price_per_kwh_micros, machine_power_watts,
                    estimated_runtime_seconds, electricity_cost_micros,
-                   created_at, updated_at, completed_at
+                   created_at, updated_at, started_at, completed_at,
+                   actual_runtime_seconds
             FROM print_jobs
             WHERE idempotency_key = ?
         )SQL");
@@ -1262,12 +1414,48 @@ Spool Store::update_spool(const std::string &spool_id, const SpoolInput &input,
                           const std::string &weight_operation_key)
 {
     validate_spool_input(input);
+    const std::string price_currency =
+        normalize_currency(input.price_currency);
 
     std::lock_guard<std::mutex> lock(m_impl->mutex);
     Transaction transaction(m_impl->db);
     const Spool existing = m_impl->get_spool_unlocked(spool_id);
     const std::string normalized_key = trim_copy(weight_operation_key);
     validate_operation_key(normalized_key);
+
+    if (price_currency != normalize_currency(existing.price_currency)) {
+        Statement incompatible_currency(m_impl->db, R"SQL(
+            SELECT 1
+            FROM allocations a
+            JOIN print_jobs j ON j.id = a.job_id
+            WHERE a.spool_id = ? AND j.cost_currency <> ?
+            LIMIT 1
+        )SQL");
+        incompatible_currency.bind(1, spool_id);
+        incompatible_currency.bind(2, price_currency);
+        if (incompatible_currency.step())
+            throw Error(
+                ErrorCode::conflict,
+                "A referenced spool must keep the currency used by its print jobs");
+    }
+
+    Statement referenced_weights(m_impl->db, R"SQL(
+        SELECT a.estimated_weight_mg, a.actual_weight_mg
+        FROM allocations a
+        JOIN print_jobs j ON j.id = a.job_id
+        WHERE a.spool_id = ? AND j.cost_currency = ?
+    )SQL");
+    referenced_weights.bind(1, spool_id);
+    referenced_weights.bind(2, price_currency);
+    while (referenced_weights.step()) {
+        (void) material_cost(
+            input.material_price_per_kg_micros,
+            referenced_weights.integer64(0));
+        if (!referenced_weights.is_null(1))
+            (void) material_cost(
+                input.material_price_per_kg_micros,
+                referenced_weights.integer64(1));
+    }
 
     Statement statement(m_impl->db, R"SQL(
         UPDATE spools
@@ -1289,7 +1477,7 @@ Spool Store::update_spool(const std::string &spool_id, const SpoolInput &input,
     statement.bind(9, to_string(input.warning_mode));
     statement.bind(10, input.warning_value);
     statement.bind(11, input.material_price_per_kg_micros);
-    statement.bind(12, normalize_currency(input.price_currency));
+    statement.bind(12, price_currency);
     statement.bind(13, spool_id);
     statement.execute();
 
@@ -1886,7 +2074,8 @@ PrintJob Store::reserve_job(const PrintJobInput &job, const std::vector<Allocati
         if (!same_order || !same_runtime || !same_explicit_power)
             throw Error(
                 ErrorCode::conflict,
-                "A print-job cost snapshot cannot be changed after reservation");
+                "A print job's order, runtime, or machine power cannot be "
+                "changed after reservation");
         cost_currency = existing->cost_currency;
     }
 
@@ -1980,10 +2169,12 @@ PrintJob Store::reserve_job(const PrintJobInput &job, const std::vector<Allocati
     for (const AllocationInput &allocation : allocations) {
         Statement row(m_impl->db, R"SQL(
             INSERT INTO allocations (
-                id, job_id, spool_id, filament_index, estimated_weight_mg,
+                id, job_id, spool_id, spool_name, manufacturer, material_type,
+                filament_preset_id, color_hex,
+                filament_index, estimated_weight_mg,
                 material_price_per_kg_micros, cost_currency,
                 estimated_material_cost_micros
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         )SQL");
         const Spool &spool = spools.at(allocation.spool_id);
         const MoneyMicros estimated_cost = material_cost(
@@ -1991,11 +2182,16 @@ PrintJob Store::reserve_job(const PrintJobInput &job, const std::vector<Allocati
         row.bind(1, make_uuid());
         row.bind(2, job_id);
         row.bind(3, allocation.spool_id);
-        row.bind(4, allocation.filament_index);
-        row.bind(5, allocation.estimated_weight_mg);
-        row.bind(6, spool.material_price_per_kg_micros);
-        row.bind(7, cost_currency);
-        row.bind(8, estimated_cost);
+        row.bind(4, spool.name);
+        row.bind(5, spool.manufacturer);
+        row.bind(6, spool.material_type);
+        row.bind(7, spool.filament_preset_id);
+        row.bind(8, spool.color_hex);
+        row.bind(9, allocation.filament_index);
+        row.bind(10, allocation.estimated_weight_mg);
+        row.bind(11, spool.material_price_per_kg_micros);
+        row.bind(12, cost_currency);
+        row.bind(13, estimated_cost);
         row.execute();
     }
 
@@ -2022,7 +2218,8 @@ std::vector<PrintJob> Store::list_jobs(bool include_closed, std::size_t limit) c
                customer_order_id, state, cost_currency,
                electricity_price_per_kwh_micros, machine_power_watts,
                estimated_runtime_seconds, electricity_cost_micros,
-               created_at, updated_at, completed_at
+               created_at, updated_at, started_at, completed_at,
+               actual_runtime_seconds
         FROM print_jobs
     )SQL";
     if (!include_closed)
@@ -2037,6 +2234,33 @@ std::vector<PrintJob> Store::list_jobs(bool include_closed, std::size_t limit) c
             throw Error(ErrorCode::validation, "Print-job history limit is too large");
         statement.bind(1, static_cast<std::int64_t>(limit));
     }
+    std::vector<PrintJob> result;
+    while (statement.step())
+        result.emplace_back(m_impl->read_job(statement));
+    return result;
+}
+
+std::vector<PrintJob> Store::list_customer_order_jobs(
+    const std::string &order_id, bool include_discarded) const
+{
+    std::lock_guard<std::mutex> lock(m_impl->mutex);
+    (void) m_impl->get_customer_order_unlocked(order_id);
+    std::string sql = R"SQL(
+        SELECT id, idempotency_key, job_name, project_path, printer_id,
+               customer_order_id, state, cost_currency,
+               electricity_price_per_kwh_micros, machine_power_watts,
+               estimated_runtime_seconds, electricity_cost_micros,
+               created_at, updated_at, started_at, completed_at,
+               actual_runtime_seconds
+        FROM print_jobs
+        WHERE customer_order_id = ?
+    )SQL";
+    if (!include_discarded)
+        sql += " AND state <> 'discarded'";
+    sql += " ORDER BY created_at DESC, id";
+
+    Statement statement(m_impl->db, sql.c_str());
+    statement.bind(1, order_id);
     std::vector<PrintJob> result;
     while (statement.step())
         result.emplace_back(m_impl->read_job(statement));
@@ -2099,16 +2323,24 @@ void Store::mark_printing(const std::string &job_id)
     std::lock_guard<std::mutex> lock(m_impl->mutex);
     Transaction transaction(m_impl->db);
     const PrintJob job = m_impl->get_job_unlocked(job_id);
-    if (job.state == JobState::printing) {
+    if (job.state == JobState::printing && !job.started_at.empty()) {
         transaction.commit();
         return;
     }
     if (job.state == JobState::completed || job.state == JobState::discarded)
         throw Error(ErrorCode::conflict, "A closed print job cannot return to printing");
 
+    // updated_at is also the start of the current observed printing segment.
+    // Keeping started_at unchanged preserves the first start shown in history,
+    // while review pauses can be excluded from the accumulated runtime.
     Statement statement(m_impl->db, R"SQL(
         UPDATE print_jobs
-        SET state = 'printing', updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+        SET state = 'printing',
+            started_at = CASE
+                WHEN started_at = '' THEN strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                ELSE started_at
+            END,
+            updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
         WHERE id = ?
     )SQL");
     statement.bind(1, job_id);
@@ -2130,7 +2362,29 @@ void Store::mark_needs_review(const std::string &job_id)
 
     Statement statement(m_impl->db, R"SQL(
         UPDATE print_jobs
-        SET state = 'needs_review', updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+        SET state = 'needs_review',
+            actual_runtime_seconds = CASE
+                WHEN state = 'printing' AND started_at <> '' THEN
+                    COALESCE(actual_runtime_seconds, 0) +
+                    MAX(
+                        0,
+                        CAST(
+                            (julianday('now') - julianday(updated_at)) * 86400.0
+                            AS INTEGER
+                        )
+                    )
+                WHEN actual_runtime_seconds IS NOT NULL
+                    THEN actual_runtime_seconds
+                WHEN started_at = '' THEN NULL
+                ELSE MAX(
+                    0,
+                    CAST(
+                        (julianday('now') - julianday(started_at)) * 86400.0
+                        AS INTEGER
+                    )
+                )
+            END,
+            updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
         WHERE id = ?
     )SQL");
     statement.bind(1, job_id);
@@ -2208,7 +2462,28 @@ void Store::commit_job(const std::string &job_id,
         UPDATE print_jobs
         SET state = 'completed',
             updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
-            completed_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+            completed_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+            actual_runtime_seconds = CASE
+                WHEN state = 'printing' AND started_at <> '' THEN
+                    COALESCE(actual_runtime_seconds, 0) +
+                    MAX(
+                        0,
+                        CAST(
+                            (julianday('now') - julianday(updated_at)) * 86400.0
+                            AS INTEGER
+                        )
+                    )
+                WHEN actual_runtime_seconds IS NOT NULL
+                    THEN actual_runtime_seconds
+                WHEN started_at = '' THEN NULL
+                ELSE MAX(
+                    0,
+                    CAST(
+                        (julianday('now') - julianday(started_at)) * 86400.0
+                        AS INTEGER
+                    )
+                )
+            END
         WHERE id = ?
     )SQL");
     close.bind(1, job_id);
@@ -2288,6 +2563,76 @@ CostSummary summarize_jobs(const std::vector<PrintJob> &jobs, const std::string 
 }
 
 } // namespace
+
+std::vector<MaterialUsageSummary> summarize_material_usage(
+    const std::vector<PrintJob> &jobs)
+{
+    using MaterialKey = std::tuple<
+        std::string, std::string, std::string, std::string, std::string,
+        std::string>;
+    std::map<MaterialKey, MaterialUsageSummary> summaries;
+    for (const PrintJob &job : jobs) {
+        if (job.state == JobState::discarded)
+            continue;
+        for (const Allocation &allocation : job.allocations) {
+            const std::string currency =
+                normalize_currency(allocation.cost_currency);
+            const std::string fallback_name =
+                allocation.manufacturer.empty() &&
+                        allocation.material_type.empty() &&
+                        allocation.filament_preset_id.empty() ?
+                    allocation.spool_name :
+                    std::string {};
+            const MaterialKey key {
+                allocation.manufacturer,
+                allocation.material_type,
+                allocation.filament_preset_id,
+                allocation.color_hex,
+                currency,
+                fallback_name
+            };
+            auto [found, inserted] =
+                summaries.try_emplace(key, MaterialUsageSummary {});
+            MaterialUsageSummary &summary = found->second;
+            if (inserted) {
+                summary.spool_name        = fallback_name;
+                summary.manufacturer      = allocation.manufacturer;
+                summary.material_type     = allocation.material_type;
+                summary.filament_preset_id = allocation.filament_preset_id;
+                summary.color_hex         = allocation.color_hex;
+                summary.cost_currency     = currency;
+            }
+            summary.estimated_weight_mg = checked_add(
+                summary.estimated_weight_mg,
+                allocation.estimated_weight_mg,
+                "Estimated material weight total");
+            summary.best_known_weight_mg = checked_add(
+                summary.best_known_weight_mg,
+                allocation.actual_weight_mg.value_or(
+                    allocation.estimated_weight_mg),
+                "Material weight total");
+            summary.estimated_material_cost_micros = checked_add(
+                summary.estimated_material_cost_micros,
+                allocation.estimated_material_cost_micros,
+                "Estimated material cost total");
+            summary.best_known_material_cost_micros = checked_add(
+                summary.best_known_material_cost_micros,
+                allocation.actual_material_cost_micros.value_or(
+                    allocation.estimated_material_cost_micros),
+                "Material cost total");
+            summary.weight_fully_confirmed &=
+                allocation.actual_weight_mg.has_value();
+            summary.cost_fully_confirmed &=
+                allocation.actual_material_cost_micros.has_value();
+        }
+    }
+
+    std::vector<MaterialUsageSummary> result;
+    result.reserve(summaries.size());
+    for (auto &entry : summaries)
+        result.emplace_back(std::move(entry.second));
+    return result;
+}
 
 CostSummary Store::job_cost_summary(const std::string &job_id) const
 {

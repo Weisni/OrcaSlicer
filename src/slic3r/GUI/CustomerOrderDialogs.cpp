@@ -117,13 +117,15 @@ class CustomerOrderDialog final : public wxDialog
 public:
     CustomerOrderDialog(
         wxWindow *parent, std::vector<Customer> customers,
-        const CustomerOrder *order, const std::string &preferred_customer_id)
+        const CustomerOrder *order, const std::string &preferred_customer_id,
+        std::string currency)
         : wxDialog(
               parent, wxID_ANY,
               order ? _L("Edit customer order") : _L("Add customer order"),
               wxDefaultPosition, wxDefaultSize,
               wxDEFAULT_DIALOG_STYLE | wxRESIZE_BORDER)
         , m_customers(std::move(customers))
+        , m_currency(std::move(currency))
     {
         auto *root = new wxBoxSizer(wxVERTICAL);
         auto *details = new wxStaticBoxSizer(wxVERTICAL, this, _L("Order details"));
@@ -148,8 +150,12 @@ public:
         auto *billing = new wxStaticBoxSizer(wxVERTICAL, this, _L("Optional billing"));
         auto *billing_grid = new wxFlexGridSizer(2, FromDIP(9), FromDIP(12));
         billing_grid->AddGrowableCol(1, 1);
-        m_quote = add_text_row(this, billing_grid, _L("Quoted price (EUR)"));
-        m_invoice = add_text_row(this, billing_grid, _L("Invoice amount (EUR)"));
+        m_quote = add_text_row(
+            this, billing_grid,
+            _L("Quoted price") + " (" + from_u8(m_currency) + ")");
+        m_invoice = add_text_row(
+            this, billing_grid,
+            _L("Invoice amount") + " (" + from_u8(m_currency) + ")");
         billing->Add(billing_grid, 1, wxEXPAND | wxALL, FromDIP(12));
         root->Add(billing, 0, wxEXPAND | wxALL, FromDIP(12));
         root->Add(CreateSeparatedButtonSizer(wxOK | wxCANCEL), 0, wxEXPAND | wxALL, FromDIP(12));
@@ -190,7 +196,7 @@ public:
         result.order_number = into_u8(m_number->GetValue());
         result.title = into_u8(m_title->GetValue());
         result.notes = into_u8(m_notes->GetValue());
-        result.currency = "EUR";
+        result.currency = m_currency;
         result.quoted_price_micros.reset();
         result.invoice_amount_micros.reset();
 
@@ -219,6 +225,7 @@ public:
 
 private:
     std::vector<Customer> m_customers;
+    std::string           m_currency;
     wxChoice   *m_customer {nullptr};
     wxTextCtrl *m_number {nullptr};
     wxTextCtrl *m_title {nullptr};
@@ -324,7 +331,10 @@ std::optional<CustomerOrder> edit_customer_order_interactively(
         return std::nullopt;
     }
 
-    CustomerOrderDialog dialog(parent, customers, order, preferred_customer_id);
+    const std::string currency =
+        order != nullptr ? order->currency : store.get_settings().currency;
+    CustomerOrderDialog dialog(
+        parent, customers, order, preferred_customer_id, currency);
     while (dialog.ShowModal() == wxID_OK) {
         CustomerOrderInput input;
         wxString error;

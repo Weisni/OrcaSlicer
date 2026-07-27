@@ -18,6 +18,7 @@
 #include <wx/stattext.h>
 
 #include "BitmapComboBox.hpp"
+#include "CustomerOrderDialogs.hpp"
 #include "FilamentSpoolEditor.hpp"
 #include "GUI.hpp"
 #include "GUI_Utils.hpp"
@@ -131,31 +132,35 @@ public:
                       _L("Assign each sliced project filament to the physical spool that will be used.")),
                   0, wxEXPAND | wxALL, FromDIP(12));
 
-        m_orders = m_store.list_customer_orders({}, false);
-        std::map<std::string, std::string> customer_names;
-        for (const Customer &customer : m_store.list_customers(true))
-            customer_names.emplace(customer.id, customer.name);
-
         auto *tracking_grid = new wxFlexGridSizer(2, FromDIP(8), FromDIP(10));
         tracking_grid->AddGrowableCol(1, 1);
         tracking_grid->Add(
             new wxStaticText(this, wxID_ANY, _L("Customer order")),
-            0, wxALIGN_CENTER_VERTICAL);
+            0, wxALIGN_TOP | wxTOP, FromDIP(4));
         m_customer_order = new wxChoice(this, wxID_ANY);
-        m_customer_order->Append(_L("No customer order (personal or family print)"));
-        for (const CustomerOrder &order : m_orders) {
-            const auto customer = customer_names.find(order.customer_id);
-            wxString label = customer != customer_names.end() ?
-                                 from_u8(customer->second) + em_dash_separator() :
-                                 wxString {};
-            label += from_u8(
-                order.order_number.empty() ? order.title : order.order_number);
-            if (!order.title.empty() && !order.order_number.empty())
-                label += em_dash_separator() + from_u8(order.title);
-            m_customer_order->Append(label);
-        }
-        m_customer_order->SetSelection(0);
-        tracking_grid->Add(m_customer_order, 1, wxEXPAND);
+        auto *order_controls = new wxBoxSizer(wxVERTICAL);
+        order_controls->Add(m_customer_order, 0, wxEXPAND | wxBOTTOM, FromDIP(6));
+        auto *order_actions = new wxBoxSizer(wxHORIZONTAL);
+        auto *new_customer = new wxButton(
+            this, wxID_ANY, _L("New customer..."));
+        auto *new_order = new wxButton(this, wxID_ANY, _L("New order..."));
+        order_actions->Add(
+            new_customer, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT,
+            FromDIP(8));
+        order_actions->Add(new_order, 0, wxALIGN_CENTER_VERTICAL);
+        order_controls->Add(order_actions, 0, wxALIGN_LEFT);
+        tracking_grid->Add(order_controls, 1, wxEXPAND);
+        new_customer->Bind(wxEVT_BUTTON, [this](wxCommandEvent &) {
+            create_customer();
+        });
+        new_order->Bind(wxEVT_BUTTON, [this](wxCommandEvent &) {
+            create_customer_order();
+        });
+        m_customer_order->Bind(wxEVT_CHOICE, [this](wxCommandEvent &event) {
+            m_preferred_customer_id.clear();
+            event.Skip();
+        });
+        refresh_customer_orders();
         tracking_grid->Add(
             new wxStaticText(this, wxID_ANY, _L("Estimated machine runtime")),
             0, wxALIGN_CENTER_VERTICAL);
@@ -339,6 +344,78 @@ public:
     }
 
 private:
+    void refresh_customer_orders(const std::string &preferred_order_id = {})
+    {
+        std::string selected_order_id = preferred_order_id;
+        if (selected_order_id.empty() && m_customer_order != nullptr) {
+            const int selection = m_customer_order->GetSelection();
+            if (selection > 0 &&
+                static_cast<std::size_t>(selection) <= m_orders.size())
+                selected_order_id =
+                    m_orders[static_cast<std::size_t>(selection - 1)].id;
+        }
+
+        m_orders = m_store.list_customer_orders({}, false);
+        std::map<std::string, std::string> customer_names;
+        for (const Customer &customer : m_store.list_customers(true))
+            customer_names.emplace(customer.id, customer.name);
+
+        m_customer_order->Clear();
+        m_customer_order->Append(
+            _L("No customer order (personal or family print)"));
+        int selected_row = 0;
+        for (std::size_t index = 0; index < m_orders.size(); ++index) {
+            const CustomerOrder &order = m_orders[index];
+            const auto customer = customer_names.find(order.customer_id);
+            wxString label = customer != customer_names.end() ?
+                                 from_u8(customer->second) +
+                                     em_dash_separator() :
+                                 wxString {};
+            label += from_u8(
+                order.order_number.empty() ? order.title : order.order_number);
+            if (!order.title.empty() && !order.order_number.empty())
+                label += em_dash_separator() + from_u8(order.title);
+            m_customer_order->Append(label);
+            if (order.id == selected_order_id)
+                selected_row = static_cast<int>(index) + 1;
+        }
+        m_customer_order->SetSelection(selected_row);
+        Layout();
+    }
+
+    void create_customer()
+    {
+        const auto customer =
+            edit_customer_interactively(this, m_store);
+        if (!customer)
+            return;
+        m_preferred_customer_id = customer->id;
+        refresh_customer_orders();
+    }
+
+    void create_customer_order()
+    {
+        if (m_store.list_customers().empty()) {
+            wxMessageBox(
+                _L("Create the customer first, then add the order for this print."),
+                _L("Customer order"), wxOK | wxICON_INFORMATION, this);
+            return;
+        }
+
+        std::string preferred_customer_id = m_preferred_customer_id;
+        const int selection = m_customer_order->GetSelection();
+        if (preferred_customer_id.empty() && selection > 0 &&
+            static_cast<std::size_t>(selection) <= m_orders.size())
+            preferred_customer_id =
+                m_orders[static_cast<std::size_t>(selection - 1)].customer_id;
+        const auto order = edit_customer_order_interactively(
+            this, m_store, nullptr, preferred_customer_id);
+        if (order) {
+            m_preferred_customer_id.clear();
+            refresh_customer_orders(order->id);
+        }
+    }
+
     int best_selection(const FilamentInventoryUsage &usage) const
     {
         if (!usage.suggested_bambu_tag_uid.empty()) {
@@ -462,6 +539,7 @@ private:
     std::vector<BitmapComboBox *>       m_choices;
     std::vector<Spool>                  m_spools;
     std::vector<CustomerOrder>          m_orders;
+    std::string                         m_preferred_customer_id;
 };
 
 } // namespace

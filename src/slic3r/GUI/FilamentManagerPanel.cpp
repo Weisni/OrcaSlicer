@@ -16,6 +16,7 @@
 #include <wx/dataobj.h>
 #include <wx/dataview.h>
 #include <wx/dialog.h>
+#include <wx/display.h>
 #include <wx/icon.h>
 #include <wx/msgdlg.h>
 #include <wx/simplebook.h>
@@ -24,6 +25,7 @@
 #include <wx/stattext.h>
 #include <wx/textctrl.h>
 #include <wx/tokenzr.h>
+#include <wx/treelist.h>
 
 #include "GUI_App.hpp"
 #include "GUI_Utils.hpp"
@@ -111,6 +113,17 @@ wxString format_duration(std::int64_t seconds)
                wxString::Format("%lld min", static_cast<long long>(minutes));
 }
 
+wxString format_tracked_duration(
+    const std::optional<std::int64_t> &seconds)
+{
+    if (!seconds)
+        return wxString::FromUTF8("\xE2\x80\x94");
+    if (*seconds < 60)
+        return wxString::Format(
+            "%lld sec", static_cast<long long>(*seconds));
+    return format_duration(*seconds);
+}
+
 wxString em_dash()
 {
     return wxString::FromUTF8("\xE2\x80\x94");
@@ -119,6 +132,13 @@ wxString em_dash()
 wxString em_dash_separator()
 {
     return wxString::FromUTF8(" \xE2\x80\x94 ");
+}
+
+wxString mark_estimate(wxString value, bool fully_confirmed)
+{
+    return fully_confirmed || value == em_dash() ?
+               value :
+               wxString::FromUTF8("\xE2\x89\x88 ") + value;
 }
 
 std::optional<Milligrams> warning_threshold(const Spool &spool)
@@ -172,7 +192,7 @@ void append_row(wxDataViewListCtrl *list, std::initializer_list<wxString> cells)
     list->AppendItem(values);
 }
 
-void style_data_view(wxDataViewListCtrl *list)
+void style_data_view(wxDataViewCtrl *list)
 {
     list->SetRowHeight(list->FromDIP(42));
     wxGetApp().UpdateDVCDarkUI(list);
@@ -611,6 +631,383 @@ private:
     wxTextCtrl *m_bambu_uids {nullptr};
 };
 
+wxString material_summary_label(const MaterialUsageSummary &summary)
+{
+    wxString label;
+    if (!summary.manufacturer.empty())
+        label = from_u8(summary.manufacturer);
+    if (!summary.material_type.empty()) {
+        if (!label.empty())
+            label += wxString::FromUTF8(" \xC2\xB7 ");
+        label += from_u8(summary.material_type);
+    }
+    if (!summary.filament_preset_id.empty()) {
+        if (!label.empty())
+            label += wxString::FromUTF8(" \xC2\xB7 ");
+        label += from_u8(summary.filament_preset_id);
+    }
+    if (label.empty() && !summary.spool_name.empty())
+        label = from_u8(summary.spool_name);
+    return label.empty() ? _L("Unknown filament") : label;
+}
+
+wxString allocation_material_label(const Allocation &allocation)
+{
+    wxString label =
+        _L("Filament") +
+        wxString::Format(" %d", allocation.filament_index + 1);
+    if (!allocation.spool_name.empty())
+        label += em_dash_separator() + from_u8(allocation.spool_name);
+
+    wxString metadata;
+    for (const std::string *part : {
+             &allocation.manufacturer, &allocation.material_type,
+             &allocation.filament_preset_id}) {
+        if (part->empty())
+            continue;
+        if (!metadata.empty())
+            metadata += wxString::FromUTF8(" \xC2\xB7 ");
+        metadata += from_u8(*part);
+    }
+    if (!metadata.empty())
+        label += em_dash_separator() + metadata;
+    return label;
+}
+
+wxBitmap material_color_swatch(
+    wxWindow *window, const std::string &color_hex)
+{
+    const wxColour color(from_u8(color_hex));
+    const std::string display_color =
+        color.IsOk() ? color_hex : "#636363";
+    const wxBitmap *swatch = get_extruder_color_icon(
+        std::vector<std::string> {display_color}, false, "",
+        window->FromDIP(24), window->FromDIP(18));
+    return swatch != nullptr ? *swatch : wxNullBitmap;
+}
+
+class MaterialBreakdownDialog final : public wxDialog
+{
+public:
+    MaterialBreakdownDialog(
+        wxWindow *parent, Store &store,
+        std::vector<FilamentInventory::PrintJob> jobs,
+        const wxString &heading_label)
+        : wxDialog(
+              parent, wxID_ANY, _L("Material breakdown"),
+              wxDefaultPosition, wxDefaultSize,
+              wxDEFAULT_DIALOG_STYLE | wxRESIZE_BORDER)
+    {
+        auto *root = new wxBoxSizer(wxVERTICAL);
+        auto *heading = new wxStaticText(
+            this, wxID_ANY, heading_label);
+        wxFont heading_font = heading->GetFont();
+        heading_font.SetWeight(wxFONTWEIGHT_BOLD);
+        heading_font.SetPointSize(heading_font.GetPointSize() + 2);
+        heading->SetFont(heading_font);
+        root->Add(
+            heading, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, FromDIP(14));
+
+        auto *view_bar = new wxBoxSizer(wxHORIZONTAL);
+        view_bar->Add(
+            new wxStaticText(this, wxID_ANY, _L("View")),
+            0, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(8));
+        auto *view_choice = new wxChoice(this, wxID_ANY);
+        view_choice->Append(_L("By print job"));
+        view_choice->Append(_L("By amount"));
+        view_choice->SetSelection(0);
+        view_bar->Add(view_choice, 0, wxALIGN_CENTER_VERTICAL);
+        view_bar->AddStretchSpacer();
+        root->Add(
+            view_bar, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, FromDIP(14));
+
+        auto *value_hint = new wxStaticText(
+            this, wxID_ANY,
+            jobs.empty() ?
+                _L("No tracked print jobs are assigned to this order.") :
+                _L("Values marked with \xE2\x89\x88 include sliced estimates; "
+                   "completed allocations use confirmed values. Discarded jobs "
+                   "show their booking but are excluded from totals. Material "
+                   "prices follow the referenced spool UUID; legacy currency "
+                   "changes retain the booked price."));
+        value_hint->Wrap(FromDIP(500));
+        root->Add(
+            value_hint, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP | wxBOTTOM,
+            FromDIP(14));
+
+        auto *views = new wxSimplebook(
+            this, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxBORDER_NONE);
+        enum JobTreeColumn : unsigned int {
+            job_material_column = 0,
+            spool_uuid_column,
+            price_per_kg_column,
+            printer_column,
+            duration_column,
+            amount_column,
+            material_cost_column,
+            electricity_cost_column,
+            total_cost_column,
+            started_column,
+            completed_column
+        };
+        auto *job_tree = new wxTreeListCtrl(
+            views, wxID_ANY, wxDefaultPosition, wxDefaultSize,
+            wxTL_DEFAULT_STYLE);
+        job_tree->AppendColumn(
+            _L("Print job / filament"), FromDIP(360), wxALIGN_LEFT);
+        job_tree->AppendColumn(
+            _L("Spool UUID"), FromDIP(290), wxALIGN_LEFT);
+        job_tree->AppendColumn(
+            _L("Price / kg"), FromDIP(125), wxALIGN_RIGHT);
+        job_tree->AppendColumn(
+            _L("Printer"), FromDIP(160), wxALIGN_LEFT);
+        job_tree->AppendColumn(
+            _L("Duration"), FromDIP(125), wxALIGN_RIGHT);
+        job_tree->AppendColumn(
+            _L("Amount"), FromDIP(130), wxALIGN_RIGHT);
+        job_tree->AppendColumn(
+            _L("Material cost"), FromDIP(130), wxALIGN_RIGHT);
+        job_tree->AppendColumn(
+            _L("Electricity estimate"), FromDIP(140), wxALIGN_RIGHT);
+        job_tree->AppendColumn(
+            _L("Total cost"), FromDIP(130), wxALIGN_RIGHT);
+        job_tree->AppendColumn(
+            _L("Started"), FromDIP(180), wxALIGN_LEFT);
+        job_tree->AppendColumn(
+            _L("Completed"), FromDIP(180), wxALIGN_LEFT);
+        style_data_view(job_tree->GetDataView());
+
+        auto *amount_list = new wxDataViewListCtrl(
+            views, wxID_ANY, wxDefaultPosition, wxDefaultSize,
+            wxDV_ROW_LINES | wxBORDER_NONE);
+        amount_list->AppendIconTextColumn(
+            _L("Filament"), wxDATAVIEW_CELL_INERT, FromDIP(500));
+        amount_list->AppendTextColumn(
+            _L("Amount"), wxDATAVIEW_CELL_INERT, FromDIP(150),
+            wxALIGN_RIGHT);
+        amount_list->AppendTextColumn(
+            _L("Material cost"), wxDATAVIEW_CELL_INERT, FromDIP(150),
+            wxALIGN_RIGHT);
+        style_data_view(amount_list);
+
+        views->AddPage(job_tree, wxEmptyString, true);
+        views->AddPage(amount_list, wxEmptyString);
+        root->Add(
+            views, 1, wxEXPAND | wxLEFT | wxRIGHT, FromDIP(14));
+
+        struct JobBreakdown {
+            FilamentInventory::PrintJob job;
+            CostSummary costs;
+        };
+        std::vector<JobBreakdown> job_breakdowns;
+        job_breakdowns.reserve(jobs.size());
+        for (const FilamentInventory::PrintJob &job : jobs)
+            job_breakdowns.push_back({job, store.job_cost_summary(job.id)});
+        const std::vector<MaterialUsageSummary> amount_summaries =
+            summarize_material_usage(jobs);
+
+        std::map<std::string, int> color_image_indices;
+        wxWithImages::Images color_images;
+        const auto register_color =
+            [&](const std::string &color_hex) {
+                const auto existing =
+                    color_image_indices.find(color_hex);
+                if (existing != color_image_indices.end())
+                    return existing->second;
+                const wxBitmap swatch =
+                    material_color_swatch(job_tree, color_hex);
+                if (!swatch.IsOk())
+                    return static_cast<int>(wxWithImages::NO_IMAGE);
+                const int index = static_cast<int>(color_images.size());
+                color_images.emplace_back(wxBitmapBundle::FromBitmap(swatch));
+                color_image_indices.emplace(color_hex, index);
+                return index;
+            };
+        for (const JobBreakdown &breakdown : job_breakdowns)
+            for (const Allocation &allocation : breakdown.job.allocations)
+                (void) register_color(allocation.color_hex);
+        for (const MaterialUsageSummary &material : amount_summaries)
+            (void) register_color(material.color_hex);
+        if (!color_images.empty())
+            job_tree->SetImages(color_images);
+
+        wxTreeListItem first_job;
+        for (const JobBreakdown &breakdown : job_breakdowns) {
+            wxString job_label = from_u8(
+                breakdown.job.job_name.empty() ?
+                    breakdown.job.id :
+                    breakdown.job.job_name);
+            job_label += em_dash_separator() +
+                         from_u8(to_string(breakdown.job.state));
+            const wxTreeListItem job_item =
+                job_tree->AppendItem(job_tree->GetRootItem(), job_label);
+            job_tree->SetItemText(
+                job_item, printer_column,
+                breakdown.job.printer_id.empty() ?
+                    em_dash() :
+                    from_u8(breakdown.job.printer_id));
+            job_tree->SetItemText(
+                job_item, started_column,
+                breakdown.job.started_at.empty() ?
+                    em_dash() :
+                    from_u8(breakdown.job.started_at));
+            job_tree->SetItemText(
+                job_item, completed_column,
+                breakdown.job.completed_at.empty() ?
+                    em_dash() :
+                    from_u8(breakdown.job.completed_at));
+
+            if (!first_job.IsOk() && !breakdown.job.allocations.empty())
+                first_job = job_item;
+
+            Milligrams total_weight = 0;
+            bool weight_fully_confirmed = true;
+            bool cost_fully_confirmed = true;
+            for (const Allocation &allocation : breakdown.job.allocations) {
+                const wxTreeListItem material_item = job_tree->AppendItem(
+                    job_item, allocation_material_label(allocation),
+                    register_color(allocation.color_hex));
+                job_tree->SetItemText(
+                    material_item, spool_uuid_column,
+                    allocation.spool_id.empty() ?
+                        em_dash() :
+                        from_u8(allocation.spool_id));
+                job_tree->SetItemText(
+                    material_item, price_per_kg_column,
+                    format_money(
+                        allocation.material_price_per_kg_micros,
+                        allocation.cost_currency));
+                if (breakdown.job.state == JobState::discarded) {
+                    job_tree->SetItemText(
+                        material_item, amount_column,
+                        mark_estimate(
+                            format_weight(allocation.estimated_weight_mg),
+                            false));
+                    job_tree->SetItemText(
+                        material_item, material_cost_column, em_dash());
+                    continue;
+                }
+
+                const Milligrams weight =
+                    allocation.actual_weight_mg.value_or(
+                        allocation.estimated_weight_mg);
+                const MoneyMicros cost =
+                    allocation.actual_material_cost_micros.value_or(
+                        allocation.estimated_material_cost_micros);
+                const bool weight_confirmed =
+                    allocation.actual_weight_mg.has_value();
+                const bool cost_confirmed =
+                    allocation.actual_material_cost_micros.has_value();
+                total_weight += weight;
+                weight_fully_confirmed &= weight_confirmed;
+                cost_fully_confirmed &= cost_confirmed;
+                job_tree->SetItemText(
+                    material_item, amount_column,
+                    mark_estimate(
+                        format_weight(weight), weight_confirmed));
+                job_tree->SetItemText(
+                    material_item, material_cost_column,
+                    mark_estimate(
+                        format_money(cost, allocation.cost_currency),
+                        cost_confirmed));
+            }
+            if (breakdown.job.state == JobState::discarded) {
+                for (unsigned int column = duration_column;
+                     column <= total_cost_column; ++column)
+                    job_tree->SetItemText(job_item, column, em_dash());
+                continue;
+            }
+            job_tree->SetItemText(
+                job_item, duration_column,
+                breakdown.job.actual_runtime_seconds ?
+                    format_tracked_duration(
+                        breakdown.job.actual_runtime_seconds) :
+                    mark_estimate(
+                        format_duration(
+                            breakdown.job.estimated_runtime_seconds),
+                        false));
+            job_tree->SetItemText(
+                job_item, amount_column,
+                mark_estimate(
+                    format_weight(total_weight), weight_fully_confirmed));
+            job_tree->SetItemText(
+                job_item, material_cost_column,
+                mark_estimate(
+                    format_money(
+                        breakdown.costs.material_cost_micros,
+                        breakdown.costs.currency),
+                    cost_fully_confirmed));
+            job_tree->SetItemText(
+                job_item, electricity_cost_column,
+                format_money(
+                    breakdown.costs.electricity_cost_micros,
+                    breakdown.costs.currency));
+            job_tree->SetItemText(
+                job_item, total_cost_column,
+                mark_estimate(
+                    format_money(
+                        breakdown.costs.total_cost_micros,
+                        breakdown.costs.currency),
+                    false));
+        }
+        if (first_job.IsOk())
+            job_tree->Expand(first_job);
+
+        for (const MaterialUsageSummary &material : amount_summaries) {
+            const wxBitmap swatch =
+                material_color_swatch(amount_list, material.color_hex);
+            wxIcon icon;
+            if (swatch.IsOk())
+                icon.CopyFromBitmap(swatch);
+            wxVariant filament;
+            filament << wxDataViewIconText(
+                material_summary_label(material), icon);
+            wxVector<wxVariant> values;
+            values.reserve(3);
+            values.emplace_back(filament);
+            values.emplace_back(
+                mark_estimate(
+                    format_weight(material.best_known_weight_mg),
+                    material.weight_fully_confirmed));
+            values.emplace_back(
+                mark_estimate(
+                    format_money(
+                        material.best_known_material_cost_micros,
+                        material.cost_currency),
+                    material.cost_fully_confirmed));
+            amount_list->AppendItem(values);
+        }
+
+        view_choice->Bind(
+            wxEVT_CHOICE,
+            [views](wxCommandEvent &event) {
+                views->SetSelection(event.GetSelection());
+            });
+        auto *close = new wxButton(this, wxID_CLOSE, _L("Close"));
+        close->Bind(
+            wxEVT_BUTTON,
+            [this](wxCommandEvent &) { EndModal(wxID_CLOSE); });
+        auto *button_row = new wxBoxSizer(wxHORIZONTAL);
+        button_row->AddStretchSpacer();
+        button_row->Add(close);
+        root->Add(button_row, 0, wxEXPAND | wxALL, FromDIP(14));
+
+        SetSizer(root);
+        const wxSize work_area = wxDisplay(this).GetClientArea().GetSize();
+        const wxSize maximum_size(
+            std::max(1, work_area.x - FromDIP(32)),
+            std::max(1, work_area.y - FromDIP(32)));
+        const wxSize dialog_size(
+            std::min(FromDIP(1'200), maximum_size.x),
+            std::min(FromDIP(560), maximum_size.y));
+        SetMinSize(wxSize(
+            std::min(FromDIP(560), dialog_size.x),
+            std::min(FromDIP(340), dialog_size.y)));
+        SetSize(dialog_size);
+        CentreOnParent();
+    }
+};
+
 } // namespace
 
 std::optional<Spool> create_filament_spool_interactively(
@@ -743,6 +1140,8 @@ FilamentManagerPanel::FilamentManagerPanel(wxWindow *parent, wxWindowID id,
                                           wxDV_ROW_LINES | wxBORDER_NONE);
     m_spool_list->AppendIconTextColumn(
         _L("Spool"), wxDATAVIEW_CELL_INERT, FromDIP(210));
+    m_spool_list->AppendTextColumn(
+        _L("Spool UUID"), wxDATAVIEW_CELL_INERT, FromDIP(290));
     m_spool_list->AppendTextColumn(_L("Manufacturer"), wxDATAVIEW_CELL_INERT, FromDIP(140));
     m_spool_list->AppendTextColumn(_L("Material"), wxDATAVIEW_CELL_INERT, FromDIP(90));
     m_spool_list->AppendTextColumn(
@@ -769,11 +1168,15 @@ FilamentManagerPanel::FilamentManagerPanel(wxWindow *parent, wxWindowID id,
     m_correct_button = new wxButton(jobs_page, wxID_ANY, _L("Correct and confirm"));
     m_review_button = new wxButton(jobs_page, wxID_ANY, _L("Review manually"));
     m_discard_button = new wxButton(jobs_page, wxID_ANY, _L("Discard"));
+    m_job_materials_button = new wxButton(
+        jobs_page, wxID_ANY, _L("Material details..."));
     auto *refresh_jobs_button = new wxButton(jobs_page, wxID_ANY, _L("Refresh"));
     for (wxButton *button : {
              m_confirm_button, m_correct_button, m_review_button,
-             m_discard_button, refresh_jobs_button})
+             m_discard_button, m_job_materials_button, refresh_jobs_button})
         job_buttons->Add(button, 0, wxRIGHT, FromDIP(8));
+    m_job_materials_button->SetToolTip(
+        _L("Show booked spools, materials, colours, amounts, and costs"));
     jobs_sizer->Add(job_buttons, 0, wxEXPAND | wxALL, FromDIP(10));
 
     m_job_list = new wxDataViewListCtrl(jobs_page, wxID_ANY, wxDefaultPosition, wxDefaultSize,
@@ -815,9 +1218,17 @@ FilamentManagerPanel::FilamentManagerPanel(wxWindow *parent, wxWindowID id,
     auto *job_history_page = new wxPanel(m_pages);
     job_history_page->SetBackgroundColour(page_background);
     auto *job_history_sizer = new wxBoxSizer(wxVERTICAL);
+    auto *job_history_toolbar = new wxBoxSizer(wxHORIZONTAL);
+    m_job_history_materials_button = new wxButton(
+        job_history_page, wxID_ANY, _L("Material details..."));
     auto *refresh_job_history_button = new wxButton(
         job_history_page, wxID_ANY, _L("Refresh"));
-    job_history_sizer->Add(refresh_job_history_button, 0, wxALL, FromDIP(10));
+    m_job_history_materials_button->SetToolTip(
+        _L("Show booked spools, materials, colours, amounts, and costs"));
+    job_history_toolbar->Add(
+        m_job_history_materials_button, 0, wxRIGHT, FromDIP(8));
+    job_history_toolbar->Add(refresh_job_history_button);
+    job_history_sizer->Add(job_history_toolbar, 0, wxALL, FromDIP(10));
     m_job_history_list = new wxDataViewListCtrl(
         job_history_page, wxID_ANY, wxDefaultPosition, wxDefaultSize,
         wxDV_ROW_LINES | wxBORDER_NONE);
@@ -827,7 +1238,10 @@ FilamentManagerPanel::FilamentManagerPanel(wxWindow *parent, wxWindowID id,
     m_job_history_list->AppendTextColumn(_L("Printer"), wxDATAVIEW_CELL_INERT, FromDIP(160));
     m_job_history_list->AppendTextColumn(_L("Estimated"), wxDATAVIEW_CELL_INERT, FromDIP(110));
     m_job_history_list->AppendTextColumn(_L("Actual"), wxDATAVIEW_CELL_INERT, FromDIP(110));
-    m_job_history_list->AppendTextColumn(_L("Runtime"), wxDATAVIEW_CELL_INERT, FromDIP(110));
+    m_job_history_list->AppendTextColumn(
+        _L("Estimated duration"), wxDATAVIEW_CELL_INERT, FromDIP(125));
+    m_job_history_list->AppendTextColumn(
+        _L("Tracked duration"), wxDATAVIEW_CELL_INERT, FromDIP(125));
     m_job_history_list->AppendTextColumn(_L("Total cost"), wxDATAVIEW_CELL_INERT, FromDIP(110));
     m_job_history_list->AppendTextColumn(_L("Created"), wxDATAVIEW_CELL_INERT, FromDIP(190));
     m_job_history_list->AppendTextColumn(_L("Completed"), wxDATAVIEW_CELL_INERT, FromDIP(190));
@@ -866,7 +1280,7 @@ FilamentManagerPanel::FilamentManagerPanel(wxWindow *parent, wxWindowID id,
         customer_toolbar, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(10));
 
     m_customer_list = new wxDataViewListCtrl(
-        customers_page, wxID_ANY, wxDefaultPosition, wxSize(-1, FromDIP(170)),
+        customers_page, wxID_ANY, wxDefaultPosition, wxDefaultSize,
         wxDV_ROW_LINES | wxBORDER_NONE);
     m_customer_list->AppendTextColumn(_L("Customer"), wxDATAVIEW_CELL_INERT, FromDIP(210));
     m_customer_list->AppendTextColumn(_L("Contact"), wxDATAVIEW_CELL_INERT, FromDIP(180));
@@ -875,24 +1289,34 @@ FilamentManagerPanel::FilamentManagerPanel(wxWindow *parent, wxWindowID id,
     m_customer_list->AppendTextColumn(_L("Accumulated cost"), wxDATAVIEW_CELL_INERT, FromDIP(140));
     style_data_view(m_customer_list);
     customers_sizer->Add(
-        m_customer_list, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(10));
+        m_customer_list, 1, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(10));
 
+    auto *order_toolbars = new wxBoxSizer(wxVERTICAL);
     auto *order_toolbar = new wxBoxSizer(wxHORIZONTAL);
     m_add_order_button = new wxButton(customers_page, wxID_ANY, _L("Add order"));
     m_edit_order_button = new wxButton(customers_page, wxID_ANY, _L("Edit order"));
+    m_material_breakdown_button = new wxButton(
+        customers_page, wxID_ANY, _L("Material breakdown..."));
     m_activate_order_button = new wxButton(customers_page, wxID_ANY, _L("Activate"));
     m_complete_order_button = new wxButton(customers_page, wxID_ANY, _L("Complete"));
     m_cancel_order_button = new wxButton(customers_page, wxID_ANY, _L("Cancel order"));
     m_delete_order_button = new wxButton(customers_page, wxID_ANY, _L("Delete draft"));
     auto *refresh_customers_button = new wxButton(customers_page, wxID_ANY, _L("Refresh"));
     for (wxButton *button : {
-             m_add_order_button, m_edit_order_button, m_activate_order_button,
-             m_complete_order_button, m_cancel_order_button, m_delete_order_button})
+             m_add_order_button, m_edit_order_button,
+             m_material_breakdown_button})
         order_toolbar->Add(button, 0, wxRIGHT, FromDIP(8));
     order_toolbar->AddStretchSpacer();
     order_toolbar->Add(refresh_customers_button);
+    order_toolbars->Add(order_toolbar, 0, wxEXPAND | wxBOTTOM, FromDIP(8));
+    auto *order_status_toolbar = new wxBoxSizer(wxHORIZONTAL);
+    for (wxButton *button : {
+             m_activate_order_button, m_complete_order_button,
+             m_cancel_order_button, m_delete_order_button})
+        order_status_toolbar->Add(button, 0, wxRIGHT, FromDIP(8));
+    order_toolbars->Add(order_status_toolbar, 0, wxEXPAND);
     customers_sizer->Add(
-        order_toolbar, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(10));
+        order_toolbars, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(10));
 
     m_order_list = new wxDataViewListCtrl(
         customers_page, wxID_ANY, wxDefaultPosition, wxDefaultSize,
@@ -900,15 +1324,18 @@ FilamentManagerPanel::FilamentManagerPanel(wxWindow *parent, wxWindowID id,
     m_order_list->AppendTextColumn(_L("Order"), wxDATAVIEW_CELL_INERT, FromDIP(210));
     m_order_list->AppendTextColumn(_L("Customer"), wxDATAVIEW_CELL_INERT, FromDIP(180));
     m_order_list->AppendTextColumn(_L("Status"), wxDATAVIEW_CELL_INERT, FromDIP(100));
-    m_order_list->AppendTextColumn(_L("Runtime"), wxDATAVIEW_CELL_INERT, FromDIP(110));
-    m_order_list->AppendTextColumn(_L("Material"), wxDATAVIEW_CELL_INERT, FromDIP(110));
-    m_order_list->AppendTextColumn(_L("Electricity"), wxDATAVIEW_CELL_INERT, FromDIP(110));
+    m_order_list->AppendTextColumn(_L("Print jobs"), wxDATAVIEW_CELL_INERT, FromDIP(90));
+    m_order_list->AppendTextColumn(_L("Duration"), wxDATAVIEW_CELL_INERT, FromDIP(110));
+    m_order_list->AppendTextColumn(_L("Weight"), wxDATAVIEW_CELL_INERT, FromDIP(100));
+    m_order_list->AppendTextColumn(_L("Material cost"), wxDATAVIEW_CELL_INERT, FromDIP(110));
+    m_order_list->AppendTextColumn(
+        _L("Electricity estimate"), wxDATAVIEW_CELL_INERT, FromDIP(125));
     m_order_list->AppendTextColumn(_L("Total cost"), wxDATAVIEW_CELL_INERT, FromDIP(110));
     m_order_list->AppendTextColumn(_L("Quoted"), wxDATAVIEW_CELL_INERT, FromDIP(110));
     m_order_list->AppendTextColumn(_L("Invoice"), wxDATAVIEW_CELL_INERT, FromDIP(110));
     style_data_view(m_order_list);
     customers_sizer->Add(
-        m_order_list, 1, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(10));
+        m_order_list, 2, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(10));
     customers_page->SetSizer(customers_sizer);
     m_pages->AddPage(customers_page, wxEmptyString);
 
@@ -946,6 +1373,13 @@ FilamentManagerPanel::FilamentManagerPanel(wxWindow *parent, wxWindowID id,
     m_correct_button->Bind(wxEVT_BUTTON, [this](wxCommandEvent &) { confirm_job(true); });
     m_review_button->Bind(wxEVT_BUTTON, [this](wxCommandEvent &) { review_job(); });
     m_discard_button->Bind(wxEVT_BUTTON, [this](wxCommandEvent &) { discard_job(); });
+    m_job_materials_button->Bind(wxEVT_BUTTON, [this](wxCommandEvent &) {
+        show_selected_job_materials(false);
+    });
+    m_job_history_materials_button->Bind(
+        wxEVT_BUTTON, [this](wxCommandEvent &) {
+            show_selected_job_materials(true);
+        });
     add_customer_button->Bind(wxEVT_BUTTON, [this](wxCommandEvent &) { add_customer(); });
     m_edit_customer_button->Bind(
         wxEVT_BUTTON, [this](wxCommandEvent &) { edit_customer(); });
@@ -955,6 +1389,8 @@ FilamentManagerPanel::FilamentManagerPanel(wxWindow *parent, wxWindowID id,
         wxEVT_BUTTON, [this](wxCommandEvent &) { add_customer_order(); });
     m_edit_order_button->Bind(
         wxEVT_BUTTON, [this](wxCommandEvent &) { edit_customer_order(); });
+    m_material_breakdown_button->Bind(
+        wxEVT_BUTTON, [this](wxCommandEvent &) { show_material_breakdown(); });
     m_activate_order_button->Bind(wxEVT_BUTTON, [this](wxCommandEvent &) {
         set_customer_order_status(CustomerOrderStatus::active);
     });
@@ -973,12 +1409,18 @@ FilamentManagerPanel::FilamentManagerPanel(wxWindow *parent, wxWindowID id,
         [this](wxDataViewEvent &) { update_button_state(); });
     m_job_list->Bind(wxEVT_DATAVIEW_SELECTION_CHANGED,
         [this](wxDataViewEvent &) { update_button_state(); });
+    m_job_history_list->Bind(wxEVT_DATAVIEW_SELECTION_CHANGED,
+        [this](wxDataViewEvent &) { update_button_state(); });
     m_customer_list->Bind(wxEVT_DATAVIEW_SELECTION_CHANGED,
         [this](wxDataViewEvent &) { update_button_state(); });
     m_order_list->Bind(wxEVT_DATAVIEW_SELECTION_CHANGED,
         [this](wxDataViewEvent &) { update_button_state(); });
     m_spool_list->Bind(wxEVT_DATAVIEW_ITEM_ACTIVATED,
         [this](wxDataViewEvent &) { edit_spool(); });
+    m_job_list->Bind(wxEVT_DATAVIEW_ITEM_ACTIVATED,
+        [this](wxDataViewEvent &) { show_selected_job_materials(false); });
+    m_job_history_list->Bind(wxEVT_DATAVIEW_ITEM_ACTIVATED,
+        [this](wxDataViewEvent &) { show_selected_job_materials(true); });
     m_customer_list->Bind(wxEVT_DATAVIEW_ITEM_ACTIVATED,
         [this](wxDataViewEvent &) { edit_customer(); });
     m_order_list->Bind(wxEVT_DATAVIEW_ITEM_ACTIVATED,
@@ -1084,8 +1526,9 @@ void FilamentManagerPanel::refresh_spools()
         spool_cell << wxDataViewIconText(from_u8(spool.name), spool_icon);
 
         wxVector<wxVariant> values;
-        values.reserve(10);
+        values.reserve(11);
         values.emplace_back(spool_cell);
+        values.emplace_back(from_u8(spool.id));
         values.emplace_back(from_u8(spool.manufacturer));
         values.emplace_back(from_u8(spool.material_type));
         values.emplace_back(
@@ -1192,6 +1635,7 @@ void FilamentManagerPanel::refresh_history()
 
 void FilamentManagerPanel::refresh_job_history()
 {
+    m_job_history = m_store->list_jobs(true, 1'000);
     m_job_history_list->DeleteAllItems();
     std::map<std::string, CustomerOrder> orders;
     for (const CustomerOrder &order : m_store->list_customer_orders({}, true))
@@ -1200,7 +1644,7 @@ void FilamentManagerPanel::refresh_job_history()
     for (const Customer &customer : m_store->list_customers(true))
         customers.emplace(customer.id, customer);
 
-    for (const PrintJob &job : m_store->list_jobs(true, 1'000)) {
+    for (const PrintJob &job : m_job_history) {
         Milligrams estimated = 0;
         Milligrams actual = 0;
         bool has_actual = true;
@@ -1234,6 +1678,7 @@ void FilamentManagerPanel::refresh_job_history()
             format_weight(estimated),
             has_actual ? format_weight(actual) : em_dash(),
             format_duration(job.estimated_runtime_seconds),
+            format_tracked_duration(job.actual_runtime_seconds),
             format_money(costs.total_cost_micros, costs.currency),
             from_u8(job.created_at),
             job.completed_at.empty() ? em_dash() : from_u8(job.completed_at)
@@ -1243,6 +1688,13 @@ void FilamentManagerPanel::refresh_job_history()
 
 void FilamentManagerPanel::refresh_customers_and_orders()
 {
+    std::string selected_order_id;
+    const int selected_row = selected_order_row();
+    if (selected_row >= 0 &&
+        selected_row < static_cast<int>(m_customer_orders.size()))
+        selected_order_id =
+            m_customer_orders[static_cast<std::size_t>(selected_row)].id;
+
     m_customers = m_store->list_customers();
     m_customer_orders = m_store->list_customer_orders({}, true);
     m_customer_list->DeleteAllItems();
@@ -1262,13 +1714,47 @@ void FilamentManagerPanel::refresh_customers_and_orders()
         });
     }
 
-    std::map<std::string, std::int64_t> runtime_by_order;
+    std::map<std::string, std::int64_t> duration_by_order;
+    std::map<std::string, Milligrams> weight_by_order;
+    std::set<std::string> orders_with_estimated_duration;
+    std::set<std::string> orders_with_estimated_weight;
+    std::set<std::string> orders_with_estimated_material_cost;
+    std::set<std::string> orders_with_estimated_total_cost;
+    m_order_job_counts.clear();
+    m_orders_with_open_jobs.clear();
     for (const PrintJob &job : m_store->list_jobs(true, 0)) {
-        if (job.state != JobState::discarded && job.customer_order_id)
-            runtime_by_order[*job.customer_order_id] += job.estimated_runtime_seconds;
+        if (!job.customer_order_id)
+            continue;
+        const std::string &order_id = *job.customer_order_id;
+        ++m_order_job_counts[order_id];
+        if (job.state == JobState::reserved ||
+            job.state == JobState::printing ||
+            job.state == JobState::needs_review)
+            m_orders_with_open_jobs.emplace(order_id);
+        if (job.state != JobState::discarded) {
+            orders_with_estimated_total_cost.emplace(order_id);
+            const std::int64_t duration =
+                job.actual_runtime_seconds ?
+                    *job.actual_runtime_seconds :
+                    job.estimated_runtime_seconds;
+            duration_by_order[order_id] += duration;
+            if (!job.actual_runtime_seconds)
+                orders_with_estimated_duration.emplace(order_id);
+            for (const Allocation &allocation : job.allocations) {
+                weight_by_order[order_id] +=
+                    allocation.actual_weight_mg.value_or(
+                        allocation.estimated_weight_mg);
+                if (!allocation.actual_weight_mg)
+                    orders_with_estimated_weight.emplace(order_id);
+                if (!allocation.actual_material_cost_micros)
+                    orders_with_estimated_material_cost.emplace(order_id);
+            }
+        }
     }
 
-    for (const CustomerOrder &order : m_customer_orders) {
+    int restored_row = wxNOT_FOUND;
+    for (std::size_t row = 0; row < m_customer_orders.size(); ++row) {
+        const CustomerOrder &order = m_customer_orders[row];
         const auto customer = customers.find(order.customer_id);
         const CostSummary costs = m_store->customer_order_cost_summary(order.id);
         wxString order_label = from_u8(order.order_number);
@@ -1282,14 +1768,31 @@ void FilamentManagerPanel::refresh_customers_and_orders()
             customer != customers.end() ?
                 from_u8(customer->second.name) : from_u8(order.customer_id),
             from_u8(to_string(order.status)),
-            format_duration(runtime_by_order[order.id]),
-            format_money(costs.material_cost_micros, costs.currency),
+            wxString::Format("%zu", m_order_job_counts[order.id]),
+            mark_estimate(
+                format_duration(duration_by_order[order.id]),
+                orders_with_estimated_duration.count(order.id) == 0),
+            mark_estimate(
+                format_weight(weight_by_order[order.id]),
+                orders_with_estimated_weight.count(order.id) == 0),
+            mark_estimate(
+                format_money(costs.material_cost_micros, costs.currency),
+                orders_with_estimated_material_cost.count(order.id) == 0),
             format_money(costs.electricity_cost_micros, costs.currency),
-            format_money(costs.total_cost_micros, costs.currency),
+            mark_estimate(
+                format_money(costs.total_cost_micros, costs.currency),
+                orders_with_estimated_total_cost.count(order.id) == 0),
             format_optional_money(order.quoted_price_micros, order.currency),
             format_optional_money(order.invoice_amount_micros, order.currency)
         });
+        if (!selected_order_id.empty() && order.id == selected_order_id)
+            restored_row = static_cast<int>(row);
     }
+
+    if (restored_row == wxNOT_FOUND && !m_customer_orders.empty())
+        restored_row = 0;
+    if (restored_row != wxNOT_FOUND)
+        m_order_list->SelectRow(static_cast<unsigned int>(restored_row));
 }
 
 int FilamentManagerPanel::selected_spool_row() const
@@ -1300,6 +1803,13 @@ int FilamentManagerPanel::selected_spool_row() const
 int FilamentManagerPanel::selected_job_row() const
 {
     return m_job_list != nullptr ? m_job_list->GetSelectedRow() : wxNOT_FOUND;
+}
+
+int FilamentManagerPanel::selected_job_history_row() const
+{
+    return m_job_history_list != nullptr ?
+               m_job_history_list->GetSelectedRow() :
+               wxNOT_FOUND;
 }
 
 int FilamentManagerPanel::selected_customer_row() const
@@ -1319,12 +1829,27 @@ void FilamentManagerPanel::update_button_state()
                                 static_cast<size_t>(selected_spool_row()) < m_spools.size();
     const bool job_selected = selected_job_row() >= 0 &&
                               static_cast<size_t>(selected_job_row()) < m_jobs.size();
+    const bool history_job_selected =
+        selected_job_history_row() >= 0 &&
+        static_cast<std::size_t>(selected_job_history_row()) <
+            m_job_history.size();
     const bool customer_selected =
         selected_customer_row() >= 0 &&
         static_cast<size_t>(selected_customer_row()) < m_customers.size();
     const bool order_selected =
         selected_order_row() >= 0 &&
         static_cast<size_t>(selected_order_row()) < m_customer_orders.size();
+    const CustomerOrder *selected_order =
+        order_selected ?
+            &m_customer_orders[static_cast<std::size_t>(selected_order_row())] :
+            nullptr;
+    const std::size_t selected_order_job_count =
+        selected_order != nullptr ?
+            m_order_job_counts[selected_order->id] :
+            0;
+    const bool selected_order_has_open_jobs =
+        selected_order != nullptr &&
+        m_orders_with_open_jobs.count(selected_order->id) != 0;
     m_add_button->Enable(store_ready);
     for (wxButton *button : m_refresh_buttons)
         button->Enable(store_ready);
@@ -1343,24 +1868,32 @@ void FilamentManagerPanel::update_button_state()
     m_discard_button->Enable(
         store_ready && job_selected &&
         (selected_state == JobState::reserved || selected_state == JobState::needs_review));
+    m_job_materials_button->Enable(store_ready && job_selected);
+    m_job_history_materials_button->Enable(
+        store_ready && history_job_selected);
 
     m_edit_customer_button->Enable(store_ready && customer_selected);
     m_archive_customer_button->Enable(store_ready && customer_selected);
     m_add_order_button->Enable(store_ready && !m_customers.empty());
     m_edit_order_button->Enable(store_ready && order_selected);
+    m_material_breakdown_button->Enable(
+        store_ready && order_selected && selected_order_job_count > 0);
     m_delete_order_button->Enable(
         store_ready && order_selected &&
-        m_customer_orders[selected_order_row()].status == CustomerOrderStatus::draft);
+        selected_order->status == CustomerOrderStatus::draft &&
+        selected_order_job_count == 0);
     m_activate_order_button->Enable(
         store_ready && order_selected &&
-        m_customer_orders[selected_order_row()].status == CustomerOrderStatus::draft);
+        selected_order->status == CustomerOrderStatus::draft);
     m_complete_order_button->Enable(
         store_ready && order_selected &&
-        m_customer_orders[selected_order_row()].status == CustomerOrderStatus::active);
+        selected_order->status == CustomerOrderStatus::active &&
+        !selected_order_has_open_jobs);
     m_cancel_order_button->Enable(
         store_ready && order_selected &&
-        (m_customer_orders[selected_order_row()].status == CustomerOrderStatus::draft ||
-         m_customer_orders[selected_order_row()].status == CustomerOrderStatus::active));
+        (selected_order->status == CustomerOrderStatus::draft ||
+         selected_order->status == CustomerOrderStatus::active) &&
+        !selected_order_has_open_jobs);
 }
 
 void FilamentManagerPanel::add_spool()
@@ -1642,6 +2175,58 @@ void FilamentManagerPanel::edit_customer_order()
     const CustomerOrder order = m_customer_orders[static_cast<std::size_t>(row)];
     if (edit_customer_order_interactively(this, *m_store, &order))
         refresh();
+}
+
+void FilamentManagerPanel::show_material_breakdown()
+{
+    if (!initialize_store())
+        return;
+    const int row = selected_order_row();
+    if (row < 0 ||
+        static_cast<std::size_t>(row) >= m_customer_orders.size())
+        return;
+    const CustomerOrder &order =
+        m_customer_orders[static_cast<std::size_t>(row)];
+    try {
+        const wxString customer_name =
+            from_u8(m_store->get_customer(order.customer_id).name);
+        wxString order_label = from_u8(
+            order.order_number.empty() ? order.title : order.order_number);
+        if (!order.title.empty() && !order.order_number.empty())
+            order_label += em_dash_separator() + from_u8(order.title);
+        MaterialBreakdownDialog dialog(
+            this, *m_store,
+            m_store->list_customer_order_jobs(order.id, true),
+            customer_name + em_dash_separator() + order_label);
+        dialog.ShowModal();
+    } catch (const std::exception &error) {
+        show_error(error);
+    }
+}
+
+void FilamentManagerPanel::show_selected_job_materials(bool history)
+{
+    if (!initialize_store())
+        return;
+    const int row =
+        history ? selected_job_history_row() : selected_job_row();
+    const std::vector<PrintJob> &jobs =
+        history ? m_job_history : m_jobs;
+    if (row < 0 || static_cast<std::size_t>(row) >= jobs.size())
+        return;
+
+    const std::string job_id =
+        jobs[static_cast<std::size_t>(row)].id;
+    try {
+        const PrintJob job = m_store->get_job(job_id);
+        const wxString heading = from_u8(
+            job.job_name.empty() ? job.id : job.job_name);
+        MaterialBreakdownDialog dialog(
+            this, *m_store, std::vector<PrintJob> {job}, heading);
+        dialog.ShowModal();
+    } catch (const std::exception &error) {
+        show_error(error);
+    }
 }
 
 void FilamentManagerPanel::set_customer_order_status(CustomerOrderStatus status)
