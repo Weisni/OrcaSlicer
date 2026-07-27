@@ -14,6 +14,7 @@
 #include <wx/msgdlg.h>
 #include <wx/scrolwin.h>
 #include <wx/sizer.h>
+#include <wx/statbmp.h>
 #include <wx/stattext.h>
 
 #include "BitmapComboBox.hpp"
@@ -188,13 +189,26 @@ public:
             const FilamentInventoryUsage &usage = context.usages[index];
             wxString description = from_u8(
                 usage.display_name.empty() ? usage.material_type : usage.display_name);
-            if (!usage.color_hex.empty())
-                description += "  " + from_u8(usage.color_hex);
             if (!usage.suggested_bambu_tag_uid.empty())
                 description += "  " + wxString::Format(
                     _L("Bambu RFID: %s"), from_u8(usage.suggested_bambu_tag_uid));
-            m_grid->Add(new wxStaticText(scroll, wxID_ANY, description),
-                        0, wxALIGN_CENTER_VERTICAL);
+
+            auto *project_filament = new wxBoxSizer(wxHORIZONTAL);
+            const wxColour filament_color(from_u8(usage.color_hex));
+            const std::string swatch_color =
+                filament_color.IsOk() ? usage.color_hex : "#636363";
+            const int swatch_size = FromDIP(18);
+            const wxBitmap *color_swatch = get_extruder_color_icon(
+                std::vector<std::string> {swatch_color}, false, "",
+                swatch_size, swatch_size);
+            if (color_swatch != nullptr)
+                project_filament->Add(
+                    new wxStaticBitmap(scroll, wxID_ANY, *color_swatch),
+                    0, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(6));
+            project_filament->Add(
+                new wxStaticText(scroll, wxID_ANY, description),
+                0, wxALIGN_CENTER_VERTICAL);
+            m_grid->Add(project_filament, 0, wxALIGN_CENTER_VERTICAL);
             m_grid->Add(new wxStaticText(
                             scroll, wxID_ANY, format_weight(usage.estimated_weight_mg)),
                         0, wxALIGN_CENTER_VERTICAL);

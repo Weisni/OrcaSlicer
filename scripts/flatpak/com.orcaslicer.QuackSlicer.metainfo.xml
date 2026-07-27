@@ -43,6 +43,12 @@
         <color type="primary" scheme_preference="dark">#00695C</color>
     </branding>
     <releases>
+        <release version="2.5.5" date="2026-07-27">
+            <url type="details">https://github.com/Weisni/OrcaSlicer/releases/tag/v2.5.5</url>
+            <description>
+                <p>Shows project filament colors as swatches when assigning physical spools before printing.</p>
+            </description>
+        </release>
         <release version="2.5.4" date="2026-07-26">
             <url type="details">https://github.com/Weisni/OrcaSlicer/releases/tag/v2.5.4</url>
             <description>
