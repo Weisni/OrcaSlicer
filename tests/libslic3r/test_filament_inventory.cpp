@@ -58,6 +58,23 @@ PrintJobInput job_input(const std::string &key, const std::string &name = "Duck"
     return {key, name, "duck.3mf", "printer-1"};
 }
 
+PrintJobUpdateInput update_input(const PrintJob &job)
+{
+    PrintJobUpdateInput input;
+    input.job_name = job.job_name;
+    input.project_path = job.project_path;
+    input.printer_id = job.printer_id;
+    input.customer_order_id = job.customer_order_id;
+    input.estimated_runtime_seconds =
+        job.estimated_runtime_seconds;
+    input.machine_power_watts = job.machine_power_watts;
+    for (const Allocation &allocation : job.allocations)
+        input.allocations.push_back(
+            {allocation.spool_id, allocation.filament_index,
+             allocation.estimated_weight_mg});
+    return input;
+}
+
 CustomerInput customer_input(const std::string &name)
 {
     return {name, "Contact " + name, name + "@example.test", "+49 123", "Test customer"};
@@ -263,7 +280,14 @@ TEST_CASE("filament inventory migrates v1 data with safe cost defaults", "[Filam
             legacy_job.allocations.front()
                 .estimated_material_cost_micros == 10'000);
         store.mark_printing(legacy_job.id);
-        CHECK_FALSE(store.get_job(legacy_job.id).started_at.empty());
+        const PrintJob legacy_printing = store.get_job(legacy_job.id);
+        CHECK_FALSE(legacy_printing.started_at.empty());
+        PrintJobUpdateInput legacy_update =
+            update_input(legacy_printing);
+        legacy_update.job_name = "Corrected legacy print";
+        CHECK(
+            store.update_print_job(legacy_job.id, legacy_update)
+                .job_name == "Corrected legacy print");
     }
 
     boost::system::error_code cleanup_error;
@@ -898,6 +922,398 @@ TEST_CASE("customer order job details stay scoped and can include discarded jobs
         ErrorCode::not_found);
 }
 
+TEST_CASE(
+    "print jobs can be assigned to customer orders after they were created",
+    "[FilamentInventory][Customer][JobUpdate]")
+{
+    TemporaryInventory inventory;
+    SpoolInput spool_data = spool_input("Late assignment");
+    spool_data.material_price_per_kg_micros = 10'000'000;
+    const Spool spool =
+        inventory.store->create_spool(spool_data);
+    const Customer customer = inventory.store->create_customer(
+        customer_input("Late assignment customer"));
+    const CustomerOrder order =
+        inventory.store->create_customer_order(
+            order_input(customer.id, "Late assignment order"));
+
+    const PrintJob reserved = inventory.store->reserve_job(
+        job_input("late-order:reserved", "Reserved"),
+        {{spool.id, 0, 10'000}});
+    const std::string reserved_allocation_id =
+        reserved.allocations.front().id;
+    PrintJobUpdateInput reserved_update =
+        update_input(reserved);
+    reserved_update.customer_order_id = order.id;
+    reserved_update.job_name = "Reserved corrected";
+    const PrintJob assigned_reserved =
+        inventory.store->update_print_job(
+            reserved.id, reserved_update);
+    REQUIRE(assigned_reserved.customer_order_id);
+    CHECK(*assigned_reserved.customer_order_id == order.id);
+    CHECK(assigned_reserved.job_name == "Reserved corrected");
+    CHECK(
+        assigned_reserved.allocations.front().id ==
+        reserved_allocation_id);
+
+    const PrintJob printing_reserved =
+        inventory.store->reserve_job(
+            job_input("late-order:printing", "Printing"),
+            {{spool.id, 0, 20'000}});
+    inventory.store->mark_printing(printing_reserved.id);
+    set_job_updated_at_seconds_ago(
+        inventory.path, printing_reserved.id, 60);
+    const PrintJob printing_before =
+        inventory.store->get_job(printing_reserved.id);
+    PrintJobUpdateInput printing_update =
+        update_input(printing_before);
+    printing_update.customer_order_id = order.id;
+    printing_update.job_name = "Printing corrected";
+    printing_update.project_path = "corrected.3mf";
+    printing_update.printer_id = "corrected-printer";
+    const PrintJob assigned_printing =
+        inventory.store->update_print_job(
+            printing_before.id, printing_update);
+    CHECK(
+        assigned_printing.updated_at ==
+        printing_before.updated_at);
+    CHECK(
+        assigned_printing.project_path ==
+        "corrected.3mf");
+    CHECK(
+        assigned_printing.printer_id ==
+        "corrected-printer");
+    inventory.store->commit_job(assigned_printing.id);
+    const PrintJob completed_printing =
+        inventory.store->get_job(assigned_printing.id);
+    REQUIRE(completed_printing.actual_runtime_seconds);
+    CHECK(*completed_printing.actual_runtime_seconds >= 58);
+    CHECK(*completed_printing.actual_runtime_seconds <= 65);
+
+    const PrintJob completed_reserved =
+        inventory.store->reserve_job(
+            job_input("late-order:completed", "Completed"),
+            {{spool.id, 0, 30'000}});
+    inventory.store->commit_job(completed_reserved.id);
+    PrintJobUpdateInput completed_update = update_input(
+        inventory.store->get_job(completed_reserved.id));
+    completed_update.customer_order_id = order.id;
+    completed_update.job_name = "Completed corrected";
+    const PrintJob assigned_completed =
+        inventory.store->update_print_job(
+            completed_reserved.id, completed_update);
+    REQUIRE(assigned_completed.customer_order_id);
+    CHECK(*assigned_completed.customer_order_id == order.id);
+    CHECK(assigned_completed.job_name == "Completed corrected");
+
+    const PrintJob discarded_reserved =
+        inventory.store->reserve_job(
+            job_input("late-order:discarded", "Discarded"),
+            {{spool.id, 0, 40'000}});
+    inventory.store->discard_job(discarded_reserved.id);
+    PrintJobUpdateInput discarded_update = update_input(
+        inventory.store->get_job(discarded_reserved.id));
+    discarded_update.customer_order_id = order.id;
+    const PrintJob assigned_discarded =
+        inventory.store->update_print_job(
+            discarded_reserved.id, discarded_update);
+    REQUIRE(assigned_discarded.customer_order_id);
+    CHECK(*assigned_discarded.customer_order_id == order.id);
+
+    const std::vector<PrintJob> order_jobs =
+        inventory.store->list_customer_order_jobs(order.id, true);
+    CHECK(order_jobs.size() == 4);
+    const CostSummary order_cost =
+        inventory.store->customer_order_cost_summary(order.id);
+    CHECK(order_cost.material_cost_micros == 600'000);
+    CHECK(
+        inventory.store->customer_cost_summary(customer.id)
+            .material_cost_micros == 600'000);
+    CHECK(
+        inventory.store->get_spool(spool.id)
+            .reserved_weight_mg == 10'000);
+
+    inventory.store.reset();
+    inventory.store =
+        std::make_unique<Store>(inventory.path.string());
+    const PrintJob persisted =
+        inventory.store->get_job(completed_reserved.id);
+    REQUIRE(persisted.customer_order_id);
+    CHECK(*persisted.customer_order_id == order.id);
+    CHECK(persisted.job_name == "Completed corrected");
+}
+
+TEST_CASE(
+    "reserved print job parameters and spool assignment can be corrected atomically",
+    "[FilamentInventory][JobUpdate][Cost]")
+{
+    TemporaryInventory inventory;
+    SpoolInput first_data = spool_input("Original spool");
+    first_data.material_price_per_kg_micros = 20'000'000;
+    const Spool first =
+        inventory.store->create_spool(first_data);
+    SpoolInput second_data = spool_input("Correct spool");
+    second_data.material_price_per_kg_micros = 30'000'000;
+    second_data.color_hex = "#00AA44";
+    const Spool second =
+        inventory.store->create_spool(second_data);
+
+    PrintJobInput original_input =
+        job_input("update:reserved", "Original parameters");
+    original_input.estimated_runtime_seconds = 3'600;
+    original_input.machine_power_watts = 150;
+    const PrintJob original = inventory.store->reserve_job(
+        original_input, {{first.id, 0, 100'000}});
+    const std::string original_allocation_id =
+        original.allocations.front().id;
+
+    InventorySettings changed_settings =
+        inventory.store->get_settings();
+    changed_settings.electricity_price_per_kwh_micros =
+        900'000;
+    changed_settings.default_machine_power_watts = 300;
+    inventory.store->update_settings(changed_settings);
+
+    PrintJobUpdateInput update = update_input(original);
+    update.job_name = "Corrected parameters";
+    update.project_path = "corrected-project.3mf";
+    update.printer_id = "printer-2";
+    update.estimated_runtime_seconds = 7'200;
+    update.machine_power_watts = 200;
+    update.allocations = {{second.id, 0, 120'000}};
+    const PrintJob corrected =
+        inventory.store->update_print_job(original.id, update);
+    CHECK(corrected.job_name == "Corrected parameters");
+    CHECK(corrected.project_path == "corrected-project.3mf");
+    CHECK(corrected.printer_id == "printer-2");
+    CHECK(corrected.estimated_runtime_seconds == 7'200);
+    CHECK(corrected.machine_power_watts == 200);
+    CHECK(
+        corrected.electricity_price_per_kwh_micros ==
+        400'000);
+    CHECK(corrected.electricity_cost_micros == 160'000);
+    REQUIRE(corrected.allocations.size() == 1);
+    CHECK(corrected.allocations.front().spool_id == second.id);
+    CHECK(
+        corrected.allocations.front().id !=
+        original_allocation_id);
+    CHECK(
+        corrected.allocations.front().estimated_weight_mg ==
+        120'000);
+    CHECK(
+        corrected.allocations.front().color_hex ==
+        "#00AA44");
+    CHECK(
+        corrected.allocations.front()
+            .estimated_material_cost_micros == 3'600'000);
+    CHECK(
+        inventory.store->get_spool(first.id)
+            .reserved_weight_mg == 0);
+    CHECK(
+        inventory.store->get_spool(second.id)
+            .reserved_weight_mg == 120'000);
+
+    const PrintJob stale_retry = inventory.store->reserve_job(
+        original_input, {{first.id, 0, 100'000}});
+    CHECK(stale_retry.id == corrected.id);
+    CHECK(stale_retry.job_name == "Corrected parameters");
+    CHECK(stale_retry.estimated_runtime_seconds == 7'200);
+    CHECK(stale_retry.allocations.front().spool_id == second.id);
+    CHECK(
+        stale_retry.allocations.front().estimated_weight_mg ==
+        120'000);
+
+    const PrintJob unchanged =
+        inventory.store->update_print_job(
+            corrected.id, update_input(corrected));
+    CHECK(
+        unchanged.allocations.front().id ==
+        corrected.allocations.front().id);
+
+    PrintJobUpdateInput insufficient = update_input(corrected);
+    insufficient.job_name = "Must roll back";
+    insufficient.estimated_runtime_seconds = 1;
+    insufficient.allocations.front().estimated_weight_mg =
+        2'000'000;
+    check_error_code(
+        [&] {
+            inventory.store->update_print_job(
+                corrected.id, insufficient);
+        },
+        ErrorCode::insufficient_stock);
+    const PrintJob after_failure =
+        inventory.store->get_job(corrected.id);
+    CHECK(after_failure.job_name == "Corrected parameters");
+    CHECK(
+        after_failure.estimated_runtime_seconds == 7'200);
+    CHECK(
+        after_failure.allocations.front()
+            .estimated_weight_mg == 120'000);
+    CHECK(
+        inventory.store->get_spool(second.id)
+            .reserved_weight_mg == 120'000);
+}
+
+TEST_CASE(
+    "print job updates enforce order and started-job boundaries",
+    "[FilamentInventory][JobUpdate][Customer]")
+{
+    TemporaryInventory inventory;
+    const Spool first =
+        inventory.store->create_spool(
+            spool_input("Update boundary"));
+    const Spool second =
+        inventory.store->create_spool(
+            spool_input("Other update boundary"));
+    const Customer customer = inventory.store->create_customer(
+        customer_input("Update boundary customer"));
+    const CustomerOrder first_order =
+        inventory.store->create_customer_order(
+            order_input(customer.id, "First update order"));
+    CustomerOrderInput second_order_data =
+        order_input(customer.id, "Second update order");
+    second_order_data.order_number = "Q-2026-002";
+    const CustomerOrder second_order =
+        inventory.store->create_customer_order(
+            second_order_data);
+
+    CustomerOrderInput closed_order_data =
+        order_input(customer.id, "Closed update order");
+    closed_order_data.order_number = "Q-2026-003";
+    const CustomerOrder closed_order =
+        inventory.store->create_customer_order(
+            closed_order_data);
+    inventory.store->set_customer_order_status(
+        closed_order.id, CustomerOrderStatus::active);
+    inventory.store->set_customer_order_status(
+        closed_order.id, CustomerOrderStatus::completed);
+
+    CustomerOrderInput cancelled_order_data =
+        order_input(customer.id, "Cancelled update order");
+    cancelled_order_data.order_number = "Q-2026-004";
+    const CustomerOrder cancelled_order =
+        inventory.store->create_customer_order(
+            cancelled_order_data);
+    inventory.store->set_customer_order_status(
+        cancelled_order.id, CustomerOrderStatus::cancelled);
+
+    CustomerOrderInput usd_order_data =
+        order_input(customer.id, "USD update order");
+    usd_order_data.order_number = "Q-2026-005";
+    usd_order_data.currency = "USD";
+    const CustomerOrder usd_order =
+        inventory.store->create_customer_order(usd_order_data);
+
+    const PrintJob started_reserved =
+        inventory.store->reserve_job(
+            job_input("update:started", "Started original"),
+            {{first.id, 0, 10'000}});
+    inventory.store->mark_printing(started_reserved.id);
+    const PrintJob started =
+        inventory.store->get_job(started_reserved.id);
+    PrintJobUpdateInput invalid_runtime =
+        update_input(started);
+    invalid_runtime.job_name = "Must not be stored";
+    invalid_runtime.customer_order_id = first_order.id;
+    ++invalid_runtime.estimated_runtime_seconds;
+    check_error_code(
+        [&] {
+            inventory.store->update_print_job(
+                started.id, invalid_runtime);
+        },
+        ErrorCode::conflict);
+    const PrintJob after_runtime_failure =
+        inventory.store->get_job(started.id);
+    CHECK(after_runtime_failure.job_name == "Started original");
+    CHECK_FALSE(after_runtime_failure.customer_order_id);
+
+    PrintJobUpdateInput invalid_material =
+        update_input(after_runtime_failure);
+    invalid_material.allocations.front().spool_id = second.id;
+    check_error_code(
+        [&] {
+            inventory.store->update_print_job(
+                started.id, invalid_material);
+        },
+        ErrorCode::conflict);
+    CHECK(
+        inventory.store->get_job(started.id)
+            .allocations.front().spool_id == first.id);
+
+    PrintJobUpdateInput valid_started =
+        update_input(inventory.store->get_job(started.id));
+    valid_started.customer_order_id = first_order.id;
+    valid_started.job_name = "Started corrected";
+    const PrintJob assigned_started =
+        inventory.store->update_print_job(
+            started.id, valid_started);
+    REQUIRE(assigned_started.customer_order_id);
+    CHECK(*assigned_started.customer_order_id == first_order.id);
+    CHECK(assigned_started.job_name == "Started corrected");
+
+    const PrintJob historical_reserved =
+        inventory.store->reserve_job(
+            job_input("update:historical", "Historical"),
+            {{first.id, 0, 20'000}});
+    inventory.store->commit_job(historical_reserved.id);
+    const PrintJob historical =
+        inventory.store->get_job(historical_reserved.id);
+    for (const std::string &invalid_order_id : {
+             closed_order.id, cancelled_order.id,
+             usd_order.id, std::string("missing-order")}) {
+        PrintJobUpdateInput invalid_order =
+            update_input(historical);
+        invalid_order.customer_order_id = invalid_order_id;
+        check_error_code(
+            [&] {
+                inventory.store->update_print_job(
+                    historical.id, invalid_order);
+            },
+            invalid_order_id == "missing-order" ?
+                ErrorCode::not_found : ErrorCode::conflict);
+        CHECK_FALSE(
+            inventory.store->get_job(historical.id)
+                .customer_order_id);
+    }
+
+    PrintJobUpdateInput assign_first =
+        update_input(historical);
+    assign_first.customer_order_id = first_order.id;
+    const PrintJob in_first =
+        inventory.store->update_print_job(
+            historical.id, assign_first);
+    CHECK(
+        inventory.store->customer_order_cost_summary(
+            first_order.id).material_cost_micros > 0);
+
+    PrintJobUpdateInput move_to_second =
+        update_input(in_first);
+    move_to_second.customer_order_id = second_order.id;
+    const PrintJob in_second =
+        inventory.store->update_print_job(
+            historical.id, move_to_second);
+    CHECK(
+        inventory.store->customer_order_cost_summary(
+            first_order.id).material_cost_micros ==
+        inventory.store->job_cost_summary(started.id)
+            .material_cost_micros);
+    CHECK(
+        inventory.store->customer_order_cost_summary(
+            second_order.id).material_cost_micros ==
+        inventory.store->job_cost_summary(historical.id)
+            .material_cost_micros);
+
+    PrintJobUpdateInput remove_order = update_input(in_second);
+    remove_order.customer_order_id.reset();
+    const PrintJob unassigned =
+        inventory.store->update_print_job(
+            historical.id, remove_order);
+    CHECK_FALSE(unassigned.customer_order_id);
+    CHECK(
+        inventory.store->customer_order_cost_summary(
+            second_order.id).material_cost_micros == 0);
+}
+
 TEST_CASE("customer orders only close after their print jobs", "[FilamentInventory][Customer]")
 {
     TemporaryInventory inventory;
@@ -1242,6 +1658,12 @@ TEST_CASE("reserving filament changes availability but not physical stock", "[Fi
         job_input("slice:duck"), {{spool.id, 0, 120'000}});
     CHECK(repeated.id == first.id);
     CHECK(inventory.store->get_spool(spool.id).reserved_weight_mg == 120'000);
+
+    const PrintJob unchanged =
+        inventory.store->update_print_job(
+            repeated.id, update_input(repeated));
+    CHECK(unchanged.allocations.front().id ==
+          repeated.allocations.front().id);
 
     const PrintJob resliced = inventory.store->reserve_job(
         job_input("slice:duck"), {{spool.id, 0, 150'000}});

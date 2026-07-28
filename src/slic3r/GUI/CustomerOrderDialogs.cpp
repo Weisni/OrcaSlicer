@@ -311,7 +311,8 @@ std::optional<Customer> edit_customer_interactively(
 
 std::optional<CustomerOrder> edit_customer_order_interactively(
     wxWindow *parent, Store &store, const CustomerOrder *order,
-    const std::string &preferred_customer_id)
+    const std::string &preferred_customer_id,
+    std::optional<std::string> new_order_currency_override)
 {
     std::vector<Customer> customers = store.list_customers();
     if (order != nullptr) {
@@ -332,7 +333,11 @@ std::optional<CustomerOrder> edit_customer_order_interactively(
     }
 
     const std::string currency =
-        order != nullptr ? order->currency : store.get_settings().currency;
+        order != nullptr ?
+            order->currency :
+            (new_order_currency_override ?
+                 *new_order_currency_override :
+                 store.get_settings().currency);
     CustomerOrderDialog dialog(
         parent, customers, order, preferred_customer_id, currency);
     while (dialog.ShowModal() == wxID_OK) {

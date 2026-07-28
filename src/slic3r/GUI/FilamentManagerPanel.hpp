@@ -61,6 +61,7 @@ private:
     void review_job();
     void confirm_job(bool correct_amounts);
     void discard_job();
+    void edit_selected_job(bool history);
     void add_customer();
     void edit_customer();
     void archive_customer();
@@ -103,7 +104,9 @@ private:
     wxButton           *m_correct_button {nullptr};
     wxButton           *m_review_button {nullptr};
     wxButton           *m_discard_button {nullptr};
+    wxButton           *m_edit_job_button {nullptr};
     wxButton           *m_job_materials_button {nullptr};
+    wxButton           *m_edit_job_history_button {nullptr};
     wxButton           *m_job_history_materials_button {nullptr};
     wxButton           *m_edit_customer_button {nullptr};
     wxButton           *m_archive_customer_button {nullptr};

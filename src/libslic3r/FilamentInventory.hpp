@@ -151,6 +151,18 @@ struct AllocationInput {
     Milligrams estimated_weight_mg {0};
 };
 
+struct PrintJobUpdateInput {
+    std::string job_name;
+    std::string project_path;
+    std::string printer_id;
+    std::optional<std::string> customer_order_id;
+    std::int64_t estimated_runtime_seconds {0};
+    std::int64_t machine_power_watts {0};
+    // The complete desired allocation set. Material assignments may only be
+    // changed while the job is still reserved.
+    std::vector<AllocationInput> allocations;
+};
+
 struct Allocation {
     std::string id;
     std::string job_id;
@@ -301,7 +313,7 @@ struct StockEvent {
 class Store
 {
 public:
-    static constexpr int schema_version = 4;
+    static constexpr int schema_version = 5;
 
     // database_path is UTF-8. Parent directories must already exist.
     explicit Store(const std::string &database_path);
@@ -361,6 +373,8 @@ public:
         const std::string &customer_id = {}, bool include_closed = true) const;
 
     PrintJob reserve_job(const PrintJobInput &job, const std::vector<AllocationInput> &allocations);
+    PrintJob update_print_job(
+        const std::string &job_id, const PrintJobUpdateInput &input);
     PrintJob get_job(const std::string &job_id) const;
     std::vector<PrintJob> list_jobs(bool include_closed = true, std::size_t limit = 0) const;
     std::vector<PrintJob> list_open_jobs() const;

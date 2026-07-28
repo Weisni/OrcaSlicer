@@ -15,7 +15,8 @@ std::optional<FilamentInventory::Customer> edit_customer_interactively(
 std::optional<FilamentInventory::CustomerOrder> edit_customer_order_interactively(
     wxWindow *parent, FilamentInventory::Store &store,
     const FilamentInventory::CustomerOrder *order = nullptr,
-    const std::string &preferred_customer_id = {});
+    const std::string &preferred_customer_id = {},
+    std::optional<std::string> new_order_currency_override = std::nullopt);
 
 bool edit_inventory_cost_settings_interactively(
     wxWindow *parent, FilamentInventory::Store &store);

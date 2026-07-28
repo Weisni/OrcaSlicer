@@ -19,17 +19,21 @@
 #include <wx/display.h>
 #include <wx/icon.h>
 #include <wx/msgdlg.h>
+#include <wx/scrolwin.h>
 #include <wx/simplebook.h>
 #include <wx/sizer.h>
+#include <wx/statbmp.h>
 #include <wx/statbox.h>
 #include <wx/stattext.h>
 #include <wx/textctrl.h>
 #include <wx/tokenzr.h>
 #include <wx/treelist.h>
 
+#include "BitmapComboBox.hpp"
 #include "GUI_App.hpp"
 #include "GUI_Utils.hpp"
 #include "CustomerOrderDialogs.hpp"
+#include "FilamentAllocationDialog.hpp"
 #include "FilamentInventoryService.hpp"
 #include "FilamentSpoolEditor.hpp"
 #include "Widgets/StateColor.hpp"
@@ -1008,6 +1012,496 @@ public:
     }
 };
 
+class PrintJobEditorDialog final : public wxDialog
+{
+public:
+    PrintJobEditorDialog(
+        wxWindow *parent, Store &store,
+        const FilamentInventory::PrintJob &job)
+        : wxDialog(
+              parent, wxID_ANY, _L("Edit print job"),
+              wxDefaultPosition, wxDefaultSize,
+              wxDEFAULT_DIALOG_STYLE | wxRESIZE_BORDER)
+        , m_store(store)
+        , m_job(job)
+        , m_reserved(job.state == JobState::reserved)
+    {
+        auto *root = new wxBoxSizer(wxVERTICAL);
+        auto *body = new wxScrolledWindow(
+            this, wxID_ANY, wxDefaultPosition, wxDefaultSize,
+            wxVSCROLL);
+        body->SetScrollRate(0, FromDIP(10));
+        auto *content = new wxBoxSizer(wxVERTICAL);
+        auto *heading = new wxStaticText(
+            body, wxID_ANY,
+            from_u8(job.job_name.empty() ? job.id : job.job_name) +
+                em_dash_separator() + from_u8(to_string(job.state)));
+        wxFont heading_font = heading->GetFont();
+        heading_font.SetWeight(wxFONTWEIGHT_BOLD);
+        heading_font.SetPointSize(heading_font.GetPointSize() + 1);
+        heading->SetFont(heading_font);
+        content->Add(
+            heading, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP,
+            FromDIP(14));
+
+        auto *hint = new wxStaticText(
+            body, wxID_ANY,
+            m_reserved ?
+                _L("Correct the customer order and the reserved print "
+                   "parameters before printing starts.") :
+                _L("The customer order and descriptive job data can be "
+                   "corrected afterwards. Runtime, power, and material "
+                   "assignments are locked once printing has started."));
+        hint->Wrap(FromDIP(680));
+        content->Add(
+            hint, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP,
+            FromDIP(14));
+
+        auto *details_box = new wxStaticBoxSizer(
+            wxVERTICAL, body, _L("Job and customer order"));
+        auto *details = new wxFlexGridSizer(
+            2, FromDIP(8), FromDIP(12));
+        details->AddGrowableCol(1, 1);
+        const auto add_text_row =
+            [this, body, details](
+                const wxString &label, wxTextCtrl *&control,
+                const wxString &value) {
+                details->Add(
+                    new wxStaticText(body, wxID_ANY, label),
+                    0, wxALIGN_CENTER_VERTICAL);
+                control = new wxTextCtrl(
+                    body, wxID_ANY, value, wxDefaultPosition,
+                    wxSize(FromDIP(480), -1));
+                details->Add(control, 1, wxEXPAND);
+            };
+        add_text_row(_L("Job name"), m_job_name, from_u8(job.job_name));
+        add_text_row(
+            _L("Project file"), m_project_path,
+            from_u8(job.project_path));
+        add_text_row(
+            _L("Printer ID"), m_printer_id, from_u8(job.printer_id));
+
+        details->Add(
+            new wxStaticText(body, wxID_ANY, _L("Customer order")),
+            0, wxALIGN_TOP | wxTOP, FromDIP(4));
+        auto *order_controls = new wxBoxSizer(wxVERTICAL);
+        m_customer_order = new wxChoice(body, wxID_ANY);
+        order_controls->Add(
+            m_customer_order, 0, wxEXPAND | wxBOTTOM, FromDIP(6));
+        auto *order_actions = new wxBoxSizer(wxHORIZONTAL);
+        auto *new_customer = new wxButton(
+            body, wxID_ANY, _L("New customer..."));
+        auto *new_order = new wxButton(
+            body, wxID_ANY, _L("New order..."));
+        order_actions->Add(
+            new_customer, 0, wxRIGHT, FromDIP(8));
+        order_actions->Add(new_order);
+        order_controls->Add(order_actions, 0, wxALIGN_LEFT);
+        details->Add(order_controls, 1, wxEXPAND);
+        new_customer->Bind(
+            wxEVT_BUTTON,
+            [this](wxCommandEvent &) { create_customer(); });
+        new_order->Bind(
+            wxEVT_BUTTON,
+            [this](wxCommandEvent &) { create_customer_order(); });
+        m_customer_order->Bind(
+            wxEVT_CHOICE,
+            [this](wxCommandEvent &event) {
+                m_preferred_customer_id.clear();
+                event.Skip();
+            });
+        refresh_customer_orders(
+            job.customer_order_id.value_or(std::string()));
+
+        add_text_row(
+            _L("Estimated runtime (minutes)"), m_runtime_minutes,
+            wxString::Format(
+                "%.2f",
+                static_cast<double>(job.estimated_runtime_seconds) / 60.0));
+        add_text_row(
+            _L("Machine power (W)"), m_machine_power,
+            wxString::Format(
+                "%lld",
+                static_cast<long long>(job.machine_power_watts)));
+        m_runtime_minutes->Enable(m_reserved);
+        m_machine_power->Enable(m_reserved);
+        m_printer_id->Enable(m_reserved);
+        if (!m_reserved) {
+            m_runtime_minutes->SetToolTip(
+                _L("Runtime is locked after printing starts."));
+            m_machine_power->SetToolTip(
+                _L("Machine power is locked after printing starts."));
+            m_printer_id->SetToolTip(
+                _L("The recorded printer ID is locked after printing starts."));
+        }
+        details_box->Add(details, 1, wxEXPAND | wxALL, FromDIP(10));
+        content->Add(
+            details_box, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP,
+            FromDIP(14));
+
+        auto *materials_box = new wxStaticBoxSizer(
+            wxVERTICAL, body, _L("Filament parameters"));
+        auto *material_hint = new wxStaticText(
+            body, wxID_ANY,
+            m_reserved ?
+                _L("The physical spool and estimated amount can still be "
+                   "corrected before printing starts.") :
+                _L("Material assignments and booked amounts are shown for "
+                   "reference and cannot be changed after printing starts."));
+        material_hint->Wrap(FromDIP(680));
+        materials_box->Add(
+            material_hint, 0, wxEXPAND | wxALL, FromDIP(10));
+
+        auto *scroll = new wxScrolledWindow(
+            body, wxID_ANY, wxDefaultPosition,
+            wxSize(-1, FromDIP(190)), wxVSCROLL);
+        scroll->SetScrollRate(0, FromDIP(10));
+        auto *material_grid = new wxFlexGridSizer(
+            4, FromDIP(8), FromDIP(10));
+        material_grid->AddGrowableCol(1, 1);
+        for (const wxString &label : {
+                 _L("Filament"), _L("Physical spool"),
+                 _L("Estimated (g)"), _L("Confirmed")}) {
+            auto *column = new wxStaticText(scroll, wxID_ANY, label);
+            wxFont font = column->GetFont();
+            font.SetWeight(wxFONTWEIGHT_BOLD);
+            column->SetFont(font);
+            material_grid->Add(
+                column, 0, wxALIGN_CENTER_VERTICAL);
+        }
+
+        m_spools = m_store.list_spools();
+        for (const Allocation &allocation : job.allocations) {
+            const auto existing_spool = std::find_if(
+                m_spools.begin(), m_spools.end(),
+                [&allocation](const Spool &spool) {
+                    return spool.id == allocation.spool_id;
+                });
+            if (existing_spool == m_spools.end())
+                m_spools.emplace_back(
+                    m_store.get_spool(allocation.spool_id));
+        }
+
+        for (const Allocation &allocation : job.allocations) {
+            auto *filament = new wxBoxSizer(wxHORIZONTAL);
+            const wxBitmap swatch = material_color_swatch(
+                scroll, allocation.color_hex);
+            if (swatch.IsOk())
+                filament->Add(
+                    new wxStaticBitmap(
+                        scroll, wxID_ANY, swatch),
+                    0, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(6));
+            filament->Add(
+                new wxStaticText(
+                    scroll, wxID_ANY,
+                    allocation_material_label(allocation)),
+                0, wxALIGN_CENTER_VERTICAL);
+            material_grid->Add(
+                filament, 0, wxALIGN_CENTER_VERTICAL);
+
+            auto *spool_choice = new BitmapComboBox(
+                scroll, wxID_ANY, wxEmptyString,
+                wxDefaultPosition, wxSize(FromDIP(360), -1),
+                0, nullptr, wxCB_READONLY);
+            int selection = wxNOT_FOUND;
+            for (std::size_t index = 0; index < m_spools.size(); ++index) {
+                const Spool &spool = m_spools[index];
+                wxString label =
+                    FilamentAllocationDetail::format_spool_choice_label(
+                        spool);
+                if (spool.status == SpoolStatus::archived)
+                    label += em_dash_separator() + _L("archived");
+                spool_choice->Append(
+                    label, material_color_swatch(
+                               spool_choice, spool.color_hex));
+                if (spool.id == allocation.spool_id)
+                    selection = static_cast<int>(index);
+            }
+            spool_choice->SetSelection(selection);
+            spool_choice->Enable(m_reserved);
+            material_grid->Add(
+                spool_choice, 1,
+                wxEXPAND | wxALIGN_CENTER_VERTICAL);
+            auto *estimated_weight = new wxTextCtrl(
+                scroll, wxID_ANY,
+                wxString::Format(
+                    "%.3f",
+                    static_cast<double>(
+                        allocation.estimated_weight_mg) /
+                        1'000.0),
+                wxDefaultPosition, wxSize(FromDIP(95), -1));
+            estimated_weight->Enable(m_reserved);
+            material_grid->Add(
+                estimated_weight, 0,
+                wxALIGN_CENTER_VERTICAL | wxALIGN_RIGHT);
+            material_grid->Add(
+                new wxStaticText(
+                    scroll, wxID_ANY,
+                    allocation.actual_weight_mg ?
+                        format_weight(*allocation.actual_weight_mg) :
+                        em_dash()),
+                0, wxALIGN_CENTER_VERTICAL | wxALIGN_RIGHT);
+            m_allocation_controls.push_back(
+                {allocation.filament_index,
+                 spool_choice, estimated_weight});
+        }
+        scroll->SetSizer(material_grid);
+        materials_box->Add(
+            scroll, 1, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM,
+            FromDIP(10));
+        content->Add(
+            materials_box, 1,
+            wxEXPAND | wxLEFT | wxRIGHT | wxTOP, FromDIP(14));
+        body->SetSizer(content);
+        root->Add(body, 1, wxEXPAND);
+
+        auto *buttons = CreateStdDialogButtonSizer(wxOK | wxCANCEL);
+        root->Add(
+            buttons, 0, wxEXPAND | wxALL, FromDIP(14));
+        SetSizer(root);
+        const wxSize work_area =
+            wxDisplay(this).GetClientArea().GetSize();
+        const wxSize maximum_size(
+            std::max(1, work_area.x - FromDIP(32)),
+            std::max(1, work_area.y - FromDIP(32)));
+        const wxSize dialog_size(
+            std::min(FromDIP(850), maximum_size.x),
+            std::min(FromDIP(650), maximum_size.y));
+        SetMinSize(wxSize(
+            std::min(FromDIP(720), dialog_size.x),
+            std::min(FromDIP(440), dialog_size.y)));
+        SetSize(dialog_size);
+        body->FitInside();
+        CentreOnParent();
+    }
+
+    bool read(PrintJobUpdateInput &input, wxString &error) const
+    {
+        input.job_name = into_u8(m_job_name->GetValue());
+        input.project_path = into_u8(m_project_path->GetValue());
+        input.printer_id = into_u8(m_printer_id->GetValue());
+        input.customer_order_id = selected_customer_order_id();
+
+        double runtime_minutes = 0.0;
+        if (!parse_number(
+                m_runtime_minutes->GetValue(), runtime_minutes) ||
+            runtime_minutes < 0.0 ||
+            static_cast<long double>(runtime_minutes) * 60.0L >
+                static_cast<long double>(
+                    std::numeric_limits<std::int64_t>::max())) {
+            error = _L("Please enter a valid non-negative runtime.");
+            return false;
+        }
+        input.estimated_runtime_seconds =
+            static_cast<std::int64_t>(
+                std::llround(runtime_minutes * 60.0));
+
+        double machine_power = 0.0;
+        if (!parse_number(
+                m_machine_power->GetValue(), machine_power) ||
+            machine_power < 0.0 ||
+            std::floor(machine_power) != machine_power ||
+            static_cast<long double>(machine_power) >
+                static_cast<long double>(
+                    std::numeric_limits<std::int64_t>::max())) {
+            error = _L("Please enter a valid non-negative whole number "
+                       "for machine power.");
+            return false;
+        }
+        input.machine_power_watts =
+            static_cast<std::int64_t>(machine_power);
+
+        input.allocations.clear();
+        for (const AllocationControls &controls :
+             m_allocation_controls) {
+            const int selection =
+                controls.spool_choice->GetSelection();
+            if (selection < 0 ||
+                static_cast<std::size_t>(selection) >=
+                    m_spools.size()) {
+                error = _L("Please select a physical spool for every "
+                           "filament.");
+                return false;
+            }
+            double grams = 0.0;
+            Milligrams estimated_weight_mg = 0;
+            if (!parse_number(
+                    controls.estimated_weight->GetValue(), grams) ||
+                !grams_to_milligrams(
+                    grams, estimated_weight_mg) ||
+                estimated_weight_mg <= 0) {
+                error = wxString::Format(
+                    _L("Please enter a positive estimated amount for "
+                       "filament %d."),
+                    controls.filament_index + 1);
+                return false;
+            }
+            input.allocations.push_back(
+                {m_spools[static_cast<std::size_t>(selection)].id,
+                 controls.filament_index,
+                 estimated_weight_mg});
+        }
+        return true;
+    }
+
+private:
+    struct AllocationControls {
+        int filament_index {0};
+        BitmapComboBox *spool_choice {nullptr};
+        wxTextCtrl *estimated_weight {nullptr};
+    };
+
+    void refresh_customer_orders(
+        const std::string &preferred_order_id = {})
+    {
+        std::string selected_order_id = preferred_order_id;
+        if (selected_order_id.empty() &&
+            m_customer_order != nullptr) {
+            const int selection =
+                m_customer_order->GetSelection();
+            if (selection > 0 &&
+                static_cast<std::size_t>(selection) <=
+                    m_orders.size())
+                selected_order_id =
+                    m_orders[
+                        static_cast<std::size_t>(selection - 1)].id;
+        }
+
+        m_orders = m_store.list_customer_orders({}, false);
+        m_orders.erase(
+            std::remove_if(
+                m_orders.begin(), m_orders.end(),
+                [this](const CustomerOrder &order) {
+                    return order.currency != m_job.cost_currency;
+                }),
+            m_orders.end());
+        if (m_job.customer_order_id &&
+            std::none_of(
+                m_orders.begin(), m_orders.end(),
+                [this](const CustomerOrder &order) {
+                    return order.id == *m_job.customer_order_id;
+                }))
+            m_orders.emplace_back(
+                m_store.get_customer_order(
+                    *m_job.customer_order_id));
+
+        std::map<std::string, std::string> customer_names;
+        for (const Customer &customer :
+             m_store.list_customers(true))
+            customer_names.emplace(customer.id, customer.name);
+
+        m_customer_order->Clear();
+        m_customer_order->Append(_L("No customer order"));
+        int selected_row = 0;
+        for (std::size_t index = 0;
+             index < m_orders.size(); ++index) {
+            const CustomerOrder &order = m_orders[index];
+            const auto customer =
+                customer_names.find(order.customer_id);
+            wxString label =
+                customer != customer_names.end() ?
+                    from_u8(customer->second) +
+                        em_dash_separator() :
+                    wxString {};
+            label += from_u8(
+                order.order_number.empty() ?
+                    order.title : order.order_number);
+            if (!order.title.empty() &&
+                !order.order_number.empty())
+                label += em_dash_separator() +
+                         from_u8(order.title);
+            if (order.status == CustomerOrderStatus::completed ||
+                order.status == CustomerOrderStatus::cancelled)
+                label += em_dash_separator() +
+                         from_u8(to_string(order.status));
+            m_customer_order->Append(label);
+            if (order.id == selected_order_id)
+                selected_row = static_cast<int>(index) + 1;
+        }
+        m_customer_order->SetSelection(selected_row);
+        Layout();
+    }
+
+    std::optional<std::string>
+    selected_customer_order_id() const
+    {
+        const int selection =
+            m_customer_order != nullptr ?
+                m_customer_order->GetSelection() : 0;
+        if (selection <= 0 ||
+            static_cast<std::size_t>(selection) >
+                m_orders.size())
+            return std::nullopt;
+        return m_orders[
+            static_cast<std::size_t>(selection - 1)].id;
+    }
+
+    void create_customer()
+    {
+        const auto customer =
+            edit_customer_interactively(this, m_store);
+        if (!customer)
+            return;
+        m_preferred_customer_id = customer->id;
+        refresh_customer_orders();
+    }
+
+    void create_customer_order()
+    {
+        if (m_store.list_customers().empty()) {
+            wxMessageBox(
+                _L("Create the customer first, then add the order."),
+                _L("Customer order"), wxOK | wxICON_INFORMATION,
+                this);
+            return;
+        }
+
+        std::string preferred_customer_id =
+            m_preferred_customer_id;
+        const int selection =
+            m_customer_order->GetSelection();
+        if (preferred_customer_id.empty() && selection > 0 &&
+            static_cast<std::size_t>(selection) <=
+                m_orders.size())
+            preferred_customer_id =
+                m_orders[
+                    static_cast<std::size_t>(selection - 1)]
+                    .customer_id;
+        const auto order = edit_customer_order_interactively(
+            this, m_store, nullptr, preferred_customer_id,
+            m_job.cost_currency);
+        if (!order)
+            return;
+        m_preferred_customer_id.clear();
+        if (order->currency != m_job.cost_currency) {
+            wxMessageBox(
+                wxString::Format(
+                    _L("The new order uses %s, but this print job uses %s. "
+                       "Only orders with the same currency can be assigned."),
+                    from_u8(order->currency),
+                    from_u8(m_job.cost_currency)),
+                _L("Customer order"), wxOK | wxICON_INFORMATION, this);
+            refresh_customer_orders();
+            return;
+        }
+        refresh_customer_orders(order->id);
+    }
+
+    Store &m_store;
+    FilamentInventory::PrintJob m_job;
+    bool m_reserved {false};
+    wxTextCtrl *m_job_name {nullptr};
+    wxTextCtrl *m_project_path {nullptr};
+    wxTextCtrl *m_printer_id {nullptr};
+    wxChoice *m_customer_order {nullptr};
+    wxTextCtrl *m_runtime_minutes {nullptr};
+    wxTextCtrl *m_machine_power {nullptr};
+    std::vector<CustomerOrder> m_orders;
+    std::vector<Spool> m_spools;
+    std::vector<AllocationControls> m_allocation_controls;
+    std::string m_preferred_customer_id;
+};
+
 } // namespace
 
 std::optional<Spool> create_filament_spool_interactively(
@@ -1168,13 +1662,18 @@ FilamentManagerPanel::FilamentManagerPanel(wxWindow *parent, wxWindowID id,
     m_correct_button = new wxButton(jobs_page, wxID_ANY, _L("Correct and confirm"));
     m_review_button = new wxButton(jobs_page, wxID_ANY, _L("Review manually"));
     m_discard_button = new wxButton(jobs_page, wxID_ANY, _L("Discard"));
+    m_edit_job_button = new wxButton(
+        jobs_page, wxID_ANY, _L("Edit print job..."));
     m_job_materials_button = new wxButton(
         jobs_page, wxID_ANY, _L("Material details..."));
     auto *refresh_jobs_button = new wxButton(jobs_page, wxID_ANY, _L("Refresh"));
     for (wxButton *button : {
              m_confirm_button, m_correct_button, m_review_button,
-             m_discard_button, m_job_materials_button, refresh_jobs_button})
+             m_discard_button, m_edit_job_button,
+             m_job_materials_button, refresh_jobs_button})
         job_buttons->Add(button, 0, wxRIGHT, FromDIP(8));
+    m_edit_job_button->SetToolTip(
+        _L("Assign or correct the customer order and tracked job parameters"));
     m_job_materials_button->SetToolTip(
         _L("Show booked spools, materials, colours, amounts, and costs"));
     jobs_sizer->Add(job_buttons, 0, wxEXPAND | wxALL, FromDIP(10));
@@ -1219,12 +1718,18 @@ FilamentManagerPanel::FilamentManagerPanel(wxWindow *parent, wxWindowID id,
     job_history_page->SetBackgroundColour(page_background);
     auto *job_history_sizer = new wxBoxSizer(wxVERTICAL);
     auto *job_history_toolbar = new wxBoxSizer(wxHORIZONTAL);
+    m_edit_job_history_button = new wxButton(
+        job_history_page, wxID_ANY, _L("Edit print job..."));
     m_job_history_materials_button = new wxButton(
         job_history_page, wxID_ANY, _L("Material details..."));
     auto *refresh_job_history_button = new wxButton(
         job_history_page, wxID_ANY, _L("Refresh"));
+    m_edit_job_history_button->SetToolTip(
+        _L("Assign or correct the customer order and tracked job parameters"));
     m_job_history_materials_button->SetToolTip(
         _L("Show booked spools, materials, colours, amounts, and costs"));
+    job_history_toolbar->Add(
+        m_edit_job_history_button, 0, wxRIGHT, FromDIP(8));
     job_history_toolbar->Add(
         m_job_history_materials_button, 0, wxRIGHT, FromDIP(8));
     job_history_toolbar->Add(refresh_job_history_button);
@@ -1373,9 +1878,15 @@ FilamentManagerPanel::FilamentManagerPanel(wxWindow *parent, wxWindowID id,
     m_correct_button->Bind(wxEVT_BUTTON, [this](wxCommandEvent &) { confirm_job(true); });
     m_review_button->Bind(wxEVT_BUTTON, [this](wxCommandEvent &) { review_job(); });
     m_discard_button->Bind(wxEVT_BUTTON, [this](wxCommandEvent &) { discard_job(); });
+    m_edit_job_button->Bind(
+        wxEVT_BUTTON,
+        [this](wxCommandEvent &) { edit_selected_job(false); });
     m_job_materials_button->Bind(wxEVT_BUTTON, [this](wxCommandEvent &) {
         show_selected_job_materials(false);
     });
+    m_edit_job_history_button->Bind(
+        wxEVT_BUTTON,
+        [this](wxCommandEvent &) { edit_selected_job(true); });
     m_job_history_materials_button->Bind(
         wxEVT_BUTTON, [this](wxCommandEvent &) {
             show_selected_job_materials(true);
@@ -1868,7 +2379,10 @@ void FilamentManagerPanel::update_button_state()
     m_discard_button->Enable(
         store_ready && job_selected &&
         (selected_state == JobState::reserved || selected_state == JobState::needs_review));
+    m_edit_job_button->Enable(store_ready && job_selected);
     m_job_materials_button->Enable(store_ready && job_selected);
+    m_edit_job_history_button->Enable(
+        store_ready && history_job_selected);
     m_job_history_materials_button->Enable(
         store_ready && history_job_selected);
 
@@ -2103,6 +2617,71 @@ void FilamentManagerPanel::discard_job()
         return;
     try {
         m_store->discard_job(job.id);
+        refresh();
+    } catch (const std::exception &error) {
+        show_error(error);
+    }
+}
+
+void FilamentManagerPanel::edit_selected_job(bool history)
+{
+    if (!initialize_store())
+        return;
+    const int row =
+        history ? selected_job_history_row() : selected_job_row();
+    const std::vector<PrintJob> &jobs =
+        history ? m_job_history : m_jobs;
+    if (row < 0 ||
+        static_cast<std::size_t>(row) >= jobs.size())
+        return;
+
+    try {
+        const PrintJob job =
+            m_store->get_job(
+                jobs[static_cast<std::size_t>(row)].id);
+        PrintJobEditorDialog dialog(this, *m_store, job);
+        while (dialog.ShowModal() == wxID_OK) {
+            PrintJobUpdateInput input;
+            wxString error;
+            if (!dialog.read(input, error)) {
+                wxMessageBox(
+                    error, _L("Edit print job"),
+                    wxOK | wxICON_WARNING, this);
+                continue;
+            }
+
+            if (input.customer_order_id !=
+                job.customer_order_id) {
+                wxString warning;
+                if (job.state == JobState::completed ||
+                    job.state == JobState::discarded)
+                    warning =
+                        _L("Changing the order of this historical print "
+                           "job changes the customer and order history.");
+                else if (job.customer_order_id)
+                    warning = input.customer_order_id ?
+                        _L("This moves the print job to another customer "
+                           "order and updates both order totals.") :
+                        _L("This removes the customer-order assignment and "
+                           "updates the previous order total.");
+                if (!warning.empty() &&
+                    wxMessageBox(
+                        warning + "\n\n" + _L("Continue?"),
+                        _L("Change customer order"),
+                        wxYES_NO | wxNO_DEFAULT |
+                            wxICON_WARNING,
+                        this) != wxYES)
+                    continue;
+            }
+
+            try {
+                m_store->update_print_job(job.id, input);
+                refresh();
+                return;
+            } catch (const std::exception &exception) {
+                show_error(exception);
+            }
+        }
         refresh();
     } catch (const std::exception &error) {
         show_error(error);

@@ -929,6 +929,18 @@ struct Store::Impl
             }
             exec_sql(db, "PRAGMA user_version = 4;");
         }
+        if (version < 5) {
+            exec_sql(db, R"SQL(
+                CREATE TABLE IF NOT EXISTS print_job_manual_overrides (
+                    job_id      TEXT PRIMARY KEY
+                                REFERENCES print_jobs(id) ON DELETE CASCADE,
+                    created_at  TEXT NOT NULL DEFAULT
+                                (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+                );
+
+                PRAGMA user_version = 5;
+            )SQL");
+        }
         transaction.commit();
     }
 
@@ -1880,6 +1892,7 @@ CustomerOrder Store::update_customer_order(
     const std::string customer_id = trim_copy(input.customer_id);
     const std::string currency    = normalize_currency(input.currency);
     std::lock_guard<std::mutex> lock(m_impl->mutex);
+    Transaction transaction(m_impl->db);
     const CustomerOrder existing = m_impl->get_customer_order_unlocked(order_id);
     const Customer customer = m_impl->get_customer_unlocked(customer_id);
     if (customer.archived && customer.id != existing.customer_id)
@@ -1915,12 +1928,16 @@ CustomerOrder Store::update_customer_order(
     statement.bind(7, currency);
     statement.bind(8, order_id);
     statement.execute();
-    return m_impl->get_customer_order_unlocked(order_id);
+    const CustomerOrder result =
+        m_impl->get_customer_order_unlocked(order_id);
+    transaction.commit();
+    return result;
 }
 
 void Store::delete_customer_order(const std::string &order_id)
 {
     std::lock_guard<std::mutex> lock(m_impl->mutex);
+    Transaction transaction(m_impl->db);
     (void) m_impl->get_customer_order_unlocked(order_id);
     Statement jobs(m_impl->db, "SELECT 1 FROM print_jobs WHERE customer_order_id = ? LIMIT 1");
     jobs.bind(1, order_id);
@@ -1929,15 +1946,19 @@ void Store::delete_customer_order(const std::string &order_id)
     Statement statement(m_impl->db, "DELETE FROM customer_orders WHERE id = ?");
     statement.bind(1, order_id);
     statement.execute();
+    transaction.commit();
 }
 
 void Store::set_customer_order_status(
     const std::string &order_id, CustomerOrderStatus status)
 {
     std::lock_guard<std::mutex> lock(m_impl->mutex);
+    Transaction transaction(m_impl->db);
     const CustomerOrder order = m_impl->get_customer_order_unlocked(order_id);
-    if (order.status == status)
+    if (order.status == status) {
+        transaction.commit();
         return;
+    }
 
     const bool valid_transition =
         (order.status == CustomerOrderStatus::draft &&
@@ -1972,6 +1993,7 @@ void Store::set_customer_order_status(
     statement.bind(1, to_string(status));
     statement.bind(2, order_id);
     statement.execute();
+    transaction.commit();
 }
 
 CustomerOrder Store::get_customer_order(const std::string &order_id) const
@@ -2054,6 +2076,19 @@ PrintJob Store::reserve_job(const PrintJobInput &job, const std::vector<Allocati
     std::optional<PrintJob> existing = m_impl->find_job_by_key(normalized_job_key);
     const std::string existing_id = existing ? existing->id : std::string();
     const InventorySettings settings = m_impl->get_settings_unlocked();
+
+    if (existing) {
+        Statement manual_override(m_impl->db, R"SQL(
+            SELECT 1
+            FROM print_job_manual_overrides
+            WHERE job_id = ?
+        )SQL");
+        manual_override.bind(1, existing->id);
+        if (manual_override.step()) {
+            transaction.commit();
+            return *existing;
+        }
+    }
 
     std::string cost_currency = normalize_currency(settings.currency);
     if (customer_order_id) {
@@ -2197,6 +2232,210 @@ PrintJob Store::reserve_job(const PrintJobInput &job, const std::vector<Allocati
 
     transaction.commit();
     return m_impl->get_job_unlocked(job_id);
+}
+
+PrintJob Store::update_print_job(
+    const std::string &job_id, const PrintJobUpdateInput &input)
+{
+    if (trim_copy(job_id).empty())
+        throw Error(ErrorCode::validation, "Print job ID must not be empty");
+    const std::string job_name = trim_copy(input.job_name);
+    if (job_name.empty())
+        throw Error(ErrorCode::validation, "Print job name must not be empty");
+    if (input.estimated_runtime_seconds < 0)
+        throw Error(
+            ErrorCode::validation,
+            "Estimated machine runtime must not be negative");
+    if (input.machine_power_watts < 0)
+        throw Error(ErrorCode::validation, "Machine power must not be negative");
+    if (input.allocations.empty())
+        throw Error(
+            ErrorCode::validation,
+            "At least one spool allocation is required");
+
+    std::optional<std::string> customer_order_id;
+    if (input.customer_order_id) {
+        const std::string normalized = trim_copy(*input.customer_order_id);
+        if (!normalized.empty())
+            customer_order_id = normalized;
+    }
+
+    std::set<int> filament_indices;
+    std::map<std::string, Milligrams> required_by_spool;
+    for (const AllocationInput &allocation : input.allocations) {
+        if (allocation.spool_id.empty())
+            throw Error(
+                ErrorCode::validation,
+                "Every print filament must reference a spool");
+        if (allocation.filament_index < 0)
+            throw Error(
+                ErrorCode::validation,
+                "Filament index must not be negative");
+        if (allocation.estimated_weight_mg <= 0)
+            throw Error(
+                ErrorCode::validation,
+                "Estimated filament usage must be positive");
+        if (!filament_indices.insert(allocation.filament_index).second)
+            throw Error(
+                ErrorCode::validation,
+                "Each print filament may only be allocated once");
+
+        Milligrams &sum = required_by_spool[allocation.spool_id];
+        if (allocation.estimated_weight_mg >
+            std::numeric_limits<Milligrams>::max() - sum)
+            throw Error(
+                ErrorCode::validation,
+                "Estimated filament usage is too large");
+        sum += allocation.estimated_weight_mg;
+    }
+
+    std::lock_guard<std::mutex> lock(m_impl->mutex);
+    Transaction transaction(m_impl->db);
+    const PrintJob existing = m_impl->get_job_unlocked(job_id);
+    const bool allocations_changed =
+        !Impl::allocations_match(existing.allocations, input.allocations);
+    const bool print_parameters_changed =
+        existing.estimated_runtime_seconds !=
+            input.estimated_runtime_seconds ||
+        existing.machine_power_watts != input.machine_power_watts;
+    const bool manually_changed =
+        existing.job_name != job_name ||
+        existing.project_path != input.project_path ||
+        existing.printer_id != input.printer_id ||
+        existing.customer_order_id != customer_order_id ||
+        print_parameters_changed || allocations_changed;
+    if (existing.state != JobState::reserved &&
+        print_parameters_changed)
+        throw Error(
+            ErrorCode::conflict,
+            "Print parameters can only be changed before printing starts");
+    if (allocations_changed && existing.state != JobState::reserved)
+        throw Error(
+            ErrorCode::conflict,
+            "Material assignments can only be changed before printing starts");
+    if (!manually_changed) {
+        transaction.commit();
+        return existing;
+    }
+
+    if (customer_order_id) {
+        const CustomerOrder order =
+            m_impl->get_customer_order_unlocked(*customer_order_id);
+        if (existing.customer_order_id != customer_order_id &&
+            (order.status == CustomerOrderStatus::completed ||
+             order.status == CustomerOrderStatus::cancelled))
+            throw Error(
+                ErrorCode::conflict,
+                "A closed customer order cannot receive another print job");
+        if (normalize_currency(order.currency) !=
+            normalize_currency(existing.cost_currency))
+            throw Error(
+                ErrorCode::conflict,
+                "Customer-order currency does not match the print-job currency");
+    }
+
+    std::map<std::string, Spool> spools;
+    if (allocations_changed) {
+        for (const auto &[spool_id, required] : required_by_spool) {
+            const Spool spool = m_impl->get_spool_unlocked(spool_id);
+            spools.emplace(spool_id, spool);
+            if (spool.status == SpoolStatus::archived)
+                throw Error(
+                    ErrorCode::conflict,
+                    "An archived spool cannot be assigned to a print job");
+            if (normalize_currency(spool.price_currency) !=
+                normalize_currency(existing.cost_currency))
+                throw Error(
+                    ErrorCode::conflict,
+                    "Spool price currency does not match the print-job currency");
+            const Milligrams available = checked_subtract(
+                m_impl->physical_balance(spool_id),
+                m_impl->active_reservations(spool_id, existing.id),
+                "Available filament");
+            if (available < required) {
+                std::ostringstream message;
+                message << "Spool '" << spool.name << "' has " << available
+                        << " mg available but the print requires " << required
+                        << " mg";
+                throw Error(ErrorCode::insufficient_stock, message.str());
+            }
+        }
+    }
+
+    const MoneyMicros power_cost = electricity_cost(
+        existing.electricity_price_per_kwh_micros,
+        input.machine_power_watts,
+        input.estimated_runtime_seconds);
+    Statement update(m_impl->db, R"SQL(
+        UPDATE print_jobs
+        SET job_name = ?, project_path = ?, printer_id = ?,
+            customer_order_id = ?, estimated_runtime_seconds = ?,
+            machine_power_watts = ?, electricity_cost_micros = ?,
+            updated_at = CASE
+                WHEN state = 'printing' THEN updated_at
+                ELSE strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+            END
+        WHERE id = ?
+    )SQL");
+    update.bind(1, job_name);
+    update.bind(2, input.project_path);
+    update.bind(3, input.printer_id);
+    if (customer_order_id)
+        update.bind(4, *customer_order_id);
+    else
+        update.bind_null(4);
+    update.bind(5, input.estimated_runtime_seconds);
+    update.bind(6, input.machine_power_watts);
+    update.bind(7, power_cost);
+    update.bind(8, existing.id);
+    update.execute();
+
+    if (allocations_changed) {
+        Statement remove(
+            m_impl->db, "DELETE FROM allocations WHERE job_id = ?");
+        remove.bind(1, existing.id);
+        remove.execute();
+
+        for (const AllocationInput &allocation : input.allocations) {
+            const Spool &spool = spools.at(allocation.spool_id);
+            const MoneyMicros estimated_cost = material_cost(
+                spool.material_price_per_kg_micros,
+                allocation.estimated_weight_mg);
+            Statement row(m_impl->db, R"SQL(
+                INSERT INTO allocations (
+                    id, job_id, spool_id, spool_name, manufacturer,
+                    material_type, filament_preset_id, color_hex,
+                    filament_index, estimated_weight_mg,
+                    material_price_per_kg_micros, cost_currency,
+                    estimated_material_cost_micros
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            )SQL");
+            row.bind(1, make_uuid());
+            row.bind(2, existing.id);
+            row.bind(3, allocation.spool_id);
+            row.bind(4, spool.name);
+            row.bind(5, spool.manufacturer);
+            row.bind(6, spool.material_type);
+            row.bind(7, spool.filament_preset_id);
+            row.bind(8, spool.color_hex);
+            row.bind(9, allocation.filament_index);
+            row.bind(10, allocation.estimated_weight_mg);
+            row.bind(11, spool.material_price_per_kg_micros);
+            row.bind(12, existing.cost_currency);
+            row.bind(13, estimated_cost);
+            row.execute();
+        }
+    }
+
+    Statement manual_override(m_impl->db, R"SQL(
+        INSERT OR IGNORE INTO print_job_manual_overrides (job_id)
+        VALUES (?)
+    )SQL");
+    manual_override.bind(1, existing.id);
+    manual_override.execute();
+
+    transaction.commit();
+    return m_impl->get_job_unlocked(existing.id);
 }
 
 PrintJob Store::get_job(const std::string &job_id) const
