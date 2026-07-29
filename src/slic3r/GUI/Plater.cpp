@@ -4869,6 +4869,7 @@ bool Sidebar::is_multifilament()
 
 void Sidebar::deal_btn_sync() {
     m_begin_sync_printer_status = true;
+    preserve_project_printer_settings(false);
     bool only_external_material;
     // Manual "sync machine" button: is_manual=true so an H2C pops the MultiNozzleSyncDialog to pick a nozzle option.
     auto ok = p->sync_extruder_list(only_external_material, true);
@@ -7507,10 +7508,46 @@ std::vector<size_t> Plater::priv::load_files(const std::vector<fs::path>& input_
                             if (wipe_tower_y_opt)
                                 file_wipe_tower_y = *wipe_tower_y_opt;
 
-                            const bool load_project_printer = preset_bundle->has_configured_printer_for_project(config);
+                            const auto *project_printer = config.option<ConfigOptionString>("printer_settings_id");
+                            const std::string project_printer_preset =
+                                project_printer != nullptr ? project_printer->value : std::string();
+                            const bool project_printer_matches_selected =
+                                preset_bundle->project_printer_matches_selected(config);
+                            bool load_project_printer = preset_bundle->has_configured_printer_for_project(config);
+                            bool preserve_project_printer = false;
+                            if (!project_printer_preset.empty() &&
+                                !project_printer_matches_selected) {
+                                const std::string &selected_printer = preset_bundle->printers.get_edited_preset().name;
+                                MessageDialog printer_dlg(
+                                    q,
+                                    wxString::Format(
+                                        _L("The project contains printer settings for \"%s\", which differ from the currently selected printer \"%s\".\n\n"
+                                           "Load the printer settings stored in the project, or keep the currently selected printer and "
+                                           "transfer compatible project settings to it?"),
+                                        from_u8(project_printer_preset),
+                                        from_u8(selected_printer)),
+                                    _L("Project printer settings"),
+                                    wxYES_NO | wxCANCEL | wxYES_DEFAULT | wxICON_QUESTION);
+                                printer_dlg.SetButtonLabel(wxID_YES, _L("Load project printer settings"), true);
+                                printer_dlg.SetButtonLabel(wxID_NO, _L("Keep current printer"));
+                                printer_dlg.SetButtonLabel(wxID_CANCEL, _L("Cancel"));
+
+                                const int printer_choice = printer_dlg.ShowModal();
+                                if (printer_choice == wxID_CANCEL) {
+                                    q->skip_thumbnail_invalid = false;
+                                    return empty_result;
+                                }
+                                load_project_printer = printer_choice == wxID_YES;
+                                preserve_project_printer = load_project_printer;
+                            }
+                            // Device updates may arrive after the project import has returned to Prepare.
+                            // Respect an explicit project-printer choice until the user manually syncs.
+                            wxGetApp().sidebar().preserve_project_printer_settings(preserve_project_printer);
                             preset_bundle->load_config_model(filename.string(), std::move(config), file_version, load_project_printer);
+                            const std::string loaded_project_printer_preset =
+                                load_project_printer ? preset_bundle->printers.get_edited_preset().name : std::string();
                             if (!load_project_printer) {
-                                BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << ": keeping the active printer because the project printer is not configured locally";
+                                BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << ": keeping the active printer while loading project settings";
                             }
 
                             ConfigOption* bed_type_opt = preset_bundle->project_config.option("curr_bed_type");
@@ -7581,6 +7618,21 @@ std::vector<size_t> Plater::priv::load_files(const std::vector<fs::path>& input_
                             // BBS: add preset combo box re-active logic
                             // currently found only needs re-active here
                             wxGetApp().load_current_presets(false, false);
+                            if (load_project_printer) {
+                                // The device page keeps its own printer/nozzle selections. Refresh
+                                // them after the complete project import has returned to the event
+                                // loop, otherwise a pending device UI update may restore the old
+                                // nozzle selection even though the project preset is active.
+                                wxGetApp().CallAfter([loaded_project_printer_preset] {
+                                    if (wxGetApp().preset_bundle != nullptr && wxGetApp().plater() != nullptr) {
+                                        wxGetApp().preset_bundle->physical_printers.unselect_printer();
+                                        if (Tab *printer_tab = wxGetApp().get_tab(Preset::TYPE_PRINTER)) {
+                                            printer_tab->select_preset(loaded_project_printer_preset, false, {}, true, true);
+                                        }
+                                        wxGetApp().plater()->sidebar().update_presets(Preset::TYPE_PRINTER);
+                                    }
+                                });
+                            }
                             // Update filament colors for the MM-printer profile in the full config
                             // to avoid black (default) colors for Extruders in the ObjectList,
                             // when for extruder colors are used filament colors
@@ -7983,7 +8035,10 @@ std::vector<size_t> Plater::priv::load_files(const std::vector<fs::path>& input_
         }
     }
 
-    if (load_config) {
+    // An explicit project-printer choice takes precedence over the remembered
+    // "sync after loading" preference. The user can still apply the connected
+    // printer later with the manual sync action.
+    if (load_config && !wxGetApp().sidebar().preserving_project_printer_settings()) {
         DeviceManager *dev = Slic3r::GUI::wxGetApp().getDeviceManager();
         if (dev) {
             MachineObject *obj = dev->get_selected_machine();

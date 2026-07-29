@@ -496,6 +496,27 @@ TEST_CASE("Project printers are activated only when configured locally", "[Prese
     CHECK(bundle.has_configured_printer_for_project(project_config));
 }
 
+TEST_CASE("Project printer is compared with the selected printer", "[Preset][ProjectPrinter]")
+{
+    PresetBundle bundle;
+
+    DynamicPrintConfig selected_config(bundle.printers.default_preset().config);
+    selected_config.set_key_value("printer_model", new ConfigOptionString("Test Model"));
+    selected_config.set_key_value("printer_variant", new ConfigOptionString("0.4"));
+    bundle.printers.load_preset({}, "Test Model 0.4 nozzle", selected_config, true);
+
+    DynamicPrintConfig project_config(selected_config);
+    project_config.set_key_value("printer_settings_id", new ConfigOptionString("Test Model 0.8 nozzle"));
+
+    CHECK(bundle.project_printer_matches_selected(project_config));
+
+    project_config.set_key_value("printer_variant", new ConfigOptionString("0.8"));
+    CHECK_FALSE(bundle.project_printer_matches_selected(project_config));
+
+    project_config.set_key_value("printer_settings_id", new ConfigOptionString("Test Model 0.4 nozzle"));
+    CHECK(bundle.project_printer_matches_selected(project_config));
+}
+
 TEST_CASE("Switching printers preserves project filament colors", "[Preset][ProjectColors]")
 {
     PresetBundle bundle;

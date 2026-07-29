@@ -268,7 +268,18 @@ public:
     void                            update_printer_thumbnail();
 
     bool need_auto_sync_after_connect_printer() const { return m_need_auto_sync_after_connect_printer; }
-    void set_need_auto_sync_after_connect_printer(bool need_auto_sync) { m_need_auto_sync_after_connect_printer = need_auto_sync; }
+    bool preserving_project_printer_settings() const { return m_preserve_project_printer_settings; }
+    void set_need_auto_sync_after_connect_printer(bool need_auto_sync)
+    {
+        if (!need_auto_sync || !m_preserve_project_printer_settings)
+            m_need_auto_sync_after_connect_printer = need_auto_sync;
+    }
+    void preserve_project_printer_settings(bool preserve)
+    {
+        m_preserve_project_printer_settings = preserve;
+        if (preserve)
+            m_need_auto_sync_after_connect_printer = false;
+    }
 
 private:
     void  auto_calc_flushing_volumes_internal(const int filament_id, const int extruder_id);
@@ -279,6 +290,7 @@ private:
 
     wxBoxSizer* m_scrolled_sizer = nullptr;
     bool            m_need_auto_sync_after_connect_printer{false};
+    bool            m_preserve_project_printer_settings{false};
 };
 
 class Plater: public wxPanel

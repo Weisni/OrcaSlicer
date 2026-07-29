@@ -5446,7 +5446,8 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
                 }
             };
 
-            const PropertyRef* volume_property = nullptr;
+            const PropertyRef* volume_property =
+                sub_object->default_property.valid() ? &sub_object->default_property : nullptr;
             if (!shared_volume){
                 if (!create_mesh_volume(volume, nullptr, true))
                     return false;

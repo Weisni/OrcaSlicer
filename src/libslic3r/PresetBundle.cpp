@@ -4834,6 +4834,28 @@ bool PresetBundle::has_configured_printer_for_project(const DynamicPrintConfig &
     return false;
 }
 
+bool PresetBundle::project_printer_matches_selected(const DynamicPrintConfig &config) const
+{
+    auto string_option = [&config](const char *key) {
+        const auto *option = config.option<ConfigOptionString>(key);
+        return option != nullptr ? option->value : std::string();
+    };
+
+    const Preset     &selected        = printers.get_edited_preset();
+    const std::string project_preset  = string_option("printer_settings_id");
+    const std::string project_model   = string_option("printer_model");
+    const std::string project_variant = string_option("printer_variant");
+
+    if (!project_preset.empty() && selected.name == project_preset)
+        return true;
+
+    const auto *selected_model   = selected.config.option<ConfigOptionString>("printer_model");
+    const auto *selected_variant = selected.config.option<ConfigOptionString>("printer_variant");
+    return !project_model.empty() && !project_variant.empty() &&
+           selected_model != nullptr && selected_variant != nullptr &&
+           selected_model->value == project_model && selected_variant->value == project_variant;
+}
+
 //BBS: Load a config bundle file from json
 std::pair<PresetsConfigSubstitutions, size_t> PresetBundle::load_vendor_configs_from_json(
     const std::string &path, const std::string &vendor_name, LoadConfigBundleAttributes flags, ForwardCompatibilitySubstitutionRule compatibility_rule, const PresetBundle* base_bundle)

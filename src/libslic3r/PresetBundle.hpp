@@ -421,6 +421,10 @@ public:
     // already configured locally before opening the project.
     bool                        has_configured_printer_for_project(const DynamicPrintConfig &config) const;
 
+    // Returns true when the project printer identifies the currently selected
+    // printer preset (either by preset name or by model and nozzle variant).
+    bool                        project_printer_matches_selected(const DynamicPrintConfig &config) const;
+
     // Load an external config file containing the print, filament and printer presets.
     // Instead of a config file, a G-code may be loaded containing the full set of parameters.
     // In the future the configuration will likely be read from an AMF file as well.

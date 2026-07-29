@@ -8,12 +8,14 @@
 #include "libslic3r/Preset.hpp"
 #include "libslic3r/MultiNozzleUtils.hpp"
 #include "libslic3r/ProjectTask.hpp"
+#include "libslic3r/Zipper.hpp"
 
 #include <boost/filesystem/operations.hpp>
 
 #include <catch2/catch_tostring.hpp>
 #include <Eigen/Core>
 #include <Eigen/Geometry>
+#include <cstring>
 #include <type_traits> // for std::enable_if_t
 #include <typeinfo>    // for typeid
 
@@ -66,6 +68,99 @@ namespace Catch {
 
 using namespace Slic3r;
 
+namespace {
+
+void write_generic_3mf_with_painted_first_triangle(const std::string& path)
+{
+    static constexpr const char* content_types = R"(<?xml version="1.0" encoding="UTF-8"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="model" ContentType="application/vnd.ms-package.3dmanufacturing-3dmodel+xml"/>
+</Types>)";
+    static constexpr const char* relationships = R"(<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Target="/3D/3dmodel.model" Id="rel0" Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel"/>
+</Relationships>)";
+    static constexpr const char* model = R"(<?xml version="1.0" encoding="UTF-8"?>
+<model xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02"
+       xmlns:m="http://schemas.microsoft.com/3dmanufacturing/material/2015/02"
+       unit="millimeter">
+  <resources>
+    <m:colorgroup id="1">
+      <m:color color="#FFFF00FF"/>
+      <m:color color="#FF0000FF"/>
+    </m:colorgroup>
+    <object id="2" type="model" pid="1" pindex="0">
+      <mesh>
+        <vertices>
+          <vertex x="0" y="0" z="0"/>
+          <vertex x="10" y="0" z="0"/>
+          <vertex x="0" y="10" z="0"/>
+          <vertex x="0" y="0" z="10"/>
+        </vertices>
+        <triangles>
+          <triangle v1="0" v2="2" v3="1" pid="1" p1="1"/>
+          <triangle v1="0" v2="1" v3="3"/>
+          <triangle v1="1" v2="2" v3="3"/>
+          <triangle v1="2" v2="0" v3="3"/>
+        </triangles>
+      </mesh>
+    </object>
+  </resources>
+  <build>
+    <item objectid="2"/>
+  </build>
+</model>)";
+
+    Zipper archive(path);
+    archive.add_entry("[Content_Types].xml", content_types, std::strlen(content_types));
+    archive.add_entry("_rels/.rels", relationships, std::strlen(relationships));
+    archive.add_entry("3D/3dmodel.model", model, std::strlen(model));
+    archive.finalize();
+}
+
+} // namespace
+
+TEST_CASE("Generic 3MF keeps the object color when the first triangle is painted", "[3mf][color]")
+{
+    const boost::filesystem::path test_file =
+        boost::filesystem::temp_directory_path() / boost::filesystem::unique_path("orca_color_%%%%%%%%.3mf");
+    write_generic_3mf_with_painted_first_triangle(test_file.string());
+
+    Model                     model;
+    DynamicPrintConfig        config;
+    ConfigSubstitutionContext ctxt{ForwardCompatibilitySubstitutionRule::Enable};
+    PlateDataPtrs             plates;
+    std::vector<Preset*>      project_presets;
+    bool                      is_bbl_3mf = false;
+    bool                      is_orca_3mf = false;
+    Semver                    file_version;
+    std::map<int, std::vector<std::string>> color_groups;
+    VolumeColorInfoMap                       volume_colors;
+
+    const bool loaded = load_bbs_3mf(test_file.string().c_str(), &config, &ctxt, &model, &plates,
+                                     &project_presets, &is_bbl_3mf, &is_orca_3mf, &file_version, nullptr,
+                                     LoadStrategy::LoadModel | LoadStrategy::LoadConfig, nullptr, 0,
+                                     &color_groups, &volume_colors);
+    boost::filesystem::remove(test_file);
+
+    REQUIRE(loaded);
+    REQUIRE_FALSE(is_bbl_3mf);
+    REQUIRE(model.objects.size() == 1);
+    REQUIRE(model.objects.front()->volumes.size() == 1);
+
+    const ModelVolume* volume = model.objects.front()->volumes.front();
+    const auto         color_info = volume_colors.find(volume->id().id);
+    REQUIRE(color_info != volume_colors.end());
+    CHECK(color_info->second.pid == 1);
+    CHECK(color_info->second.pindex == 0);
+    REQUIRE(color_info->second.triangle_colors.size() == 4);
+    CHECK(color_info->second.triangle_colors.front().indices[0] == 1);
+
+    release_PlateData_list(plates);
+    for (Preset* preset : project_presets)
+        delete preset;
+}
 
 SCENARIO("Reading 3mf file", "[3mf]") {
     GIVEN("umlauts in the path of the file") {
