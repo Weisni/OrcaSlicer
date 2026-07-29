@@ -779,3 +779,17 @@ SCENARIO("ConfigOptionVector::set_to_index throws on incompatible type", "[Confi
         }
     }
 }
+
+TEST_CASE("Paint penetration mode defaults to inwards and supports projected", "[Config][MultiMaterialSegmentation]")
+{
+    Slic3r::DynamicPrintConfig config = Slic3r::DynamicPrintConfig::full_print_config();
+    auto *mode = config.option<Slic3r::ConfigOptionEnum<Slic3r::ColorPenetrationMode>>("color_penetration_mode");
+
+    REQUIRE(mode != nullptr);
+    CHECK(mode->value == Slic3r::ColorPenetrationMode::Inwards);
+    CHECK(mode->serialize() == "inwards");
+
+    REQUIRE_NOTHROW(config.set_deserialize_strict("color_penetration_mode", "projected"));
+    CHECK(mode->value == Slic3r::ColorPenetrationMode::Projected);
+    CHECK(mode->serialize() == "projected");
+}

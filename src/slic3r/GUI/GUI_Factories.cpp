@@ -120,6 +120,7 @@ std::map<std::string, std::vector<SimpleSettingData>> SettingsFactory::PART_CATE
         {"top_surface_density", L("Top Surface Density"), 1},
         {"bottom_shell_layers", L("Bottom solid layers"), 1},
         {"bottom_color_penetration_layers", "", 1},
+        {"color_penetration_mode", "", 1},
         {"bottom_shell_thickness", L("Bottom minimum shell thickness"), 1},
        {"bottom_surface_density", L("Bottom Surface Density"), 1},
        {"sparse_infill_density", "", 1},

@@ -1342,7 +1342,8 @@ bool PrintObject::invalidate_state_by_config_options(
                opt_key == "bottom_shell_layers"
             || opt_key == "top_shell_layers"
             || opt_key == "top_color_penetration_layers"
-            || opt_key == "bottom_color_penetration_layers") {
+            || opt_key == "bottom_color_penetration_layers"
+            || opt_key == "color_penetration_mode") {
 
             steps.emplace_back(posSlice);
 #if (0)

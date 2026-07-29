@@ -1353,6 +1353,7 @@ static inline std::vector<std::vector<ExPolygons>> segmentation_top_and_bottom_l
         // Maximum paint penetration for a queried color.
         int     top_color_penetration_layers    { 0 };
         int     bottom_color_penetration_layers { 0 };
+        ColorPenetrationMode color_penetration_mode { ColorPenetrationMode::Inwards };
         //BBS: spacing according to width and layer height
         float   extrusion_spacing{ 0.f };
     };
@@ -1373,6 +1374,10 @@ static inline std::vector<std::vector<ExPolygons>> segmentation_top_and_bottom_l
                     config.bottom_color_penetration_layers.value : config.bottom_shell_layers.value;
                 out.top_color_penetration_layers = std::max(out.top_color_penetration_layers, top_layers);
                 out.bottom_color_penetration_layers = std::max(out.bottom_color_penetration_layers, bottom_layers);
+                // color_idx == 0 may aggregate multiple regions. Preserve Projected if any
+                // applicable region requests it instead of making the result iteration-order dependent.
+                if (config.color_penetration_mode.value == ColorPenetrationMode::Projected)
+                    out.color_penetration_mode = ColorPenetrationMode::Projected;
                 out.small_region_threshold = config.gap_infill_speed.get_at(print_object.print()->get_extruder_id(config.outer_wall_filament_id - 1)) > 0 ?
                                              // Gap fill enabled. Enable a single line of 1/2 extrusion width.
                                              0.5f * outer_wall_line_width :
@@ -1406,11 +1411,16 @@ static inline std::vector<std::vector<ExPolygons>> segmentation_top_and_bottom_l
                             float offset = 0.f;
                             ExPolygons layer_slices_trimmed = input_expolygons[layer_idx];
                             for (int last_idx = int(layer_idx) - 1; last_idx > std::max(int(layer_idx - stat.top_color_penetration_layers), int(0)); --last_idx) {
-                                //BBS: offset width should be 2*spacing to avoid too narrow area which has overlap of wall line
-                                //offset -= stat.extrusion_width ;
-                                offset -= (stat.extrusion_spacing + stat.extrusion_width);
-                                layer_slices_trimmed = intersection_ex(layer_slices_trimmed, input_expolygons[last_idx]);
-                                ExPolygons last = opening_ex(intersection_ex(top_ex, offset_ex(layer_slices_trimmed, offset)), stat.small_region_threshold);
+                                ExPolygons last;
+                                if (stat.color_penetration_mode == ColorPenetrationMode::Projected) {
+                                    last = intersection_ex(top_ex, input_expolygons[last_idx]);
+                                } else {
+                                    //BBS: offset width should be 2*spacing to avoid too narrow area which has overlap of wall line
+                                    //offset -= stat.extrusion_width ;
+                                    offset -= (stat.extrusion_spacing + stat.extrusion_width);
+                                    layer_slices_trimmed = intersection_ex(layer_slices_trimmed, input_expolygons[last_idx]);
+                                    last = opening_ex(intersection_ex(top_ex, offset_ex(layer_slices_trimmed, offset)), stat.small_region_threshold);
+                                }
                                 if (last.empty())
                                     break;
                                 append(shell_triangles_by_color_top[color_idx][last_idx + layer_idx_offset], std::move(last));
@@ -1426,11 +1436,16 @@ static inline std::vector<std::vector<ExPolygons>> segmentation_top_and_bottom_l
                             float offset = 0.f;
                             ExPolygons layer_slices_trimmed = input_expolygons[layer_idx];
                             for (size_t last_idx = layer_idx + 1; last_idx < std::min(layer_idx + stat.bottom_color_penetration_layers, num_layers); ++last_idx) {
-                                //BBS: offset width should be 2*spacing to avoid too narrow area which has overlap of wall line
-                                //offset -= stat.extrusion_width;
-                                offset -= (stat.extrusion_spacing + stat.extrusion_width);
-                                layer_slices_trimmed = intersection_ex(layer_slices_trimmed, input_expolygons[last_idx]);
-                                ExPolygons last = opening_ex(intersection_ex(bottom_ex, offset_ex(layer_slices_trimmed, offset)), stat.small_region_threshold);
+                                ExPolygons last;
+                                if (stat.color_penetration_mode == ColorPenetrationMode::Projected) {
+                                    last = intersection_ex(bottom_ex, input_expolygons[last_idx]);
+                                } else {
+                                    //BBS: offset width should be 2*spacing to avoid too narrow area which has overlap of wall line
+                                    //offset -= stat.extrusion_width;
+                                    offset -= (stat.extrusion_spacing + stat.extrusion_width);
+                                    layer_slices_trimmed = intersection_ex(layer_slices_trimmed, input_expolygons[last_idx]);
+                                    last = opening_ex(intersection_ex(bottom_ex, offset_ex(layer_slices_trimmed, offset)), stat.small_region_threshold);
+                                }
                                 if (last.empty())
                                     break;
                                 append(shell_triangles_by_color_bottom[color_idx][last_idx + layer_idx_offset], std::move(last));

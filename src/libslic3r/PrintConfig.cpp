@@ -246,6 +246,12 @@ static t_config_enum_values s_keys_map_TopSurfaceExpansionDirection {
 };
 CONFIG_OPTION_ENUM_DEFINE_STATIC_MAPS(TopSurfaceExpansionDirection)
 
+static t_config_enum_values s_keys_map_ColorPenetrationMode {
+    { "inwards",   int(ColorPenetrationMode::Inwards) },
+    { "projected", int(ColorPenetrationMode::Projected) }
+};
+CONFIG_OPTION_ENUM_DEFINE_STATIC_MAPS(ColorPenetrationMode)
+
 static t_config_enum_values s_keys_map_InfillPattern {
     { "monotonic", ipMonotonic },
     { "monotonicline", ipMonotonicLine },
@@ -1322,6 +1328,20 @@ void PrintConfigDef::init_fff_params()
                      "Set to 0 to follow bottom shell layers.");
     def->min = 0;
     def->set_default_value(new ConfigOptionInt(0));
+
+    def = this->add("color_penetration_mode", coEnum);
+    def->label = L("Paint penetration mode");
+    def->category = L("Strength");
+    def->tooltip = L("Controls how colors painted on top and bottom surfaces continue through the paint penetration layers.\n"
+                     "Inwards reduces the painted area towards the model core on each successive layer.\n"
+                     "Projected keeps the painted area unchanged on each successive layer, clipped only to the model.");
+    def->enum_keys_map = &ConfigOptionEnum<ColorPenetrationMode>::get_enum_values();
+    def->enum_values.push_back("inwards");
+    def->enum_values.push_back("projected");
+    def->enum_labels.push_back(L("Inwards"));
+    def->enum_labels.push_back(L("Projected"));
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionEnum<ColorPenetrationMode>(ColorPenetrationMode::Inwards));
 
     def = this->add("bottom_shell_thickness", coFloat);
     def->label = L("Bottom shell thickness");

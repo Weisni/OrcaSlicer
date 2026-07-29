@@ -77,6 +77,11 @@ enum class TopSurfaceExpansionDirection {
     Outward,
 };
 
+enum class ColorPenetrationMode {
+    Inwards,
+    Projected,
+};
+
 enum class CenterOfSurfacePattern {
     Each_Surface,
     Each_Model,
@@ -660,6 +665,7 @@ CONFIG_OPTION_ENUM_DECLARE_STATIC_MAPS(GCodeFlavor)
 CONFIG_OPTION_ENUM_DECLARE_STATIC_MAPS(FuzzySkinType)
 CONFIG_OPTION_ENUM_DECLARE_STATIC_MAPS(FuzzySkinMode)
 CONFIG_OPTION_ENUM_DECLARE_STATIC_MAPS(TopSurfaceExpansionDirection)
+CONFIG_OPTION_ENUM_DECLARE_STATIC_MAPS(ColorPenetrationMode)
 CONFIG_OPTION_ENUM_DECLARE_STATIC_MAPS(WipeTowerType)
 CONFIG_OPTION_ENUM_DECLARE_STATIC_MAPS(NoiseType)
 CONFIG_OPTION_ENUM_DECLARE_STATIC_MAPS(InfillPattern)
@@ -1255,6 +1261,7 @@ PRINT_CONFIG_CLASS_DEFINE(
     ((ConfigOptionStrings,  print_extruder_variant))
     ((ConfigOptionInt,                  bottom_shell_layers))
     ((ConfigOptionInt,                  bottom_color_penetration_layers))
+    ((ConfigOptionEnum<ColorPenetrationMode>, color_penetration_mode))
     ((ConfigOptionFloat,                bottom_shell_thickness))
     ((ConfigOptionFloat,                bridge_angle))
     ((ConfigOptionFloat,                internal_bridge_angle)) // ORCA: Internal bridge angle override

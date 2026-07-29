@@ -1021,6 +1021,7 @@ static std::vector<std::string> s_Preset_print_options{
     "bottom_surface_density",
     "bottom_shell_layers",
     "bottom_color_penetration_layers",
+    "color_penetration_mode",
     "bottom_shell_thickness",
     "extra_perimeters_on_overhangs",
     "ensure_vertical_shell_thickness",
