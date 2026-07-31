@@ -4,6 +4,7 @@
 #include "Config.hpp"
 #include "MaterialType.hpp"
 #include "I18N.hpp"
+#include "LocalesUtils.hpp"
 #include "format.hpp"
 
 #include "GCode/Thumbnails.hpp"
@@ -16,6 +17,9 @@
 #include <boost/lexical_cast.hpp>
 #include <boost/log/trivial.hpp>
 #include <boost/thread.hpp>
+#include <array>
+#include <charconv>
+#include <cmath>
 #include <float.h>
 
 namespace {
@@ -7411,6 +7415,19 @@ void PrintConfigDef::init_fff_params()
     def->mode = comSimple;
     def->set_default_value(new ConfigOptionBool(false));
 
+    def = this->add("enable_prime_tower_by_object", coBool);
+    def->label = L("One prime tower per object");
+    def->tooltip = L("Experimental: In \"By object\" print sequence, generate a separate prime tower for every object instance. "
+                     "Each tower is printed together with its object and can be positioned independently inside that object's toolhead clearance zone.");
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionBool(false));
+
+    def = this->add("prime_tower_object_positions", coStrings);
+    def->label = L("Per-object prime tower positions");
+    def->tooltip = L("Stores project-specific positions of prime towers used for sequential printing.");
+    def->mode = comExpert;
+    def->set_default_value(new ConfigOptionStrings());
+
     def = this->add("prime_tower_enable_framework", coBool);
     def->label = L("Internal ribs");
     def->tooltip = L("Enable internal ribs to increase the stability of the prime tower.");
@@ -9498,7 +9515,11 @@ void DynamicPrintConfig::normalize_fdm(int used_filaments)
 
         ConfigOptionEnum<TimelapseType>* timelapse_opt = this->option<ConfigOptionEnum<TimelapseType>>("timelapse_type");
         bool is_smooth_timelapse = timelapse_opt != nullptr && timelapse_opt->value == TimelapseType::tlSmooth;
-        if (!is_smooth_timelapse && (used_filaments == 1 || ps_opt->value == PrintSequence::ByObject)) {
+        const ConfigOptionBool *by_object_towers_opt =
+            this->option<ConfigOptionBool>("enable_prime_tower_by_object");
+        const bool allow_by_object_towers = by_object_towers_opt != nullptr && by_object_towers_opt->value &&
+                                            ps_opt->value == PrintSequence::ByObject;
+        if (!is_smooth_timelapse && (used_filaments == 1 || (ps_opt->value == PrintSequence::ByObject && !allow_by_object_towers))) {
             ept_opt->value = false;
         }
 
@@ -9604,7 +9625,12 @@ t_config_option_keys DynamicPrintConfig::normalize_fdm_2(int num_objects, int us
         ConfigOptionBool *enable_wrapping_opt = this->option<ConfigOptionBool>("enable_wrapping_detection");
         bool enable_wrapping = enable_wrapping_opt != nullptr && enable_wrapping_opt->value;
 
-        if (!is_smooth_timelapse && !enable_wrapping && (used_filaments == 1 || (ps_opt->value == PrintSequence::ByObject && num_objects > 1))) {
+        const ConfigOptionBool *by_object_towers_opt =
+            this->option<ConfigOptionBool>("enable_prime_tower_by_object");
+        const bool allow_by_object_towers = by_object_towers_opt != nullptr && by_object_towers_opt->value &&
+                                            ps_opt->value == PrintSequence::ByObject;
+        if (!is_smooth_timelapse && !enable_wrapping &&
+            (used_filaments == 1 || (ps_opt->value == PrintSequence::ByObject && num_objects > 1 && !allow_by_object_towers))) {
             if (ept_opt->value) {
                 ept_opt->value = false;
                 changed_keys.push_back("enable_prime_tower");
@@ -12777,6 +12803,74 @@ bool is_XL_printer(const DynamicPrintConfig &cfg)
 bool is_XL_printer(const PrintConfig &cfg)
 {
     return is_XL_printer(cfg.printer_notes.value);
+}
+
+namespace {
+
+struct SequentialWipeTowerPositionEntry
+{
+    int    plate_idx;
+    size_t instance_id;
+    Vec2f  position;
+};
+
+std::optional<SequentialWipeTowerPositionEntry> parse_sequential_wipe_tower_position(const std::string &value)
+{
+    std::array<std::string_view, 4> fields;
+    size_t begin = 0;
+    for (size_t i = 0; i < fields.size(); ++i) {
+        const size_t end = i + 1 == fields.size() ? value.size() : value.find('|', begin);
+        if (end == std::string::npos)
+            return std::nullopt;
+        fields[i] = std::string_view(value).substr(begin, end - begin);
+        begin = end + 1;
+    }
+
+    SequentialWipeTowerPositionEntry result;
+    const auto plate_parse = std::from_chars(fields[0].data(), fields[0].data() + fields[0].size(), result.plate_idx);
+    const auto id_parse = std::from_chars(fields[1].data(), fields[1].data() + fields[1].size(), result.instance_id);
+    if (plate_parse.ec != std::errc() || plate_parse.ptr != fields[0].data() + fields[0].size() ||
+        id_parse.ec != std::errc() || id_parse.ptr != fields[1].data() + fields[1].size())
+        return std::nullopt;
+
+    size_t consumed_x = 0;
+    size_t consumed_y = 0;
+    const double x = string_to_double_decimal_point(fields[2], &consumed_x);
+    const double y = string_to_double_decimal_point(fields[3], &consumed_y);
+    if (consumed_x != fields[2].size() || consumed_y != fields[3].size() || !std::isfinite(x) || !std::isfinite(y))
+        return std::nullopt;
+
+    result.position = Vec2f(float(x), float(y));
+    return result;
+}
+
+} // namespace
+
+std::optional<Vec2f> get_sequential_wipe_tower_position(const ConfigOptionStrings &positions,
+                                                        int plate_idx, size_t instance_id)
+{
+    for (const std::string &value : positions.values) {
+        const auto entry = parse_sequential_wipe_tower_position(value);
+        if (entry && entry->plate_idx == plate_idx && entry->instance_id == instance_id)
+            return entry->position;
+    }
+    return std::nullopt;
+}
+
+void set_sequential_wipe_tower_position(ConfigOptionStrings &positions, int plate_idx,
+                                        size_t instance_id, const Vec2f &position)
+{
+    const std::string value = std::to_string(plate_idx) + '|' + std::to_string(instance_id) + '|' +
+                              float_to_string_decimal_point(position.x()) + '|' +
+                              float_to_string_decimal_point(position.y());
+    for (std::string &existing : positions.values) {
+        const auto entry = parse_sequential_wipe_tower_position(existing);
+        if (entry && entry->plate_idx == plate_idx && entry->instance_id == instance_id) {
+            existing = value;
+            return;
+        }
+    }
+    positions.values.emplace_back(value);
 }
 } // namespace Slic3r
 

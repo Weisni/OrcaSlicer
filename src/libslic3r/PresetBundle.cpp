@@ -49,6 +49,7 @@ static std::vector<std::string> s_project_options {
     "filament_multi_colour",
     "wipe_tower_x",
     "wipe_tower_y",
+    "prime_tower_object_positions",
     "wipe_tower_rotation_angle",
     "curr_bed_type",
     "flush_multiplier",

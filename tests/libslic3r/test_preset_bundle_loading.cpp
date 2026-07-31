@@ -81,6 +81,21 @@ struct RenameTestCollection : public PresetCollection
 
 } // namespace
 
+TEST_CASE("Default print preset contains the per-object prime tower option", "[Preset][PrimeTower]")
+{
+    PresetBundle bundle;
+    const ConfigOptionBool *option =
+        bundle.prints.default_preset().config.option<ConfigOptionBool>("enable_prime_tower_by_object");
+
+    REQUIRE(option != nullptr);
+    CHECK_FALSE(option->value);
+
+    const ConfigOptionStrings *positions =
+        bundle.project_config.option<ConfigOptionStrings>("prime_tower_object_positions");
+    REQUIRE(positions != nullptr);
+    CHECK(positions->values.empty());
+}
+
 TEST_CASE("Preset identity is canonicalized from load path", "[Preset][Identity]")
 {
     TempPresetDir              temp_dir;

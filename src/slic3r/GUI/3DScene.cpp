@@ -246,6 +246,8 @@ GLVolume::GLVolume(float r, float g, float b, float a)
     // geometry_id == 0 -> invalid
     , geometry_id(std::pair<size_t, size_t>(0, 0))
     , extruder_id(0)
+    , wipe_tower_plate_idx(-1)
+    , wipe_tower_instance_id(-1)
     , selected(false)
     , disabled(false)
     , printable(true)

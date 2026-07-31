@@ -1841,6 +1841,7 @@ PRINT_CONFIG_CLASS_DERIVED_DEFINE(
     ((ConfigOptionInts,               nozzle_temperature_range_high))
     ((ConfigOptionFloats,             wipe_distance))
     ((ConfigOptionBool,               enable_prime_tower))
+    ((ConfigOptionBool,               enable_prime_tower_by_object))
     ((ConfigOptionBool,               prime_tower_enable_framework))
     // BBS: change wipe_tower_x and wipe_tower_y data type to floats to add partplate logic
     ((ConfigOptionFloats,             wipe_tower_x))
@@ -2423,6 +2424,13 @@ static void set_flush_volumes_matrix(std::vector<T> &out_matrix, const std::vect
 }
 
 size_t get_extruder_index(const GCodeConfig& config, unsigned int filament_id);
+
+// Project-level positions of experimental per-object prime towers. Entries are keyed by the
+// plate and the persistent ModelInstance label so they survive preset changes and 3MF reloads.
+std::optional<Vec2f> get_sequential_wipe_tower_position(const ConfigOptionStrings &positions,
+                                                        int plate_idx, size_t instance_id);
+void set_sequential_wipe_tower_position(ConfigOptionStrings &positions, int plate_idx,
+                                        size_t instance_id, const Vec2f &position);
 
 } // namespace Slic3r
 

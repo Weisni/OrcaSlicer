@@ -266,6 +266,43 @@ TEST_CASE("Print::validate reports the clumping-detection warning", "[Print][val
     CHECK(count_opt_key(warnings, "enable_prime_tower") == 1);
 }
 
+TEST_CASE("Per-object prime towers are opt-in during FDM normalization", "[PrintConfig][prime_tower][sequential]")
+{
+    DynamicPrintConfig legacy = DynamicPrintConfig::full_print_config();
+    legacy.set_key_value("print_sequence", new ConfigOptionEnum<PrintSequence>(PrintSequence::ByObject));
+    legacy.set_key_value("enable_prime_tower", new ConfigOptionBool(true));
+    legacy.set_key_value("enable_prime_tower_by_object", new ConfigOptionBool(false));
+    const auto legacy_changes = legacy.normalize_fdm_2(/*num_objects=*/2, /*used_filaments=*/2);
+    CHECK_FALSE(legacy.opt_bool("enable_prime_tower"));
+    CHECK(std::find(legacy_changes.begin(), legacy_changes.end(), "enable_prime_tower") != legacy_changes.end());
+
+    DynamicPrintConfig experimental = DynamicPrintConfig::full_print_config();
+    experimental.set_key_value("print_sequence", new ConfigOptionEnum<PrintSequence>(PrintSequence::ByObject));
+    experimental.set_key_value("enable_prime_tower", new ConfigOptionBool(true));
+    experimental.set_key_value("enable_prime_tower_by_object", new ConfigOptionBool(true));
+    const auto experimental_changes = experimental.normalize_fdm_2(/*num_objects=*/2, /*used_filaments=*/2);
+    CHECK(experimental.opt_bool("enable_prime_tower"));
+    CHECK(std::find(experimental_changes.begin(), experimental_changes.end(), "enable_prime_tower") == experimental_changes.end());
+}
+
+TEST_CASE("Per-object prime tower positions round-trip independently", "[PrintConfig][prime_tower][sequential]")
+{
+    ConfigOptionStrings positions;
+    set_sequential_wipe_tower_position(positions, 0, 101, Vec2f(12.5f, 34.25f));
+    set_sequential_wipe_tower_position(positions, 0, 202, Vec2f(56.f, 78.f));
+    set_sequential_wipe_tower_position(positions, 1, 101, Vec2f(90.f, 12.f));
+
+    REQUIRE(positions.values.size() == 3);
+    CHECK(get_sequential_wipe_tower_position(positions, 0, 101)->isApprox(Vec2f(12.5f, 34.25f)));
+    CHECK(get_sequential_wipe_tower_position(positions, 0, 202)->isApprox(Vec2f(56.f, 78.f)));
+    CHECK(get_sequential_wipe_tower_position(positions, 1, 101)->isApprox(Vec2f(90.f, 12.f)));
+
+    set_sequential_wipe_tower_position(positions, 0, 101, Vec2f(22.f, 44.f));
+    CHECK(positions.values.size() == 3);
+    CHECK(get_sequential_wipe_tower_position(positions, 0, 101)->isApprox(Vec2f(22.f, 44.f)));
+    CHECK_FALSE(get_sequential_wipe_tower_position(positions, 2, 101).has_value());
+}
+
 TEST_CASE("Print::validate concatenates layered-clearance collisions into one warning", "[Print][validate]")
 {
     // In by-layer mode, layered_print_cleareance_valid folds every too-close pair into a
