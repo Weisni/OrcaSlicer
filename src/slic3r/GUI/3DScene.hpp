@@ -180,6 +180,10 @@ public:
     std::pair<size_t, size_t> geometry_id;
     // An ID containing the extruder ID (used to select color).
     int                 	extruder_id;
+    // Identifies independently movable per-object prime tower proxies. Both are -1 for the
+    // regular per-plate prime tower and for model volumes.
+    int                     wipe_tower_plate_idx;
+    int64_t                 wipe_tower_instance_id;
 
     size_t                  model_object_ID{0};
 

@@ -577,6 +577,69 @@ static DynamicPrintConfig dual_extruder_toolchange_config()
     return config;
 }
 
+TEST_CASE("By-object multi-material printing creates one prime tower per object", "[GCodeWriter][prime_tower][sequential]")
+{
+    DynamicPrintConfig config = dual_extruder_toolchange_config();
+    config.set_key_value("print_sequence", new ConfigOptionEnum<PrintSequence>(PrintSequence::ByObject));
+    config.set_key_value("enable_prime_tower", new ConfigOptionBool(true));
+    config.set_key_value("enable_prime_tower_by_object", new ConfigOptionBool(true));
+    config.set_key_value("extruder_clearance_radius", new ConfigOptionFloat(60.));
+    config.set_key_value("prime_tower_width", new ConfigOptionFloat(15.));
+    config.set_key_value("layer_change_gcode", new ConfigOptionString("G92 E0\n"));
+
+    Model model;
+    for (int object_idx = 0; object_idx < 2; ++object_idx) {
+        ModelObject *object = model.add_object();
+        object->name = "multicolor-" + std::to_string(object_idx + 1);
+        object->add_volume(cube(20));
+        object->add_instance()->set_offset(Vec3d(50. + 100. * object_idx, 50., 0.));
+        DynamicPrintConfig range_config;
+        range_config.set_key_value("extruder", new ConfigOptionInt(2));
+        range_config.set_key_value("layer_height", new ConfigOptionFloat(0.2));
+        object->layer_config_ranges[{10.0, 20.0}].assign_config(std::move(range_config));
+    }
+
+    Print print;
+    for (ModelObject *object : model.objects) {
+        object->ensure_on_bed();
+        print.auto_assign_extruders(object);
+    }
+    print.apply(model, config);
+    const StringObjectException validation = print.validate();
+    INFO(validation.string);
+    REQUIRE(validation.string.empty());
+    print.set_status_silent();
+    print.process();
+
+    Slic3r::Test::gcode(print);
+    REQUIRE(print.sequential_wipe_tower_previews().size() == 2);
+    // Deliberately place the first tower well outside the owner's clearance-radius box. A tower
+    // belongs to the same sequential unit as its owner and may use that exclusion zone, but it is
+    // not required to remain inside it. Only the bed and physical overlaps restrict its position.
+    const Vec2f manually_positioned(20.f, 120.f);
+
+    ConfigOptionStrings tower_positions;
+    set_sequential_wipe_tower_position(tower_positions, 0,
+        model.objects.front()->instances.front()->get_labeled_id(), manually_positioned);
+    config.set_key_value("prime_tower_object_positions", tower_positions.clone());
+
+    Print positioned_print;
+    for (ModelObject *object : model.objects)
+        positioned_print.auto_assign_extruders(object);
+    positioned_print.apply(model, config);
+    REQUIRE(positioned_print.validate().string.empty());
+    positioned_print.set_status_silent();
+    positioned_print.process();
+
+    const std::string gcode = Slic3r::Test::gcode(positioned_print);
+    REQUIRE_THAT(gcode, Catch::Matchers::ContainsSubstring("; PRIME_TOWER_FOR_OBJECT:1:multicolor-1"));
+    REQUIRE_THAT(gcode, Catch::Matchers::ContainsSubstring("; PRIME_TOWER_FOR_OBJECT:2:multicolor-2"));
+    REQUIRE(positioned_print.sequential_wipe_tower_previews().size() == 2);
+    CHECK(positioned_print.sequential_wipe_tower_previews().front().position.isApprox(manually_positioned));
+    REQUIRE(positioned_print.print_statistics().total_toolchanges >= 2);
+    REQUIRE(positioned_print.print_statistics().total_wipe_tower_filament > 0.);
+}
+
 SCENARIO("Change blocks carry consecutive toolchange ordinals without a duplicate command", "[GCodeWriter][H2C]") {
     GIVEN("Two sequentially printed objects on different extruders of a BBL machine") {
         DynamicPrintConfig config = dual_extruder_toolchange_config();

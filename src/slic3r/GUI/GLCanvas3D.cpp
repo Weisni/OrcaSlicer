@@ -2865,6 +2865,9 @@ void GLCanvas3D::reload_scene(bool refresh_immediately, bool force_full_scene_re
         if (dconfig.has("enable_wrapping_detection")) {
             need_wipe_tower |= dynamic_cast<const ConfigOptionBool*>(dconfig.option("enable_wrapping_detection"))->value;
         }
+        const ConfigOptionBool *object_towers_opt =
+            m_config->option<ConfigOptionBool>("enable_prime_tower_by_object");
+        const bool enable_object_towers = object_towers_opt != nullptr && object_towers_opt->value;
 
         if (wt && (need_wipe_tower || filaments_count > 1) && !wxGetApp().plater()->only_gcode_mode() && !wxGetApp().plater()->is_gcode_3mf()) {
             for (int plate_id = 0; plate_id < n_plates; plate_id++) {
@@ -2872,7 +2875,7 @@ void GLCanvas3D::reload_scene(bool refresh_immediately, bool force_full_scene_re
                 PartPlate* part_plate = ppl.get_plate(plate_id);
                 if (part_plate->get_print_seq() == PrintSequence::ByObject ||
                     (part_plate->get_print_seq() == PrintSequence::ByDefault && co != nullptr && co->value == PrintSequence::ByObject)) {
-                    if (ppl.get_plate(plate_id)->printable_instance_size() != 1)
+                    if (ppl.get_plate(plate_id)->printable_instance_size() != 1 && !enable_object_towers)
                         continue;
                 }
 
@@ -2896,6 +2899,120 @@ void GLCanvas3D::reload_scene(bool refresh_immediately, bool force_full_scene_re
                 Vec3d wipe_tower_size = ppl.get_plate(plate_id)->estimate_wipe_tower_size(print_cfg, w, v, nozzle_nums, 0, false, dynamic_cast<const ConfigOptionBool*>(dconfig.option("enable_wrapping_detection"))->value);
 
                 {
+                    const bool by_object = part_plate->get_print_seq() == PrintSequence::ByObject ||
+                                           (part_plate->get_print_seq() == PrintSequence::ByDefault && co != nullptr &&
+                                            co->value == PrintSequence::ByObject);
+                    const auto &object_towers = current_print->sequential_wipe_tower_previews();
+                    if (by_object && enable_object_towers) {
+                        const ConfigOptionStrings *positions =
+                            proj_cfg.option<ConfigOptionStrings>("prime_tower_object_positions");
+                        auto identify_object_tower = [&](int volume_idx, size_t sequence_index, size_t instance_id,
+                                                         const std::string &owner_name) {
+                            if (volume_idx < 0 || volume_idx >= int(m_volumes.volumes.size()))
+                                return;
+                            GLVolume *volume = m_volumes.volumes[volume_idx];
+                            volume->name = "T" + std::to_string(sequence_index + 1) + " - " + owner_name;
+                            volume->wipe_tower_plate_idx = plate_id;
+                            volume->wipe_tower_instance_id = int64_t(instance_id);
+                            // Wipe towers must keep the reserved per-plate object ID. Visibility, picking and
+                            // outside-bed checks recognize them through this range. The instance ID makes each
+                            // per-object tower independently selectable without losing its plate association.
+                            volume->composite_id = GLVolume::CompositeID(
+                                1000 + plate_id, 0, int(sequence_index));
+                            volume->geometry_id.second +=
+                                (sequence_index + 1) * PartPlateList::MAX_PLATES_COUNT;
+                        };
+
+                        if (!object_towers.empty()) {
+                            for (const SequentialWipeTowerPreview &tower : object_towers) {
+                                const std::optional<Vec2f> manual_position = positions == nullptr ? std::nullopt :
+                                    get_sequential_wipe_tower_position(*positions, plate_id, tower.owner_instance_id);
+                                const Vec2f position = manual_position.value_or(tower.position);
+                                const int volume_idx = m_volumes.load_real_wipe_tower_preview(
+                                    1000 + plate_id,
+                                    position.x() + plate_origin(0),
+                                    position.y() + plate_origin(1),
+                                    tower.mesh.real_wipe_tower_mesh,
+                                    tower.mesh.real_brim_mesh,
+                                    true, a, false, m_initialized);
+                                identify_object_tower(volume_idx, tower.sequence_index, tower.owner_instance_id,
+                                                      tower.owner_name);
+                            }
+                            continue;
+                        }
+
+                        // Before the first successful slice, create one estimated proxy per instance. This is
+                        // intentionally available even when automatic placement cannot find a collision-free spot,
+                        // so the user can drag the offending tower to a valid position.
+                        std::vector<const PrintInstance *> instances;
+                        for (const PrintObject *print_object : current_print->objects())
+                            for (const PrintInstance &instance : print_object->instances())
+                                instances.emplace_back(&instance);
+                        std::stable_sort(instances.begin(), instances.end(), [](const PrintInstance *lhs, const PrintInstance *rhs) {
+                            return lhs->model_instance->arrange_order < rhs->model_instance->arrange_order;
+                        });
+
+                        std::vector<BoundingBoxf> placed_towers;
+                        const BoundingBoxf bed_bbx(current_print->config().printable_area.values);
+                        const BoundingBoxf tower_local(
+                            Vec2d(-brim_width, -brim_width),
+                            Vec2d(wipe_tower_size.x() + brim_width, wipe_tower_size.y() + brim_width));
+                        for (size_t sequence_index = 0; sequence_index < instances.size(); ++sequence_index) {
+                            const PrintInstance &owner = *instances[sequence_index];
+                            const size_t instance_id = owner.model_instance->get_labeled_id();
+                            const BoundingBoxf3 owner3 = owner.get_bounding_box();
+                            const BoundingBoxf object_bbx(owner3.min.head<2>() - plate_origin.head<2>(),
+                                                          owner3.max.head<2>() - plate_origin.head<2>());
+                            const Vec2d object_mid = 0.5 * (object_bbx.min + object_bbx.max);
+                            const Vec2d tower_mid = 0.5 * (tower_local.min + tower_local.max);
+                            const double gap = 2.;
+                            const std::array<Vec2d, 4> candidates {
+                                Vec2d(object_bbx.max.x() + gap - tower_local.min.x(), object_mid.y() - tower_mid.y()),
+                                Vec2d(object_bbx.min.x() - gap - tower_local.max.x(), object_mid.y() - tower_mid.y()),
+                                Vec2d(object_mid.x() - tower_mid.x(), object_bbx.max.y() + gap - tower_local.min.y()),
+                                Vec2d(object_mid.x() - tower_mid.x(), object_bbx.min.y() - gap - tower_local.max.y())
+                            };
+
+                            std::optional<Vec2f> manual_position = positions == nullptr ? std::nullopt :
+                                get_sequential_wipe_tower_position(*positions, plate_id, instance_id);
+                            Vec2d position = manual_position ? manual_position->cast<double>() : candidates.front();
+                            if (!manual_position) {
+                                auto valid = [&](const Vec2d &candidate) {
+                                    BoundingBoxf candidate_bbx = tower_local;
+                                    candidate_bbx.translate(candidate);
+                                    if (!bed_bbx.contains(candidate_bbx) || candidate_bbx.overlap(object_bbx))
+                                        return false;
+                                    for (const PrintObject *print_object : current_print->objects())
+                                        for (const PrintInstance &other : print_object->instances()) {
+                                            if (&other == &owner)
+                                                continue;
+                                            const BoundingBoxf3 other3 = other.get_bounding_box();
+                                            const BoundingBoxf other_bbx(other3.min.head<2>() - plate_origin.head<2>(),
+                                                                         other3.max.head<2>() - plate_origin.head<2>());
+                                            if (candidate_bbx.overlap(other_bbx))
+                                                return false;
+                                        }
+                                    return std::none_of(placed_towers.begin(), placed_towers.end(),
+                                        [&](const BoundingBoxf &other) { return candidate_bbx.overlap(other); });
+                                };
+                                const auto candidate = std::find_if(candidates.begin(), candidates.end(), valid);
+                                if (candidate != candidates.end())
+                                    position = *candidate;
+                            }
+
+                            BoundingBoxf placed = tower_local;
+                            placed.translate(position);
+                            placed_towers.emplace_back(placed);
+                            const int volume_idx = m_volumes.load_wipe_tower_preview(
+                                1000 + plate_id, float(position.x() + plate_origin(0)),
+                                float(position.y() + plate_origin(1)), float(wipe_tower_size.x()),
+                                float(wipe_tower_size.y()), float(wipe_tower_size.z()), a, true, brim_width);
+                            identify_object_tower(volume_idx, sequence_index, instance_id,
+                                                  owner.model_instance->get_object()->name);
+                        }
+                        continue;
+                    }
+
                     const float                 margin     = WIPE_TOWER_MARGIN + brim_width;
                     BoundingBoxf3               plate_bbox = part_plate->get_bounding_box();
                     BoundingBoxf                plate_bbox_2d(Vec2d(plate_bbox.min(0), plate_bbox.min(1)), Vec2d(plate_bbox.max(0), plate_bbox.max(1)));
@@ -4931,6 +5048,7 @@ void GLCanvas3D::do_move(const std::string& snapshot_type)
 
     std::set<std::pair<int, int>> done;  // keeps track of modified instances
     bool object_moved = false;
+    bool object_tower_moved = false;
 
     // BBS: support wipe-tower for multi-plates
     int n_plates = wxGetApp().plater()->get_partplate_list().get_plate_count();
@@ -4938,7 +5056,8 @@ void GLCanvas3D::do_move(const std::string& snapshot_type)
 
     Selection::EMode selection_mode = m_selection.get_mode();
 
-    for (const GLVolume* v : m_volumes.volumes) {
+    for (size_t gl_volume_idx = 0; gl_volume_idx < m_volumes.volumes.size(); ++gl_volume_idx) {
+        const GLVolume* v = m_volumes.volumes[gl_volume_idx];
         int object_idx = v->object_idx();
         int instance_idx = v->instance_idx();
         int volume_idx = v->volume_idx();
@@ -4947,6 +5066,22 @@ void GLCanvas3D::do_move(const std::string& snapshot_type)
             continue;
 
         std::pair<int, int> done_id(object_idx, instance_idx);
+
+        if (v->is_wipe_tower && v->wipe_tower_plate_idx >= 0 && v->wipe_tower_instance_id >= 0 &&
+            m_selection.contains_volume(unsigned(gl_volume_idx))) {
+            DynamicConfig &proj_cfg = wxGetApp().preset_bundle->project_config;
+            ConfigOptionStrings *positions =
+                proj_cfg.option<ConfigOptionStrings>("prime_tower_object_positions", true);
+            const Vec3d plate_origin = wxGetApp().plater()->get_partplate_list()
+                                           .get_plate(v->wipe_tower_plate_idx)->get_origin();
+            const Vec3d tower_origin = v->get_volume_offset();
+            set_sequential_wipe_tower_position(
+                *positions, v->wipe_tower_plate_idx, size_t(v->wipe_tower_instance_id),
+                Vec2f(float(tower_origin.x() - plate_origin.x()),
+                      float(tower_origin.y() - plate_origin.y())));
+            object_tower_moved = true;
+            continue;
+        }
 
         if (0 <= object_idx && object_idx < (int)m_model->objects.size()) {
             done.insert(done_id);
@@ -5011,7 +5146,7 @@ void GLCanvas3D::do_move(const std::string& snapshot_type)
     //BBS: nofity object list to update
     wxGetApp().plater()->sidebar().obj_list()->update_plate_values_for_items();
 
-    if (object_moved)
+    if (object_moved || object_tower_moved)
         post_event(SimpleEvent(EVT_GLCANVAS_INSTANCE_MOVED));
 
     // BBS: support wipe-tower for multi-plates

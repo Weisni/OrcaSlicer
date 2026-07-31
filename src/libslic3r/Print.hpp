@@ -774,6 +774,10 @@ struct WipeTowerData
     float                                                 height;
     BoundingBoxf                                          bbx;//including brim
     Vec2f                                                 rib_offset;
+    // Final plate-local position and owner used by experimental per-object prime towers.
+    Vec2f                                                 position;
+    const PrintInstance                                  *owner_instance;
+    size_t                                                sequence_index;
     std::optional<WipeTowerMeshData>                      wipe_tower_mesh_data;//added rib_offset
     void clear() {
         priming.reset(nullptr);
@@ -785,6 +789,9 @@ struct WipeTowerData
         brim_width = 0.f;
         height = 0.f;
         rib_offset = Vec2f::Zero();
+        position = Vec2f::Zero();
+        owner_instance = nullptr;
+        sequence_index = size_t(-1);
         wipe_tower_mesh_data  = std::nullopt;
     }
     void construct_mesh(float width, float depth, float height, float brim_width, bool is_rib_wipe_tower, float rib_width, float rib_length, bool fillet_wall);
@@ -796,6 +803,15 @@ private:
 	WipeTowerData(ToolOrdering &tool_ordering) : tool_ordering(tool_ordering) { clear(); }
 	WipeTowerData(const WipeTowerData & /* rhs */) = delete;
 	WipeTowerData &operator=(const WipeTowerData & /* rhs */) = delete;
+};
+
+struct SequentialWipeTowerPreview
+{
+    WipeTowerData::WipeTowerMeshData mesh;
+    Vec2f                            position;
+    size_t                           sequence_index;
+    size_t                           owner_instance_id;
+    std::string                      owner_name;
 };
 
 struct PrintStatistics
@@ -1018,6 +1034,8 @@ public:
     // Wipe tower support.
     bool                        has_wipe_tower() const;
     const WipeTowerData&        wipe_tower_data(size_t filaments_cnt = 0) const;
+    const std::vector<SequentialWipeTowerPreview>& sequential_wipe_tower_previews() const
+        { return m_sequential_wipe_tower_previews; }
     const ToolOrdering& 		tool_ordering() const { return m_tool_ordering; }
 
     void update_filament_maps_to_config(std::vector<int> f_maps, std::vector<int> f_volume_maps = std::vector<int>{}, std::vector<int> f_nozzle_maps = std::vector<int>{});
@@ -1261,7 +1279,8 @@ private:
     bool                invalidate_state_by_config_options(const ConfigOptionResolver &new_config, const std::vector<t_config_option_key> &opt_keys);
 
     void                _make_skirt();
-    void                _make_wipe_tower();
+    void                _make_wipe_tower(const PrintObject *sequential_object = nullptr,
+                                         unsigned int initial_extruder_id = (unsigned int) -1);
     void                finalize_first_layer_convex_hull();
     void                update_filament_self_index_cache();
     // Deduplicates, per filament, the (extruder type x volume type) variants the grouping
@@ -1334,6 +1353,7 @@ private:
     // Following section will be consumed by the GCodeGenerator.
     ToolOrdering 							m_tool_ordering;
     WipeTowerData                           m_wipe_tower_data {m_tool_ordering};
+    std::vector<SequentialWipeTowerPreview> m_sequential_wipe_tower_previews;
 
     // Estimated print time, filament consumed.
     PrintStatistics                         m_print_statistics;

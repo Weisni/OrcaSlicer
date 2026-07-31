@@ -330,6 +330,7 @@ bool Print::invalidate_state_by_config_options(const ConfigOptionResolver & /* n
             || opt_key == "hot_plate_temp"
             || opt_key == "textured_plate_temp"
             || opt_key == "enable_prime_tower"
+            || opt_key == "enable_prime_tower_by_object"
             || opt_key == "enable_wrapping_detection"
             || opt_key == "prime_tower_enable_framework"
             || opt_key == "prime_tower_width"
@@ -2516,8 +2517,11 @@ void Print::process(long long *time_cost_with_cache, bool use_cache)
         }
 
         m_wipe_tower_data.clear();
+        m_sequential_wipe_tower_previews.clear();
         m_tool_ordering.clear();
-        if (this->has_wipe_tower()) {
+        const bool sequential_prime_towers = this->config().print_sequence == PrintSequence::ByObject &&
+                                             this->config().enable_prime_tower_by_object;
+        if (this->has_wipe_tower() && !sequential_prime_towers) {
             this->_make_wipe_tower();
         }
         else if (this->config().print_sequence != PrintSequence::ByObject) {
@@ -2532,7 +2536,8 @@ void Print::process(long long *time_cost_with_cache, bool use_cache)
         if (m_pipeline_plugin_active) run_pipeline_hook(SlicingPipelineStepPlugin::psWipeTower, nullptr);
     }
 
-    if (this->has_wipe_tower()) {
+    if (this->has_wipe_tower() &&
+        !(this->config().print_sequence == PrintSequence::ByObject && this->config().enable_prime_tower_by_object)) {
         m_fake_wipe_tower.set_pos({ m_config.wipe_tower_x.get_at(m_plate_index), m_config.wipe_tower_y.get_at(m_plate_index) });
     }
 
@@ -2775,7 +2780,9 @@ void Print::process(long long *time_cost_with_cache, bool use_cache)
         using Clock                 = std::chrono::high_resolution_clock;
         auto            startTime   = Clock::now();
         std::optional<const FakeWipeTower *> wipe_tower_opt = {};
-        if (this->has_wipe_tower()) {
+        const bool sequential_prime_towers = this->config().print_sequence == PrintSequence::ByObject &&
+                                             this->config().enable_prime_tower_by_object;
+        if (this->has_wipe_tower() && !sequential_prime_towers && !m_fake_wipe_tower.outer_wall.empty()) {
             m_fake_wipe_tower.set_pos({m_config.wipe_tower_x.get_at(m_plate_index), m_config.wipe_tower_y.get_at(m_plate_index)});
             wipe_tower_opt = std::make_optional<const FakeWipeTower *>(&m_fake_wipe_tower);
         }
@@ -3959,7 +3966,7 @@ bool Print::enable_timelapse_print() const
     return m_config.timelapse_type.value == TimelapseType::tlSmooth;
 }
 
-void Print::_make_wipe_tower()
+void Print::_make_wipe_tower(const PrintObject *sequential_object, unsigned int initial_extruder_id)
 {
     m_wipe_tower_data.clear();
 
@@ -3968,8 +3975,13 @@ void Print::_make_wipe_tower()
 
     const bool is_wipe_tower_type2 = this->wipe_tower_type() == WipeTowerType::Type2;
     // Let the ToolOrdering class know there will be initial priming extrusions at the start of the print.
-    m_wipe_tower_data.tool_ordering = ToolOrdering(*this, (unsigned int) -1, is_wipe_tower_type2);
-    m_wipe_tower_data.tool_ordering.sort_and_build_data(*this, (unsigned int)-1, is_wipe_tower_type2);
+    if (sequential_object != nullptr) {
+        m_wipe_tower_data.tool_ordering = ToolOrdering(*sequential_object, initial_extruder_id, is_wipe_tower_type2);
+        m_wipe_tower_data.tool_ordering.sort_and_build_data(*sequential_object, initial_extruder_id, is_wipe_tower_type2);
+    } else {
+        m_wipe_tower_data.tool_ordering = ToolOrdering(*this, initial_extruder_id, is_wipe_tower_type2);
+        m_wipe_tower_data.tool_ordering.sort_and_build_data(*this, initial_extruder_id, is_wipe_tower_type2);
+    }
 
     if (!m_wipe_tower_data.tool_ordering.has_wipe_tower())
         // Don't generate any wipe tower.
@@ -3979,7 +3991,7 @@ void Print::_make_wipe_tower()
     // they print neither object, nor support. These layers are above the raft and below the object, and they
     // shall be added to the support layers to be printed.
     // see https://github.com/prusa3d/PrusaSlicer/issues/607
-    {
+    if (sequential_object == nullptr) {
         size_t idx_begin = size_t(-1);
         size_t idx_end   = m_wipe_tower_data.tool_ordering.layer_tools().size();
         // Find the first wipe tower layer, which does not have a counterpart in an object or a support layer.
@@ -4192,7 +4204,8 @@ void Print::_make_wipe_tower()
         m_wipe_tower_data.rib_offset = wipe_tower.get_rib_offset();
 
         // Unload the current filament over the purge tower.
-        coordf_t layer_height = m_objects.front()->config().layer_height.value;
+        coordf_t layer_height = sequential_object != nullptr ? sequential_object->config().layer_height.value
+                                                              : m_objects.front()->config().layer_height.value;
         bool generate_final_purge = true;
         if (m_wipe_tower_data.tool_ordering.back().wipe_tower_partitions > 0) {
             // The wipe tower goes up to the last layer of the print.
@@ -4307,7 +4320,8 @@ void Print::_make_wipe_tower()
         m_wipe_tower_data.rib_offset        = wipe_tower.get_rib_offset();
 
         // Unload the current filament over the purge tower.
-        coordf_t layer_height = m_objects.front()->config().layer_height.value;
+        coordf_t layer_height = sequential_object != nullptr ? sequential_object->config().layer_height.value
+                                                              : m_objects.front()->config().layer_height.value;
         bool generate_final_purge = true;
         if (m_wipe_tower_data.tool_ordering.back().wipe_tower_partitions > 0) {
             // The wipe tower goes up to the last layer of the print.

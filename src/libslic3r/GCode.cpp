@@ -2751,6 +2751,92 @@ std::vector<const PrintInstance*> sort_object_instances_by_model_order(const Pri
     return instances;
 }
 
+// Place an experimental per-object tower next to its owner. The tower may occupy the owner's
+// toolhead clearance zone because both are printed as one sequential unit.
+static Vec2f place_sequential_wipe_tower(const Print               &print,
+                                         const PrintInstance       &owner,
+                                         const WipeTowerData       &tower,
+                                         std::vector<BoundingBoxf> &placed_towers)
+{
+    const Vec2d plate_origin = print.get_plate_origin().head<2>();
+    const BoundingBoxf3 owner_bbx3 = owner.get_bounding_box();
+    const BoundingBoxf object_bbx(owner_bbx3.min.head<2>() - plate_origin,
+                                  owner_bbx3.max.head<2>() - plate_origin);
+
+    BoundingBoxf tower_local = tower.bbx;
+    if (!tower_local.defined || tower_local.size().x() <= EPSILON || tower_local.size().y() <= EPSILON) {
+        tower_local = BoundingBoxf(Vec2d(-tower.brim_width, -tower.brim_width),
+                                   Vec2d(print.config().prime_tower_width + tower.brim_width,
+                                         tower.depth + tower.brim_width));
+    }
+
+    const BoundingBoxf bed_bbx(print.config().printable_area.values);
+    const double gap = 2.;
+    const Vec2d object_mid = 0.5 * (object_bbx.min + object_bbx.max);
+    const Vec2d tower_mid  = 0.5 * (tower_local.min + tower_local.max);
+    std::array<Vec2d, 4> candidates {
+        Vec2d(object_bbx.max.x() + gap - tower_local.min.x(), object_mid.y() - tower_mid.y()),
+        Vec2d(object_bbx.min.x() - gap - tower_local.max.x(), object_mid.y() - tower_mid.y()),
+        Vec2d(object_mid.x() - tower_mid.x(), object_bbx.max.y() + gap - tower_local.min.y()),
+        Vec2d(object_mid.x() - tower_mid.x(), object_bbx.min.y() - gap - tower_local.max.y())
+    };
+
+    auto is_valid_position = [&](const Vec2d &position) {
+        BoundingBoxf candidate_bbx = tower_local;
+        candidate_bbx.translate(position);
+        if (!bed_bbx.contains(candidate_bbx) || candidate_bbx.overlap(object_bbx))
+            return false;
+
+        for (const PrintObject *object : print.objects()) {
+            for (const PrintInstance &instance : object->instances()) {
+                if (&instance == &owner)
+                    continue;
+                const BoundingBoxf3 other3 = instance.get_bounding_box();
+                const BoundingBoxf other(other3.min.head<2>() - plate_origin,
+                                         other3.max.head<2>() - plate_origin);
+                if (candidate_bbx.overlap(other))
+                    return false;
+            }
+        }
+        return std::none_of(placed_towers.begin(), placed_towers.end(),
+                            [&](const BoundingBoxf &other_tower) { return candidate_bbx.overlap(other_tower); });
+    };
+
+    const ConfigOptionStrings *stored_positions =
+        print.full_print_config().option<ConfigOptionStrings>("prime_tower_object_positions");
+    const std::optional<Vec2f> manual_position = stored_positions == nullptr ? std::nullopt :
+        get_sequential_wipe_tower_position(*stored_positions, print.get_plate_index(),
+                                           owner.model_instance->get_labeled_id());
+    if (manual_position) {
+        const Vec2d candidate = manual_position->cast<double>();
+        if (!is_valid_position(candidate)) {
+            throw Slic3r::SlicingError(
+                (boost::format(_(L("The manually positioned prime tower belonging to object \"%1%\" is outside the print bed "
+                                   "or overlaps an object or another prime tower. Move this tower to a free position.")))
+                 % owner.print_object->model_object()->name).str());
+        }
+        BoundingBoxf candidate_bbx = tower_local;
+        candidate_bbx.translate(candidate);
+        placed_towers.emplace_back(candidate_bbx);
+        return *manual_position;
+    }
+
+    for (const Vec2d &candidate : candidates) {
+        if (!is_valid_position(candidate))
+            continue;
+        BoundingBoxf candidate_bbx = tower_local;
+        candidate_bbx.translate(candidate);
+        placed_towers.emplace_back(candidate_bbx);
+        return candidate.cast<float>();
+    }
+
+    throw Slic3r::SlicingError(
+        (boost::format(_(L("No collision-free position was found for the prime tower belonging to object \"%1%\". "
+                           "Move the displayed tower manually, move the objects farther apart, reduce the prime tower size, "
+                           "or disable per-object prime towers.")))
+         % owner.print_object->model_object()->name).str());
+}
+
 enum BambuBedType {
     bbtUnknown = 0,
     bbtCoolPlate = 1,
@@ -3094,7 +3180,7 @@ void GCode::_do_export(Print& print, GCodeOutputStream &file, ThumbnailsGenerato
         // Use the extruder IDs collected from Regions.
         this->set_extruders(print.extruders());
 
-        has_wipe_tower = print.has_wipe_tower() && tool_ordering.has_wipe_tower();
+        has_wipe_tower = print.has_wipe_tower() && print.config().enable_prime_tower_by_object;
     } else {
         // Find tool ordering for all the objects at once, and the initial extruder ID.
         // If the tool ordering has been pre-calculated by Print class for wipe tower already, reuse it.
@@ -3703,12 +3789,16 @@ void GCode::_do_export(Print& print, GCodeOutputStream &file, ThumbnailsGenerato
         }
 
         // Do all objects for each layer.
-        if (print.config().print_sequence == PrintSequence::ByObject && !has_wipe_tower) {
+        if (print.config().print_sequence == PrintSequence::ByObject) {
             size_t finished_objects = 0;
+            std::vector<BoundingBoxf> sequential_tower_bboxes;
+            std::vector<float> sequential_tower_used_filament;
+            int sequential_tower_toolchanges = 0;
             print_object_instance_sequential_active = first_has_extrude_print_object;
             const PrintObject *prev_object = (*print_object_instance_sequential_active)->print_object;
             for (; print_object_instance_sequential_active != print_object_instances_ordering.end(); ++ print_object_instance_sequential_active) {
                 const PrintObject &object = *(*print_object_instance_sequential_active)->print_object;
+                const unsigned int previous_extruder_id = final_extruder_id;
                 if (&object != prev_object || tool_ordering.first_extruder() != final_extruder_id) {
                     auto cached_ordering = use_seq_dynamic_cache ? seq_dynamic_orderings.find(&object) : seq_dynamic_orderings.end();
                     if (cached_ordering != seq_dynamic_orderings.end()) {
@@ -3729,6 +3819,53 @@ void GCode::_do_export(Print& print, GCodeOutputStream &file, ThumbnailsGenerato
                 }
                 print.throw_if_canceled();
                 this->set_origin(unscale((*print_object_instance_sequential_active)->shift));
+
+                const bool use_object_tower = has_wipe_tower && print.config().enable_prime_tower_by_object;
+                if (use_object_tower) {
+                    print._make_wipe_tower(&object, previous_extruder_id);
+                    WipeTowerData &tower_data = print.m_wipe_tower_data;
+                    if (tower_data.tool_ordering.has_wipe_tower() && !tower_data.tool_changes.empty()) {
+                        if (sequential_tower_used_filament.size() < tower_data.used_filament.size())
+                            sequential_tower_used_filament.resize(tower_data.used_filament.size(), 0.f);
+                        for (size_t filament_idx = 0; filament_idx < tower_data.used_filament.size(); ++filament_idx)
+                            sequential_tower_used_filament[filament_idx] += tower_data.used_filament[filament_idx];
+                        sequential_tower_toolchanges += std::max(0, tower_data.number_of_toolchanges);
+
+                        tool_ordering = tower_data.tool_ordering;
+                        initial_extruder_id = tool_ordering.first_extruder();
+                        final_extruder_id   = tool_ordering.last_extruder();
+                        tower_data.owner_instance = *print_object_instance_sequential_active;
+                        tower_data.sequence_index = finished_objects;
+                        tower_data.position = place_sequential_wipe_tower(
+                            print, **print_object_instance_sequential_active, tower_data, sequential_tower_bboxes);
+                        if (tower_data.wipe_tower_mesh_data) {
+                            print.m_sequential_wipe_tower_previews.push_back({
+                                *tower_data.wipe_tower_mesh_data,
+                                tower_data.position,
+                                finished_objects,
+                                (*print_object_instance_sequential_active)->model_instance->get_labeled_id(),
+                                object.model_object()->name
+                            });
+                        }
+
+                        static const std::vector<WipeTower::ToolChangeResult> empty_priming;
+                        const auto &priming = tower_data.priming ? *tower_data.priming : empty_priming;
+                        m_wipe_tower.reset(new WipeTowerIntegration(
+                            print.config(), print.get_plate_index(), print.get_plate_origin(), priming,
+                            tower_data.tool_changes, *tower_data.final_purge, print.get_slice_used_filaments(false),
+                            tower_data.position));
+                        m_wipe_tower->set_wipe_tower_depth(tower_data.depth);
+                        m_wipe_tower->set_wipe_tower_bbx(tower_data.bbx);
+                        m_wipe_tower->set_rib_offset(tower_data.rib_offset);
+
+                        file.write_format("; PRIME_TOWER_FOR_OBJECT:%zu:%s\n", finished_objects + 1,
+                                          object.model_object()->name.c_str());
+                    } else {
+                        m_wipe_tower.reset();
+                    }
+                } else {
+                    m_wipe_tower.reset();
+                }
 
                 // BBS: prime extruder if extruder change happens before this object instance
                 bool prime_extruder = false;
@@ -3776,6 +3913,10 @@ void GCode::_do_export(Print& print, GCodeOutputStream &file, ThumbnailsGenerato
                 m_printed_objects.emplace_back(&object);
                 this->process_layers(print, tool_ordering, collect_layers_to_print(object), *print_object_instance_sequential_active - object.instances().data(), file,
                                      prime_extruder);
+                if (m_wipe_tower) {
+                    file.write(m_wipe_tower->finalize(*this));
+                    m_wipe_tower.reset();
+                }
                 {
                     // save the flush statitics stored in tool ordering by object
                     print.m_statistics_by_extruder_count.stats_by_single_extruder += tool_ordering.get_filament_change_stats(ToolOrdering::FilamentChangeMode::SingleExt);
@@ -3799,6 +3940,11 @@ void GCode::_do_export(Print& print, GCodeOutputStream &file, ThumbnailsGenerato
                 // Reset it when starting another object from 1st layer.
                 m_second_layer_things_done = false;
                 prev_object = &object;
+            }
+            has_wipe_tower = !sequential_tower_used_filament.empty();
+            if (has_wipe_tower) {
+                print.m_wipe_tower_data.used_filament = std::move(sequential_tower_used_filament);
+                print.m_wipe_tower_data.number_of_toolchanges = sequential_tower_toolchanges;
             }
         } else {
             // Sort layers by Z.
@@ -4281,10 +4427,13 @@ void GCode::process_layers(
             } else {
                 LayerToPrint &layer = layers_to_print[layer_to_print_idx ++];
                 print.set_status(80, Slic3r::format(_(L("Generating G-code: layer %1%")), std::to_string(layer_to_print_idx)));
+                const LayerTools &layer_tools = tool_ordering.tools_for_layer(layer.print_z());
+                if (m_wipe_tower && layer_tools.has_wipe_tower)
+                    m_wipe_tower->next_layer();
                 //BBS
                 check_placeholder_parser_failed();
                 print.throw_if_canceled();
-                return this->process_layer(print, { std::move(layer) }, tool_ordering.tools_for_layer(layer.print_z()), &layer == &layers_to_print.back(), nullptr, tool_ordering.get_most_used_extruder(), single_object_idx, prime_extruder);
+                return this->process_layer(print, { std::move(layer) }, layer_tools, &layer == &layers_to_print.back(), nullptr, tool_ordering.get_most_used_extruder(), single_object_idx, prime_extruder);
             }
         });
     if (m_spiral_vase) {

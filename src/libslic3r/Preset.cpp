@@ -1156,6 +1156,7 @@ static std::vector<std::string> s_Preset_print_options{
     "xy_hole_compensation",
     "resolution",
     "enable_prime_tower",
+    "enable_prime_tower_by_object",
     "prime_tower_enable_framework",
     "prime_tower_width",
     "prime_tower_brim_width",
