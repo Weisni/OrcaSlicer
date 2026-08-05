@@ -262,7 +262,11 @@ TEST_CASE("filament inventory migrates v1 data with safe cost defaults", "[Filam
         const InventorySettings settings = store.get_settings();
         CHECK(settings.currency == "EUR");
         CHECK(settings.electricity_price_per_kwh_micros == 400'000);
-        CHECK(settings.default_machine_power_watts == 150);
+        CHECK(settings.default_machine_power_watts == 200);
+        CHECK(settings.machine_wear_per_hour_micros == 1'250'000);
+        CHECK(settings.maintenance_per_hour_micros == 500'000);
+        CHECK(settings.repair_reserve_per_hour_micros == 500'000);
+        CHECK(settings.design_per_hour_micros == 45'000'000);
 
         const Spool legacy = store.get_spool("legacy-spool");
         CHECK(legacy.current_weight_mg == 500'000);
@@ -695,6 +699,9 @@ TEST_CASE("job costs combine fixed-point material and machine electricity", "[Fi
     InventorySettings settings = inventory.store->get_settings();
     settings.electricity_price_per_kwh_micros = 400'000; // 0.40 EUR/kWh
     settings.default_machine_power_watts = 150;
+    settings.machine_wear_per_hour_micros = 0;
+    settings.maintenance_per_hour_micros = 0;
+    settings.repair_reserve_per_hour_micros = 0;
     inventory.store->update_settings(settings);
 
     SpoolInput priced_spool = spool_input("Priced");
@@ -736,6 +743,183 @@ TEST_CASE("job costs combine fixed-point material and machine electricity", "[Fi
     CHECK(actual.total_cost_micros == 4'120'000);
     CHECK(actual.quoted_price_micros == 15'000'000);
     CHECK_FALSE(actual.invoice_amount_micros);
+}
+
+TEST_CASE("customer order costs can be recalculated from current settings",
+          "[FilamentInventory][Cost][Recalculation]")
+{
+    TemporaryInventory inventory;
+    SpoolInput spool_data = spool_input("Recalculation spool");
+    spool_data.material_price_per_kg_micros = 20'000'000;
+    const Spool spool = inventory.store->create_spool(spool_data);
+    const Customer customer =
+        inventory.store->create_customer(customer_input("Recalculation customer"));
+    CustomerOrderInput order_data = order_input(customer.id, "Repriced order");
+    order_data.design_time_seconds = 3'600;
+    const CustomerOrder order = inventory.store->create_customer_order(order_data);
+
+    PrintJobInput input = job_input("cost:recalculation");
+    input.customer_order_id = order.id;
+    input.estimated_runtime_seconds = 7'200;
+    const PrintJob original = inventory.store->reserve_job(
+        input, {{spool.id, 0, 100'000}});
+    CHECK(original.machine_power_watts == 200);
+    CHECK(original.machine_wear_cost_micros == 2'500'000);
+
+    InventorySettings settings = inventory.store->get_settings();
+    settings.electricity_price_per_kwh_micros = 500'000;
+    settings.default_machine_power_watts = 100;
+    settings.machine_wear_per_hour_micros = 200'000;
+    settings.maintenance_per_hour_micros = 150'000;
+    settings.repair_reserve_per_hour_micros = 100'000;
+    settings.design_per_hour_micros = 50'000'000;
+    inventory.store->update_settings(settings);
+
+    CHECK(inventory.store->get_job(original.id).machine_wear_cost_micros == 2'500'000);
+    CHECK(inventory.store->recalculate_customer_order_costs(
+              {order.id, order.id}) == 1);
+
+    const PrintJob recalculated = inventory.store->get_job(original.id);
+    CHECK(recalculated.electricity_price_per_kwh_micros == 500'000);
+    CHECK(recalculated.machine_power_watts == 100);
+    CHECK(recalculated.electricity_cost_micros == 100'000);
+    CHECK(recalculated.machine_wear_per_hour_micros == 200'000);
+    CHECK(recalculated.machine_wear_cost_micros == 400'000);
+    CHECK(recalculated.maintenance_cost_micros == 300'000);
+    CHECK(recalculated.repair_reserve_cost_micros == 200'000);
+    CHECK(inventory.store->get_customer_order(order.id)
+              .design_hourly_rate_micros == 50'000'000);
+
+    const CostSummary summary =
+        inventory.store->customer_order_cost_summary(order.id);
+    CHECK(summary.material_cost_micros == 2'000'000);
+    CHECK(summary.design_cost_micros == 50'000'000);
+    CHECK(summary.total_cost_micros == 53'000'000);
+}
+
+TEST_CASE("filament inventory backfills runtime costs for pre-cost jobs",
+          "[FilamentInventory][Migration][Cost]")
+{
+    TemporaryInventory inventory;
+    const Spool spool = inventory.store->create_spool(spool_input("Migration runtime"));
+    PrintJobInput input = job_input("migration:runtime-costs");
+    input.estimated_runtime_seconds = 100 * 3'600;
+    const PrintJob job = inventory.store->reserve_job(
+        input, {{spool.id, 0, 100'000}});
+
+    inventory.store.reset();
+    sqlite3 *db = nullptr;
+    REQUIRE(sqlite3_open(inventory.path.string().c_str(), &db) == SQLITE_OK);
+    char *error = nullptr;
+    const std::string migration_sql =
+        "UPDATE print_jobs "
+        "SET actual_runtime_seconds = 390000, "
+        "    machine_wear_per_hour_micros = 0, "
+        "    maintenance_per_hour_micros = 0, "
+        "    repair_reserve_per_hour_micros = 0, "
+        "    machine_wear_cost_micros = 0, "
+        "    maintenance_cost_micros = 0, "
+        "    repair_reserve_cost_micros = 0 "
+        "WHERE id = '" + job.id + "';"
+        "PRAGMA user_version = 6;";
+    const int result = sqlite3_exec(
+        db, migration_sql.c_str(),
+        nullptr, nullptr, &error);
+    const std::string sqlite_error = error != nullptr ? error : std::string {};
+    INFO(sqlite_error);
+    REQUIRE(result == SQLITE_OK);
+    sqlite3_free(error);
+    REQUIRE(sqlite3_close(db) == SQLITE_OK);
+
+    inventory.store = std::make_unique<Store>(inventory.path.string());
+    CHECK(inventory.store->current_schema_version() == Store::schema_version);
+    const PrintJob migrated = inventory.store->get_job(job.id);
+    CHECK(migrated.machine_wear_per_hour_micros == 1'250'000);
+    CHECK(migrated.maintenance_per_hour_micros == 500'000);
+    CHECK(migrated.repair_reserve_per_hour_micros == 500'000);
+    CHECK(migrated.machine_wear_cost_micros == 135'416'666);
+    CHECK(migrated.maintenance_cost_micros == 54'166'666);
+    CHECK(migrated.repair_reserve_cost_micros == 54'166'666);
+
+    const CostSummary summary = inventory.store->job_cost_summary(job.id);
+    CHECK(summary.machine_wear_cost_micros == 135'416'666);
+    CHECK(summary.maintenance_cost_micros == 54'166'666);
+    CHECK(summary.repair_reserve_cost_micros == 54'166'666);
+}
+
+TEST_CASE("Viersen P2S defaults include operational costs and invoice waivers",
+          "[FilamentInventory][Cost][Billing]")
+{
+    TemporaryInventory inventory;
+    const InventorySettings settings = inventory.store->get_settings();
+    CHECK(settings.electricity_price_per_kwh_micros == 400'000);
+    CHECK(settings.default_machine_power_watts == 200);
+    CHECK(settings.machine_wear_per_hour_micros == 1'250'000);
+    CHECK(settings.maintenance_per_hour_micros == 500'000);
+    CHECK(settings.repair_reserve_per_hour_micros == 500'000);
+    CHECK(settings.design_per_hour_micros == 45'000'000);
+
+    const SpoolInput defaults;
+    CHECK(defaults.material_price_per_kg_micros == 20'000'000);
+
+    SpoolInput spool_data = spool_input("P2S PLA");
+    const Spool spool = inventory.store->create_spool(spool_data);
+    CHECK(spool.material_price_per_kg_micros == 20'000'000);
+
+    const Customer customer =
+        inventory.store->create_customer(customer_input("Viersen customer"));
+    CustomerOrderInput order_data = order_input(customer.id, "Designed duck");
+    order_data.design_time_seconds = 5'400; // 1.5 hours.
+    order_data.design_hourly_rate_micros = settings.design_per_hour_micros;
+    order_data.other_cost_micros = 3'000'000;
+    order_data.discount_basis_points = 1'000; // 10 percent.
+    order_data.bill_electricity = false;
+    order_data.bill_maintenance = false;
+    order_data.bill_repair_reserve = false;
+    const CustomerOrder order =
+        inventory.store->create_customer_order(order_data);
+
+    PrintJobInput input = job_input("cost:p2s-defaults");
+    input.customer_order_id = order.id;
+    input.estimated_runtime_seconds = 7'200;
+    const PrintJob job =
+        inventory.store->reserve_job(input, {{spool.id, 0, 250'000}});
+    CHECK(job.electricity_cost_micros == 160'000);
+    CHECK(job.machine_wear_cost_micros == 2'500'000);
+    CHECK(job.maintenance_cost_micros == 1'000'000);
+    CHECK(job.repair_reserve_cost_micros == 1'000'000);
+
+    const CostSummary costs =
+        inventory.store->customer_order_cost_summary(order.id);
+    CHECK(costs.material_cost_micros == 5'000'000);
+    CHECK(costs.design_cost_micros == 67'500'000);
+    CHECK(costs.other_cost_micros == 3'000'000);
+    CHECK(costs.total_cost_micros == 80'160'000);
+    CHECK(costs.billable_subtotal_micros == 78'000'000);
+    CHECK(costs.discount_micros == 7'800'000);
+    CHECK(costs.calculated_invoice_micros == 70'200'000);
+
+    const std::vector<InvoiceLine> lines =
+        inventory.store->customer_order_invoice_lines(order.id);
+    REQUIRE(lines.size() == 8);
+    const auto material = std::find_if(
+        lines.begin(), lines.end(), [](const InvoiceLine &line) {
+            return line.category == InvoiceCostCategory::material;
+        });
+    REQUIRE(material != lines.end());
+    CHECK(material->color_hex == "#12ABEF");
+    CHECK(material->internal_amount_micros == 5'000'000);
+    CHECK(material->invoice_amount_micros == 5'000'000);
+    const auto electricity = std::find_if(
+        lines.begin(), lines.end(), [](const InvoiceLine &line) {
+            return line.category == InvoiceCostCategory::electricity;
+        });
+    REQUIRE(electricity != lines.end());
+    CHECK_FALSE(electricity->included);
+    CHECK(electricity->internal_amount_micros == 160'000);
+    CHECK(electricity->invoice_amount_micros == 0);
+    CHECK(lines.back().category == InvoiceCostCategory::discount);
+    CHECK(lines.back().invoice_amount_micros == -7'800'000);
 }
 
 TEST_CASE("positive material usage is booked in rounded whole cents",
@@ -1369,7 +1553,7 @@ TEST_CASE(
     print.estimated_runtime_seconds = 3'600;
     const PrintJob reserved =
         inventory.store->reserve_job(print, {{spool.id, 0, 100'000}});
-    CHECK(reserved.electricity_cost_micros == 60'000);
+    CHECK(reserved.electricity_cost_micros == 80'000);
     CHECK(reserved.allocations.front().estimated_material_cost_micros == 2'000'000);
     CHECK(reserved.allocations.front().spool_name == "Snapshot");
     CHECK(reserved.allocations.front().manufacturer == "Quack Materials");
@@ -1393,8 +1577,8 @@ TEST_CASE(
         inventory.store->reserve_job(print, {{spool.id, 0, 100'000}});
     CHECK(repeated.id == reserved.id);
     CHECK(repeated.electricity_price_per_kwh_micros == 400'000);
-    CHECK(repeated.machine_power_watts == 150);
-    CHECK(repeated.electricity_cost_micros == 60'000);
+    CHECK(repeated.machine_power_watts == 200);
+    CHECK(repeated.electricity_cost_micros == 80'000);
     CHECK(repeated.allocations.front().material_price_per_kg_micros == 50'000'000);
     CHECK(repeated.allocations.front().estimated_material_cost_micros == 5'000'000);
     CHECK(repeated.allocations.front().spool_name == "Snapshot");
@@ -1408,7 +1592,7 @@ TEST_CASE(
         inventory.store->job_cost_summary(reserved.id);
     REQUIRE(repriced_summary.actual_material_cost_micros);
     CHECK(*repriced_summary.actual_material_cost_micros == 4'000'000);
-    CHECK(repriced_summary.total_cost_micros == 4'060'000);
+    CHECK(repriced_summary.total_cost_micros == 6'330'000);
 
     input.material_price_per_kg_micros = 20'000'000;
     input.initial_weight_mg =
@@ -1419,7 +1603,7 @@ TEST_CASE(
         inventory.store->job_cost_summary(reserved.id);
     REQUIRE(historical_summary.actual_material_cost_micros);
     CHECK(*historical_summary.actual_material_cost_micros == 1'600'000);
-    CHECK(historical_summary.total_cost_micros == 1'660'000);
+    CHECK(historical_summary.total_cost_micros == 3'930'000);
 }
 
 TEST_CASE(

@@ -11,6 +11,7 @@
 
 #include <wx/button.h>
 #include <wx/choice.h>
+#include <wx/choicdlg.h>
 #include <wx/clipbrd.h>
 #include <wx/cmndata.h>
 #include <wx/dataobj.h>
@@ -33,6 +34,7 @@
 #include "GUI_App.hpp"
 #include "GUI_Utils.hpp"
 #include "CustomerOrderDialogs.hpp"
+#include "CustomerInvoiceDialog.hpp"
 #include "FilamentAllocationDialog.hpp"
 #include "FilamentInventoryService.hpp"
 #include "FilamentSpoolEditor.hpp"
@@ -335,7 +337,7 @@ public:
         auto *advanced_grid = make_grid();
         add_text_row(advanced_grid, _L("Filament preset ID"), m_preset_id);
         add_text_row(
-            advanced_grid, _L("Material price (EUR/kg)"), m_material_price, "0.00");
+            advanced_grid, _L("Material price (EUR/kg)"), m_material_price, "20.00");
         advanced_box->Add(advanced_grid, 1, wxEXPAND | wxALL, FromDIP(10));
         right_column->Add(advanced_box, 0, wxEXPAND | wxBOTTOM, FromDIP(10));
 
@@ -1766,8 +1768,11 @@ FilamentManagerPanel::FilamentManagerPanel(wxWindow *parent, wxWindowID id,
         _L("Costs combine material usage with sliced machine runtime and electricity."));
     auto *cost_settings_button = new wxButton(
         customers_page, wxID_ANY, _L("Cost settings..."));
+    m_recalculate_costs_button = new wxButton(
+        customers_page, wxID_ANY, _L("Recalculate costs..."));
     cost_bar->Add(cost_text, 0, wxALIGN_CENTER_VERTICAL);
     cost_bar->AddStretchSpacer();
+    cost_bar->Add(m_recalculate_costs_button, 0, wxRIGHT, FromDIP(8));
     cost_bar->Add(cost_settings_button);
     customers_sizer->Add(cost_bar, 0, wxEXPAND | wxALL, FromDIP(10));
 
@@ -1802,6 +1807,8 @@ FilamentManagerPanel::FilamentManagerPanel(wxWindow *parent, wxWindowID id,
     m_edit_order_button = new wxButton(customers_page, wxID_ANY, _L("Edit order"));
     m_material_breakdown_button = new wxButton(
         customers_page, wxID_ANY, _L("Material breakdown..."));
+    m_invoice_button = new wxButton(
+        customers_page, wxID_ANY, _L("Create invoice..."));
     m_activate_order_button = new wxButton(customers_page, wxID_ANY, _L("Activate"));
     m_complete_order_button = new wxButton(customers_page, wxID_ANY, _L("Complete"));
     m_cancel_order_button = new wxButton(customers_page, wxID_ANY, _L("Cancel order"));
@@ -1809,7 +1816,7 @@ FilamentManagerPanel::FilamentManagerPanel(wxWindow *parent, wxWindowID id,
     auto *refresh_customers_button = new wxButton(customers_page, wxID_ANY, _L("Refresh"));
     for (wxButton *button : {
              m_add_order_button, m_edit_order_button,
-             m_material_breakdown_button})
+             m_material_breakdown_button, m_invoice_button})
         order_toolbar->Add(button, 0, wxRIGHT, FromDIP(8));
     order_toolbar->AddStretchSpacer();
     order_toolbar->Add(refresh_customers_button);
@@ -1835,7 +1842,11 @@ FilamentManagerPanel::FilamentManagerPanel(wxWindow *parent, wxWindowID id,
     m_order_list->AppendTextColumn(_L("Material cost"), wxDATAVIEW_CELL_INERT, FromDIP(110));
     m_order_list->AppendTextColumn(
         _L("Electricity estimate"), wxDATAVIEW_CELL_INERT, FromDIP(125));
-    m_order_list->AppendTextColumn(_L("Total cost"), wxDATAVIEW_CELL_INERT, FromDIP(110));
+    m_order_list->AppendTextColumn(_L("Wear & reserves"), wxDATAVIEW_CELL_INERT, FromDIP(120));
+    m_order_list->AppendTextColumn(_L("Design & other"), wxDATAVIEW_CELL_INERT, FromDIP(120));
+    m_order_list->AppendTextColumn(_L("Internal cost"), wxDATAVIEW_CELL_INERT, FromDIP(110));
+    m_order_list->AppendTextColumn(_L("Discount"), wxDATAVIEW_CELL_INERT, FromDIP(100));
+    m_order_list->AppendTextColumn(_L("Calculated invoice"), wxDATAVIEW_CELL_INERT, FromDIP(125));
     m_order_list->AppendTextColumn(_L("Quoted"), wxDATAVIEW_CELL_INERT, FromDIP(110));
     m_order_list->AppendTextColumn(_L("Invoice"), wxDATAVIEW_CELL_INERT, FromDIP(110));
     style_data_view(m_order_list);
@@ -1902,6 +1913,8 @@ FilamentManagerPanel::FilamentManagerPanel(wxWindow *parent, wxWindowID id,
         wxEVT_BUTTON, [this](wxCommandEvent &) { edit_customer_order(); });
     m_material_breakdown_button->Bind(
         wxEVT_BUTTON, [this](wxCommandEvent &) { show_material_breakdown(); });
+    m_invoice_button->Bind(
+        wxEVT_BUTTON, [this](wxCommandEvent &) { show_invoice(); });
     m_activate_order_button->Bind(wxEVT_BUTTON, [this](wxCommandEvent &) {
         set_customer_order_status(CustomerOrderStatus::active);
     });
@@ -1915,6 +1928,8 @@ FilamentManagerPanel::FilamentManagerPanel(wxWindow *parent, wxWindowID id,
         wxEVT_BUTTON, [this](wxCommandEvent &) { delete_customer_order(); });
     cost_settings_button->Bind(
         wxEVT_BUTTON, [this](wxCommandEvent &) { edit_cost_settings(); });
+    m_recalculate_costs_button->Bind(
+        wxEVT_BUTTON, [this](wxCommandEvent &) { recalculate_costs(); });
     refresh_customers_button->Bind(wxEVT_BUTTON, [this](wxCommandEvent &) { refresh(); });
     m_spool_list->Bind(wxEVT_DATAVIEW_SELECTION_CHANGED,
         [this](wxDataViewEvent &) { update_button_state(); });
@@ -2290,9 +2305,18 @@ void FilamentManagerPanel::refresh_customers_and_orders()
                 format_money(costs.material_cost_micros, costs.currency),
                 orders_with_estimated_material_cost.count(order.id) == 0),
             format_money(costs.electricity_cost_micros, costs.currency),
+            format_money(
+                costs.machine_wear_cost_micros + costs.maintenance_cost_micros +
+                    costs.repair_reserve_cost_micros,
+                costs.currency),
+            format_money(
+                costs.design_cost_micros + costs.other_cost_micros,
+                costs.currency),
             mark_estimate(
                 format_money(costs.total_cost_micros, costs.currency),
                 orders_with_estimated_total_cost.count(order.id) == 0),
+            format_money(costs.discount_micros, costs.currency),
+            format_money(costs.calculated_invoice_micros, costs.currency),
             format_optional_money(order.quoted_price_micros, order.currency),
             format_optional_money(order.invoice_amount_micros, order.currency)
         });
@@ -2392,6 +2416,8 @@ void FilamentManagerPanel::update_button_state()
     m_edit_order_button->Enable(store_ready && order_selected);
     m_material_breakdown_button->Enable(
         store_ready && order_selected && selected_order_job_count > 0);
+    m_invoice_button->Enable(store_ready && order_selected);
+    m_recalculate_costs_button->Enable(store_ready && order_selected);
     m_delete_order_button->Enable(
         store_ready && order_selected &&
         selected_order->status == CustomerOrderStatus::draft &&
@@ -2783,6 +2809,22 @@ void FilamentManagerPanel::show_material_breakdown()
     }
 }
 
+void FilamentManagerPanel::show_invoice()
+{
+    if (!initialize_store())
+        return;
+    const int row = selected_order_row();
+    if (row < 0 || static_cast<std::size_t>(row) >= m_customer_orders.size())
+        return;
+    const CustomerOrder &order = m_customer_orders[static_cast<std::size_t>(row)];
+    try {
+        show_customer_invoice_dialog(
+            this, *m_store, order, m_store->get_customer(order.customer_id));
+    } catch (const std::exception &error) {
+        show_error(error);
+    }
+}
+
 void FilamentManagerPanel::show_selected_job_materials(bool history)
 {
     if (!initialize_store())
@@ -2861,6 +2903,83 @@ void FilamentManagerPanel::edit_cost_settings()
         return;
     if (edit_inventory_cost_settings_interactively(this, *m_store))
         refresh();
+}
+
+void FilamentManagerPanel::recalculate_costs()
+{
+    if (!initialize_store())
+        return;
+    const int selected_row = selected_order_row();
+    if (selected_row < 0 ||
+        static_cast<std::size_t>(selected_row) >= m_customer_orders.size())
+        return;
+
+    wxArrayString choices;
+    choices.Add(_L("Selected order"));
+    choices.Add(_L("All open orders"));
+    choices.Add(_L("All orders, including completed and cancelled"));
+    wxSingleChoiceDialog scope_dialog(
+        this,
+        _L("Choose which orders should use the current cost settings."),
+        _L("Recalculate costs"), choices);
+    if (scope_dialog.ShowModal() != wxID_OK)
+        return;
+
+    std::vector<std::string> order_ids;
+    bool includes_closed_or_invoiced = false;
+    const int scope = scope_dialog.GetSelection();
+    if (scope == 0) {
+        const CustomerOrder &order =
+            m_customer_orders[static_cast<std::size_t>(selected_row)];
+        order_ids.push_back(order.id);
+        includes_closed_or_invoiced =
+            order.status == CustomerOrderStatus::completed ||
+            order.status == CustomerOrderStatus::cancelled ||
+            order.invoice_amount_micros.has_value();
+    } else {
+        for (const CustomerOrder &order : m_customer_orders) {
+            const bool open = order.status == CustomerOrderStatus::draft ||
+                              order.status == CustomerOrderStatus::active;
+            if (scope == 2 || open) {
+                order_ids.push_back(order.id);
+                includes_closed_or_invoiced = includes_closed_or_invoiced ||
+                    !open || order.invoice_amount_micros.has_value();
+            }
+        }
+    }
+    if (order_ids.empty()) {
+        wxMessageBox(
+            _L("No matching customer orders were found."),
+            _L("Recalculate costs"), wxOK | wxICON_INFORMATION, this);
+        return;
+    }
+
+    wxString confirmation = wxString::Format(
+        _L("Recalculate %zu order(s) using the current electricity, printer "
+           "power, hourly reserve and design rates?\n\nMaterial quantities and "
+           "filament prices are not changed."),
+        order_ids.size());
+    if (includes_closed_or_invoiced)
+        confirmation += _L(
+            "\n\nWarning: This selection contains completed, cancelled or "
+            "invoiced orders. Existing totals may change.");
+    if (wxMessageBox(
+            confirmation, _L("Recalculate costs"),
+            wxYES_NO | wxNO_DEFAULT | wxICON_WARNING, this) != wxYES)
+        return;
+
+    try {
+        const std::size_t updated_jobs =
+            m_store->recalculate_customer_order_costs(order_ids);
+        refresh();
+        wxMessageBox(
+            wxString::Format(
+                _L("Recalculated %zu print job(s) in %zu order(s)."),
+                updated_jobs, order_ids.size()),
+            _L("Recalculate costs"), wxOK | wxICON_INFORMATION, this);
+    } catch (const std::exception &error) {
+        show_error(error);
+    }
 }
 
 void FilamentManagerPanel::show_error(const std::exception &error)

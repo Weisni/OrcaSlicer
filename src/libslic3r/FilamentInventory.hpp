@@ -77,8 +77,25 @@ enum class CustomerOrderStatus {
 
 struct InventorySettings {
     std::string  currency {"EUR"};
+    // Practical household/workshop defaults for Viersen and a Bambu P2S.
+    // All values remain user-editable and are snapshotted onto new jobs.
     MoneyMicros electricity_price_per_kwh_micros {400'000};
-    std::int64_t default_machine_power_watts {150};
+    std::int64_t default_machine_power_watts {200};
+    MoneyMicros machine_wear_per_hour_micros {1'250'000};
+    MoneyMicros maintenance_per_hour_micros {500'000};
+    MoneyMicros repair_reserve_per_hour_micros {500'000};
+    MoneyMicros design_per_hour_micros {45'000'000};
+};
+
+enum class InvoiceCostCategory {
+    material,
+    electricity,
+    machine_wear,
+    maintenance,
+    repair_reserve,
+    design,
+    other,
+    discount
 };
 
 struct SpoolInput {
@@ -93,7 +110,7 @@ struct SpoolInput {
     Milligrams initial_weight_mg {1'000'000};
     WarningMode warning_mode {WarningMode::none};
     std::int64_t warning_value {0}; // mg for grams, basis points (0..10000) for percent
-    MoneyMicros material_price_per_kg_micros {0};
+    MoneyMicros material_price_per_kg_micros {20'000'000};
     std::string price_currency {"EUR"};
 };
 
@@ -209,6 +226,12 @@ struct PrintJob {
     std::int64_t estimated_runtime_seconds {0};
     // Estimated from sliced runtime at reservation time.
     MoneyMicros electricity_cost_micros {0};
+    MoneyMicros machine_wear_per_hour_micros {0};
+    MoneyMicros maintenance_per_hour_micros {0};
+    MoneyMicros repair_reserve_per_hour_micros {0};
+    MoneyMicros machine_wear_cost_micros {0};
+    MoneyMicros maintenance_cost_micros {0};
+    MoneyMicros repair_reserve_cost_micros {0};
     std::string created_at;
     std::string updated_at;
     std::string started_at;
@@ -245,6 +268,17 @@ struct CustomerOrderInput {
     std::optional<MoneyMicros> quoted_price_micros;
     std::optional<MoneyMicros> invoice_amount_micros;
     std::string currency {"EUR"};
+    std::int64_t design_time_seconds {0};
+    MoneyMicros design_hourly_rate_micros {45'000'000};
+    MoneyMicros other_cost_micros {0};
+    std::int64_t discount_basis_points {0};
+    bool bill_material {true};
+    bool bill_electricity {true};
+    bool bill_machine_wear {true};
+    bool bill_maintenance {true};
+    bool bill_repair_reserve {true};
+    bool bill_design {true};
+    bool bill_other {true};
 };
 
 struct CustomerOrder {
@@ -256,6 +290,17 @@ struct CustomerOrder {
     std::optional<MoneyMicros> quoted_price_micros;
     std::optional<MoneyMicros> invoice_amount_micros;
     std::string currency {"EUR"};
+    std::int64_t design_time_seconds {0};
+    MoneyMicros design_hourly_rate_micros {45'000'000};
+    MoneyMicros other_cost_micros {0};
+    std::int64_t discount_basis_points {0};
+    bool bill_material {true};
+    bool bill_electricity {true};
+    bool bill_machine_wear {true};
+    bool bill_maintenance {true};
+    bool bill_repair_reserve {true};
+    bool bill_design {true};
+    bool bill_other {true};
     CustomerOrderStatus status {CustomerOrderStatus::draft};
     std::string created_at;
     std::string updated_at;
@@ -268,7 +313,15 @@ struct CostSummary {
     // Uses actual allocation costs where known and estimates for open jobs.
     MoneyMicros material_cost_micros {0};
     MoneyMicros electricity_cost_micros {0};
+    MoneyMicros machine_wear_cost_micros {0};
+    MoneyMicros maintenance_cost_micros {0};
+    MoneyMicros repair_reserve_cost_micros {0};
+    MoneyMicros design_cost_micros {0};
+    MoneyMicros other_cost_micros {0};
     MoneyMicros total_cost_micros {0};
+    MoneyMicros billable_subtotal_micros {0};
+    MoneyMicros discount_micros {0};
+    MoneyMicros calculated_invoice_micros {0};
     std::optional<MoneyMicros> quoted_price_micros;
     std::optional<MoneyMicros> invoice_amount_micros;
 };
@@ -292,6 +345,17 @@ struct MaterialUsageSummary {
     bool cost_fully_confirmed {true};
 };
 
+struct InvoiceLine {
+    InvoiceCostCategory category {InvoiceCostCategory::other};
+    std::string description;
+    std::string detail;
+    std::string color_hex;
+    MoneyMicros internal_amount_micros {0};
+    // May be negative for discounts. A waived line remains visible with zero.
+    MoneyMicros invoice_amount_micros {0};
+    bool included {true};
+};
+
 struct ActualConsumption {
     int         filament_index {0};
     Milligrams weight_mg {0};
@@ -313,7 +377,7 @@ struct StockEvent {
 class Store
 {
 public:
-    static constexpr int schema_version = 5;
+    static constexpr int schema_version = 7;
 
     // database_path is UTF-8. Parent directories must already exist.
     explicit Store(const std::string &database_path);
@@ -329,6 +393,10 @@ public:
 
     InventorySettings get_settings() const;
     InventorySettings update_settings(const InventorySettings &settings);
+    // Replaces the saved runtime-cost snapshots of the selected customer
+    // orders with the current global settings. Material usage is unchanged.
+    std::size_t recalculate_customer_order_costs(
+        const std::vector<std::string> &order_ids);
 
     Spool create_spool(const SpoolInput &input,
                        const std::vector<SpoolIdentifierInput> &identifiers = {});
@@ -395,6 +463,8 @@ public:
     CostSummary job_cost_summary(const std::string &job_id) const;
     CostSummary customer_order_cost_summary(const std::string &order_id) const;
     CostSummary customer_cost_summary(const std::string &customer_id) const;
+    std::vector<InvoiceLine> customer_order_invoice_lines(
+        const std::string &order_id) const;
 
 private:
     struct Impl;
@@ -407,6 +477,7 @@ std::string to_string(IdentifierKind value);
 std::string to_string(JobState value);
 std::string to_string(ColorModel value);
 std::string to_string(CustomerOrderStatus value);
+std::string to_string(InvoiceCostCategory value);
 
 // Aggregates multiple physical spools of the same snapshotted filament while
 // keeping manufacturer, preset, colour and currency boundaries intact.
