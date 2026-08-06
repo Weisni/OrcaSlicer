@@ -10,6 +10,7 @@
 #include <numeric>
 #include <limits>
 #include <optional>
+#include <set>
 #include <slic3r/plugin/PluginDescriptor.hpp>
 #include <slic3r/plugin/PluginManager.hpp>
 #include <slic3r/plugin/PluginResolver.hpp>
@@ -6909,6 +6910,8 @@ std::vector<size_t> Plater::priv::load_files(const std::vector<fs::path>& input_
     bool load_config = strategy & LoadStrategy::LoadConfig;
     bool imperial_units = strategy & LoadStrategy::ImperialUnits;
     bool silence = strategy & LoadStrategy::Silence;
+    const bool preserve_model_objects = strategy & LoadStrategy::PreserveModelObjects;
+    const bool skip_standard_3mf_color_mapping = strategy & LoadStrategy::SkipStandard3mfColorMapping;
 
     BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << boost::format(": load_model %1%, load_config %2%, input_files size %3%")%load_model %load_config %input_files.size();
 
@@ -7025,8 +7028,11 @@ std::vector<size_t> Plater::priv::load_files(const std::vector<fs::path>& input_
                                           project_presets.size() % (en_3mf_file_type == En3mfType::From_BBS || en_3mf_file_type == En3mfType::From_Orca) % file_version.to_string();
 
                     // 1. add extruder for prusa model if the number of existing extruders is not enough
-                    // 2. add extruder for BBS or Other model if only import geometry
-                    if (en_3mf_file_type == En3mfType::From_Prusa || (load_model && !load_config)) {
+                    // 2. add extruder for slicer project models if only importing geometry.
+                    // Standard 3MF colors are mapped by ObjColorDialog below; adding their raw
+                    // property IDs here would mutate the filament list before the user decides.
+                    if (en_3mf_file_type == En3mfType::From_Prusa ||
+                        (en_3mf_file_type != En3mfType::From_Other && load_model && !load_config)) {
                         std::set<int> extruderIds;
                         for (ModelObject *o : model.objects) {
                             if (o->config.option("extruder")) extruderIds.insert(o->config.extruder());
@@ -7235,34 +7241,6 @@ std::vector<size_t> Plater::priv::load_files(const std::vector<fs::path>& input_
                     }
 
                     if (load_model && en_3mf_file_type == En3mfType::From_Other) {
-                        if (model.objects.size() > 1) {
-                            std::vector<std::optional<VolumeColorInfo>> converted_volume_colors;
-                            for (ModelObject *model_object : model.objects) {
-                                const size_t instance_count = model_object->instances.empty() ? 1 : model_object->instances.size();
-                                for (ModelVolume *model_volume : model_object->volumes) {
-                                    auto color_it = volume_color_data.find(model_volume->id().id);
-                                    for (size_t instance_idx = 0; instance_idx < instance_count; ++instance_idx) {
-                                        if (color_it != volume_color_data.end())
-                                            converted_volume_colors.emplace_back(color_it->second);
-                                        else
-                                            converted_volume_colors.emplace_back(std::nullopt);
-                                    }
-                                }
-                            }
-
-                            model.convert_multipart_object(filaments_cnt);
-
-                            volume_color_data.clear();
-                            size_t color_idx = 0;
-                            for (ModelObject *model_object : model.objects) {
-                                for (ModelVolume *model_volume : model_object->volumes) {
-                                    if (color_idx < converted_volume_colors.size() && converted_volume_colors[color_idx].has_value())
-                                        volume_color_data[model_volume->id().id] = std::move(*converted_volume_colors[color_idx]);
-                                    ++color_idx;
-                                }
-                            }
-                        }
-
                         for (ModelObject *model_object : model.objects) {
                             model_object->config.reset();
                             for (ModelVolume *model_volume : model_object->volumes)
@@ -7277,7 +7255,8 @@ std::vector<size_t> Plater::priv::load_files(const std::vector<fs::path>& input_
                         model.center_instances_around_point(this->bed.build_volume().bed_center());
                     }
 
-                    if (load_model && en_3mf_file_type == En3mfType::From_Other && !color_group_map.empty() && !volume_color_data.empty()) {
+                    if (load_model && en_3mf_file_type == En3mfType::From_Other && !skip_standard_3mf_color_mapping &&
+                        !color_group_map.empty() && !volume_color_data.empty()) {
                         ObjDialogInOut color_dialog_in_out;
                         if (extract_colors_to_obj_dialog(&model, color_group_map, volume_color_data, color_dialog_in_out)) {
                             std::vector<std::string> extruder_colours;
@@ -7907,9 +7886,17 @@ std::vector<size_t> Plater::priv::load_files(const std::vector<fs::path>& input_
                 // convert_model_if(model, answer_convert_from_imperial_units == wxID_YES);
             }
 
-             if (!is_project_file && model.looks_like_multipart_object()) {
-               MessageDialog msg_dlg(q, _L("This file contains several objects positioned at multiple heights.\nInstead of considering them as multiple objects, should \nthe file be loaded as a single object with multiple parts\?") + "\n",
-                    _L("Multi-part object detected"), wxICON_WARNING | wxYES | wxNO);
+             if (!is_project_file && !preserve_model_objects && model.objects.size() > 1 &&
+                 (type_3mf || model.looks_like_multipart_object())) {
+               const wxString question = type_3mf
+                   ? _L("This 3MF file contains several objects.\nDo you want to load it as a single object with multiple parts?")
+                   : _L("This file contains several objects positioned at multiple heights.\nInstead of considering them as multiple objects, should \nthe file be loaded as a single object with multiple parts?");
+               const long dialog_style = wxICON_WARNING | wxYES | wxNO | (type_3mf ? wxNO_DEFAULT : 0);
+               MessageDialog msg_dlg(q, question + "\n", _L("Multi-part object detected"), dialog_style);
+               if (type_3mf) {
+                   msg_dlg.SetButtonLabel(wxID_YES, _L("Load as a single object"), true);
+                   msg_dlg.SetButtonLabel(wxID_NO, _L("Load as separate objects"));
+               }
                 if (msg_dlg.ShowModal() == wxID_YES) {
                     model.convert_multipart_object(filaments_cnt);
                 }
@@ -13811,7 +13798,7 @@ bool Plater::up_to_date(bool saved, bool backup)
                                         !Slic3r::has_other_changes(backup));
 }
 
-bool Plater::add_model(bool imperial_units, std::string fname)
+bool Plater::add_model(bool imperial_units, std::string fname, LoadStrategy strategy)
 {
     wxArrayString input_files;
 
@@ -13861,7 +13848,6 @@ bool Plater::add_model(bool imperial_units, std::string fname)
     if (loadfiles_type == LoadFilesType::MultipleOther)
         ask_multi = true;
 
-    auto strategy = LoadStrategy::LoadModel;
     if (imperial_units) strategy = strategy | LoadStrategy::ImperialUnits;
     const bool loaded = !load_files(paths, strategy, ask_multi).empty();
     if (loaded) {
@@ -14244,8 +14230,20 @@ static ConfigOptionFloats* make_calibration_max_volumetric_speed(const DynamicPr
     return new ConfigOptionFloats(std::move(values));
 }
 
-void adjust_settings_for_flowrate_calib(ModelObjectPtrs& objects, bool linear, int pass, InfillPattern pattern)
+bool adjust_settings_for_flowrate_calib(ModelObjectPtrs& objects, bool linear, int pass, InfillPattern pattern)
 {
+    std::vector<double> modifiers;
+    modifiers.reserve(objects.size());
+    std::set<double> unique_modifiers;
+    for (const ModelObject *object : objects) {
+        const std::optional<double> modifier = flow_ratio_calibration_modifier(object->name);
+        if (!modifier || !unique_modifiers.insert(*modifier).second)
+            return false;
+        modifiers.push_back(*modifier);
+    }
+    if (modifiers.size() < 2)
+        return false;
+
     auto print_config = &wxGetApp().preset_bundle->prints.get_edited_preset().config;
     auto printer_config  = &wxGetApp().preset_bundle->printers.get_edited_preset().config;
     auto filament_config = &wxGetApp().preset_bundle->filaments.get_edited_preset().config;
@@ -14284,7 +14282,8 @@ void adjust_settings_for_flowrate_calib(ModelObjectPtrs& objects, bool linear, i
     std::vector<double> top_surface_speeds = generate_max_speed_parameter_value("top_surface_speed", linear, pass);
 
     // adjust parameters
-    for (auto _obj : objects) {
+    for (size_t object_idx = 0; object_idx < objects.size(); ++object_idx) {
+        ModelObject *_obj = objects[object_idx];
         _obj->ensure_on_bed();
         _obj->config.set_key_value("wall_loops", new ConfigOptionInt(1));
         _obj->config.set_key_value("only_one_wall_top", new ConfigOptionBool(true));
@@ -14324,27 +14323,10 @@ void adjust_settings_for_flowrate_calib(ModelObjectPtrs& objects, bool linear, i
         _obj->config.set_key_value("calib_flowrate_topinfill_special_order", new ConfigOptionBool(true));
         _obj->config.set_key_value("top_surface_fill_order", new ConfigOptionEnum<SurfaceFillOrder>(SurfaceFillOrder::Default));
 
-        // extract flowrate from name, filename format: flowrate_xxx
-        std::string obj_name = _obj->name;
-        assert(obj_name.length() > 9);
-        obj_name = obj_name.substr(9);
-        if (obj_name[0] == 'm')
-            obj_name[0] = '-';
-        // Orca: force set locale to C to avoid parsing error
-        const std::string _loc = std::setlocale(LC_NUMERIC, nullptr);
-        std::setlocale(LC_NUMERIC,"C");
-        auto              modifier  = 1.0f;
-        try {
-            modifier = stof(obj_name);
-        } catch (...) {
-        }
-        // restore locale
-        std::setlocale(LC_NUMERIC, _loc.c_str());
-
         if(linear)
-            _obj->config.set_key_value("print_flow_ratio", new ConfigOptionFloat((cur_flowrate + modifier)/cur_flowrate));
+            _obj->config.set_key_value("print_flow_ratio", new ConfigOptionFloat((cur_flowrate + modifiers[object_idx])/cur_flowrate));
         else
-            _obj->config.set_key_value("print_flow_ratio", new ConfigOptionFloat(1.0f + modifier/100.f));
+            _obj->config.set_key_value("print_flow_ratio", new ConfigOptionFloat(1.0f + modifiers[object_idx]/100.f));
 
     }
 
@@ -14360,6 +14342,7 @@ void adjust_settings_for_flowrate_calib(ModelObjectPtrs& objects, bool linear, i
     wxGetApp().get_tab(Preset::TYPE_PRINT)->reload_config();
     wxGetApp().get_tab(Preset::TYPE_FILAMENT)->reload_config();
     wxGetApp().get_tab(Preset::TYPE_PRINTER)->reload_config();
+    return true;
 }
 
 // ORCA: Add pattern parameter
@@ -14379,24 +14362,19 @@ void Plater::calib_flowrate(bool is_linear, int pass, InfillPattern pattern) {
 
     wxGetApp().mainframe->select_tab(size_t(MainFrame::tp3DEditor));
 
-    if (is_linear) {
-        if (pass == 1)
-            add_model(false,
-                      (boost::filesystem::path(Slic3r::resources_dir()) / "calib" / "filament_flow" / "Orca-LinearFlow.3mf").string());
-        else
-            add_model(false,
-                      (boost::filesystem::path(Slic3r::resources_dir()) / "calib" / "filament_flow" / "Orca-LinearFlow_fine.3mf").string());
-    } else {
-        if (pass == 1)
-            add_model(false,
-                      (boost::filesystem::path(Slic3r::resources_dir()) / "calib" / "filament_flow" / "flowrate-test-pass1.3mf").string());
-        else
-            add_model(false,
-                      (boost::filesystem::path(Slic3r::resources_dir()) / "calib" / "filament_flow" / "flowrate-test-pass2.3mf").string());
-    }
+    const char *calibration_filename = is_linear
+        ? (pass == 1 ? "Orca-LinearFlow.3mf" : "Orca-LinearFlow_fine.3mf")
+        : (pass == 1 ? "flowrate-test-pass1.3mf" : "flowrate-test-pass2.3mf");
+    const std::string calibration_path =
+        (boost::filesystem::path(Slic3r::resources_dir()) / "calib" / "filament_flow" / calibration_filename).string();
+    if (!add_model(false, calibration_path, LoadStrategy::LoadCalibrationModel))
+        return;
 
     // ORCA: pass the pattern
-    adjust_settings_for_flowrate_calib(model().objects, is_linear, pass, pattern);
+    if (!adjust_settings_for_flowrate_calib(model().objects, is_linear, pass, pattern)) {
+        show_error(this, _L("The flow ratio calibration model is invalid. Expected separate objects named 'flowrate_<modifier>'."));
+        return;
+    }
     wxGetApp().get_tab(Preset::TYPE_PRINTER)->reload_config();
     auto printer_config = &wxGetApp().preset_bundle->printers.get_edited_preset().config;
     printer_config->set_key_value("resonance_avoidance", new ConfigOptionBool{false});
@@ -14404,6 +14382,8 @@ void Plater::calib_flowrate(bool is_linear, int pass, InfillPattern pattern) {
     // Refresh object after scaling
     const std::vector<size_t> object_idx(boost::counting_iterator<size_t>(0), boost::counting_iterator<size_t>(model().objects.size()));
     changed_objects(object_idx);
+    for (ModelObject *object : model().objects)
+        wxGetApp().obj_list()->object_config_options_changed({object, nullptr});
 }
 
 
