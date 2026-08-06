@@ -43,6 +43,16 @@ TEST_CASE("Zero calibration line width resolves to a positive default", "[Calib]
     REQUIRE(pattern.line_width_first_layer() > 0.);
 }
 
+TEST_CASE("Flow ratio calibration modifiers are parsed without locale-dependent fallbacks", "[Calib][Regression]")
+{
+    REQUIRE(flow_ratio_calibration_modifier("flowrate_0") == 0.);
+    REQUIRE(flow_ratio_calibration_modifier("flowrate_0.05") == 0.05);
+    REQUIRE(flow_ratio_calibration_modifier("flowrate_m9") == -9.);
+    REQUIRE_FALSE(flow_ratio_calibration_modifier("flowrate-test-pass2"));
+    REQUIRE_FALSE(flow_ratio_calibration_modifier("flowrate_"));
+    REQUIRE_FALSE(flow_ratio_calibration_modifier("flowrate_1bad"));
+}
+
 namespace {
 
 struct EndState { double final_e; double max_e; };
