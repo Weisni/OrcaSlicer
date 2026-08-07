@@ -547,12 +547,11 @@ private:
 wxString FilamentAllocationDetail::format_spool_choice_label(
     const FilamentInventory::Spool &spool)
 {
-    const wxString name         = from_u8(spool.name);
-    const wxString material     = from_u8(spool.material_type);
-    const wxString weight       = format_weight(spool.available_weight_mg);
-    return wxString::Format(
-        _L("%s — %s, %s available"),
-        name.c_str(), material.c_str(), weight.c_str());
+    wxString label = _L("%s — %s, %s available");
+    label.Replace("%s", from_u8(spool.name), false);
+    label.Replace("%s", from_u8(spool.material_type), false);
+    label.Replace("%s", format_weight(spool.available_weight_mg), false);
+    return label;
 }
 
 std::optional<std::string>
