@@ -424,6 +424,7 @@ endif ()
 include(OCCT/OCCT.cmake)
 include(OpenCV/OpenCV.cmake)
 include(python3/python3.cmake)
+include(wxInspector/wxInspector.cmake)
 
 set(_dep_list
     dep_Boost
@@ -448,6 +449,7 @@ set(_dep_list
     ${EXPAT_PKG}
     dep_libnoise
     dep_python3
+    dep_wxInspector
     )
 
 if (MSVC)
