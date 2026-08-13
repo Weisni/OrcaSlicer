@@ -7492,7 +7492,7 @@ std::vector<size_t> Plater::priv::load_files(const std::vector<fs::path>& input_
                                 project_printer != nullptr ? project_printer->value : std::string();
                             const bool project_printer_matches_selected =
                                 preset_bundle->project_printer_matches_selected(config);
-                            bool load_project_printer = preset_bundle->has_configured_printer_for_project(config);
+                            bool load_project_presets = preset_bundle->has_configured_printer_for_project(config);
                             bool preserve_project_printer = false;
                             if (!project_printer_preset.empty() &&
                                 !project_printer_matches_selected) {
@@ -7516,17 +7516,18 @@ std::vector<size_t> Plater::priv::load_files(const std::vector<fs::path>& input_
                                     q->skip_thumbnail_invalid = false;
                                     return empty_result;
                                 }
-                                load_project_printer = printer_choice == wxID_YES;
-                                preserve_project_printer = load_project_printer;
+                                load_project_presets = printer_choice == wxID_YES;
+                                preserve_project_printer = load_project_presets;
                             }
                             // Device updates may arrive after the project import has returned to Prepare.
                             // Respect an explicit project-printer choice until the user manually syncs.
                             wxGetApp().sidebar().preserve_project_printer_settings(preserve_project_printer);
-                            preset_bundle->load_config_model(filename.string(), std::move(config), file_version, load_project_printer);
+                            preset_bundle->load_config_model(filename.string(), std::move(config), file_version, load_project_presets);
                             const std::string loaded_project_printer_preset =
-                                load_project_printer ? preset_bundle->printers.get_edited_preset().name : std::string();
-                            if (!load_project_printer) {
-                                BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << ": keeping the active printer while loading project settings";
+                                load_project_presets ? preset_bundle->printers.get_edited_preset().name : std::string();
+                            if (!load_project_presets) {
+                                BOOST_LOG_TRIVIAL(info) << __FUNCTION__
+                                                        << ": keeping the active printer, process and filament presets while loading project data";
                             }
 
                             ConfigOption* bed_type_opt = preset_bundle->project_config.option("curr_bed_type");
@@ -7597,7 +7598,7 @@ std::vector<size_t> Plater::priv::load_files(const std::vector<fs::path>& input_
                             // BBS: add preset combo box re-active logic
                             // currently found only needs re-active here
                             wxGetApp().load_current_presets(false, false);
-                            if (load_project_printer) {
+                            if (load_project_presets) {
                                 // The device page keeps its own printer/nozzle selections. Refresh
                                 // them after the complete project import has returned to the event
                                 // loop, otherwise a pending device UI update may restore the old

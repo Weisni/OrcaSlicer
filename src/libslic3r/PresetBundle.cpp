@@ -4460,7 +4460,7 @@ static void convert_filament_preset_name(std::string& machine_name, std::string&
 }
 // Load a config file from a boost property_tree. This is a private method called from load_config_file.
 // is_external == false on if called from ConfigWizard
-void PresetBundle::load_config_file_config(const std::string &name_or_path, bool is_external, DynamicPrintConfig &&config, Semver file_version, bool selected, bool load_printer_preset)
+void PresetBundle::load_config_file_config(const std::string &name_or_path, bool is_external, DynamicPrintConfig &&config, Semver file_version, bool selected, bool load_project_presets)
 {
     PrinterTechnology printer_technology = Preset::printer_technology(config);
 
@@ -4477,6 +4477,39 @@ void PresetBundle::load_config_file_config(const std::string &name_or_path, bool
     // Dynamic per-nozzle filament mapping reflects live device state, not a stored setting;
     // drop it from any imported config so it only comes from the connected printer.
     config.erase("enable_filament_dynamic_map");
+
+    if (!load_project_presets) {
+        // "Keep current printer" means keeping the complete active slicing setup:
+        // printer, process, and filament presets. Model/object/volume settings are
+        // loaded separately by the 3MF reader. Only project-scoped data needed by
+        // the imported model (colors, filament mappings, purge data and layout)
+        // belongs here.
+        const std::vector<int> current_nozzle_volume_types =
+            this->project_config.option<ConfigOptionEnumsGeneric>("nozzle_volume_type")->values;
+        const BedType current_bed_type =
+            this->project_config.opt_enum<BedType>("curr_bed_type");
+        if (const auto *project_colors = config.option<ConfigOptionStrings>("filament_colour");
+            project_colors != nullptr && filament_presets.size() < project_colors->size()) {
+            const std::string fallback_filament = filament_presets.empty()
+                ? filaments.first_visible().name
+                : filament_presets.back();
+            filament_presets.resize(project_colors->size(), fallback_filament);
+        }
+        this->project_config.apply_only(config, s_project_options);
+        // Nozzle flow type describes the currently selected/connected printer, not
+        // the imported model. In particular, a Standard-flow project must not
+        // switch an active High Flow nozzle back to Standard.
+        this->project_config.option<ConfigOptionEnumsGeneric>("nozzle_volume_type")->values =
+            current_nozzle_volume_types;
+        // The selected build plate belongs to the active printer setup as well.
+        // Keep it instead of applying the plate type saved for another printer.
+        this->project_config.set_key_value("curr_bed_type",
+                                           new ConfigOptionEnum<BedType>(current_bed_type));
+        BOOST_LOG_TRIVIAL(info) << __FUNCTION__
+                                << ": kept active printer, process and filament presets while loading project data from "
+                                << name_or_path;
+        return;
+    }
 
 #if 0
     size_t num_extruders = (printer_technology == ptFFF) ?
@@ -4636,8 +4669,7 @@ void PresetBundle::load_config_file_config(const std::string &name_or_path, bool
             printer_different_keys_set.insert(ignore_settings_list.begin(), ignore_settings_list.end());
         //BBS: add config related logs
         BOOST_LOG_TRIVIAL(debug) << __FUNCTION__ << boost::format(": load printer preset from printer_settings_id");
-        if (load_printer_preset)
-            load_preset(this->printers, num_filaments + 1, "printer_settings_id", printer_different_keys_set, std::string());
+        load_preset(this->printers, num_filaments + 1, "printer_settings_id", printer_different_keys_set, std::string());
 
         // 3) Now load the filaments. If there are multiple filament presets, split them and load them.
         auto old_filament_profile_names = config.option<ConfigOptionStrings>("filament_settings_id", true);

@@ -564,3 +564,53 @@ TEST_CASE("Switching printers preserves project filament colors", "[Preset][Proj
     CHECK(bundle.project_config.option<ConfigOptionInts>("filament_map")->values == maps);
 }
 
+TEST_CASE("Keeping the current printer preserves all active project profiles", "[Preset][ProjectPrinter]")
+{
+    PresetBundle bundle;
+
+    DynamicPrintConfig current_printer(bundle.printers.default_preset().config);
+    DynamicPrintConfig current_print(bundle.prints.default_preset().config);
+    DynamicPrintConfig current_filament(bundle.filaments.default_preset().config);
+
+    bundle.printers.load_preset({}, "Current Printer", current_printer, true);
+    bundle.prints.load_preset({}, "Current Process", current_print, true);
+    bundle.filaments.load_preset({}, "Current Filament", current_filament, true);
+    bundle.filament_presets = {"Current Filament"};
+    bundle.project_config.option<ConfigOptionEnumsGeneric>("nozzle_volume_type")->values =
+        {static_cast<int>(NozzleVolumeType::nvtHighFlow)};
+    bundle.project_config.set_key_value("curr_bed_type", new ConfigOptionEnum<BedType>(btPTE));
+
+    DynamicPrintConfig project;
+    project.apply(FullPrintConfig::defaults());
+    project.set_key_value("printer_settings_id", new ConfigOptionString("Project Printer"));
+    project.set_key_value("print_settings_id", new ConfigOptionString("Project Process"));
+    project.set_key_value("filament_settings_id", new ConfigOptionStrings({"Project Filament", "Project Filament"}));
+    project.set_key_value("filament_colour", new ConfigOptionStrings({"#112233", "#445566"}));
+    project.set_key_value("filament_multi_colour", new ConfigOptionStrings({"#112233", "#445566"}));
+    project.set_key_value("filament_colour_type", new ConfigOptionStrings({"1", "1"}));
+    project.set_key_value("filament_map", new ConfigOptionInts({1, 2}));
+    project.set_key_value("nozzle_volume_type",
+                          new ConfigOptionEnumsGeneric({static_cast<int>(NozzleVolumeType::nvtStandard)}));
+    project.set_key_value("curr_bed_type", new ConfigOptionEnum<BedType>(btPEI));
+
+    bundle.load_config_model("KeepCurrentPrinterDemo.3mf", std::move(project), Semver(), false);
+
+    CHECK(bundle.printers.get_selected_preset_name() == "Current Printer");
+    CHECK(bundle.prints.get_selected_preset_name() == "Current Process");
+    CHECK(bundle.filaments.get_selected_preset_name() == "Current Filament");
+    CHECK(bundle.filament_presets ==
+          std::vector<std::string>{"Current Filament", "Current Filament"});
+
+    CHECK(bundle.printers.find_preset("Project Printer") == nullptr);
+    CHECK(bundle.prints.find_preset("Project Process") == nullptr);
+    CHECK(bundle.filaments.find_preset("Project Filament") == nullptr);
+
+    CHECK(bundle.project_config.option<ConfigOptionStrings>("filament_colour")->values ==
+          std::vector<std::string>{"#112233", "#445566"});
+    CHECK(bundle.project_config.option<ConfigOptionInts>("filament_map")->values ==
+          std::vector<int>{1, 2});
+    CHECK(bundle.project_config.option<ConfigOptionEnumsGeneric>("nozzle_volume_type")->values ==
+          std::vector<int>{static_cast<int>(NozzleVolumeType::nvtHighFlow)});
+    CHECK(bundle.project_config.opt_enum<BedType>("curr_bed_type") == btPTE);
+}
+
