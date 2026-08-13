@@ -793,3 +793,24 @@ TEST_CASE("Paint penetration mode defaults to inwards and supports projected", "
     CHECK(mode->value == Slic3r::ColorPenetrationMode::Projected);
     CHECK(mode->serialize() == "projected");
 }
+
+TEST_CASE("Wave overhang settings are opt-in and serialize their pattern modes", "[Config][WaveOverhangs]")
+{
+    Slic3r::DynamicPrintConfig config = Slic3r::DynamicPrintConfig::full_print_config();
+
+    const auto *enabled = config.option<Slic3r::ConfigOptionBool>("wave_overhangs");
+    const auto *support_remainder = config.option<Slic3r::ConfigOptionBool>("support_remaining_areas_after_wave_overhangs");
+    auto *pattern = config.option<Slic3r::ConfigOptionEnum<Slic3r::WaveOverhangPattern>>("wave_overhang_pattern");
+
+    REQUIRE(enabled != nullptr);
+    REQUIRE(support_remainder != nullptr);
+    REQUIRE(pattern != nullptr);
+    CHECK_FALSE(enabled->value);
+    CHECK(support_remainder->value);
+    CHECK(pattern->value == Slic3r::WaveOverhangPattern::Smart);
+    CHECK(pattern->serialize() == "smart");
+
+    REQUIRE_NOTHROW(config.set_deserialize_strict("wave_overhang_pattern", "zigzag"));
+    CHECK(pattern->value == Slic3r::WaveOverhangPattern::ZigZag);
+    CHECK(pattern->serialize() == "zigzag");
+}
