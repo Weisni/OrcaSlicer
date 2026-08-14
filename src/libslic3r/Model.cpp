@@ -3268,6 +3268,13 @@ double Model::findMaxSpeed(const ModelObject* object) {
     double supportSpeedObj = Model::printSpeedMap.supportSpeed;
     double smallPerimeterSpeedObj = Model::printSpeedMap.smallPerimeterSpeed;
     double smallSupportPerimeterSpeedObj = Model::printSpeedMap.smallSupportPerimeterSpeed;
+    const auto float_or_percent_speed = [&object](const std::string &key, double ratio_over, double fallback) {
+        const ConfigOption *option = object->config.get().option(key);
+        const auto *speeds = dynamic_cast<const ConfigOptionVector<FloatOrPercent> *>(option);
+        if (speeds == nullptr || speeds->values.empty() || std::isnan(speeds->get_at(0).value))
+            return fallback;
+        return speeds->get_at(0).get_abs_value(ratio_over);
+    };
     for (std::string objectKey : objectKeys) {
         if (objectKey == "inner_wall_speed"){
             perimeterSpeedObj = object->config.get().opt_float_nullable(objectKey, 0);
@@ -3284,9 +3291,9 @@ double Model::findMaxSpeed(const ModelObject* object) {
         if (objectKey == "outer_wall_speed")
             externalPerimeterSpeedObj = object->config.get().opt_float_nullable(objectKey, 0);
         if (objectKey == "small_perimeter_speed")
-            smallPerimeterSpeedObj = object->config.get().opt_float_nullable(objectKey, 0);
+            smallPerimeterSpeedObj = float_or_percent_speed(objectKey, externalPerimeterSpeedObj, smallPerimeterSpeedObj);
         if (objectKey == "small_support_perimeter_speed")
-            smallSupportPerimeterSpeedObj = object->config.get().opt_float_nullable(objectKey, 0);
+            smallSupportPerimeterSpeedObj = float_or_percent_speed(objectKey, supportSpeedObj, smallSupportPerimeterSpeedObj);
     }
     objMaxSpeed = std::max(perimeterSpeedObj, std::max(externalPerimeterSpeedObj, std::max(infillSpeedObj, std::max(solidInfillSpeedObj, std::max(topSolidInfillSpeedObj, std::max(supportSpeedObj, std::max(smallPerimeterSpeedObj, std::max(smallSupportPerimeterSpeedObj, objMaxSpeed))))))));
     if (objMaxSpeed <= 0) objMaxSpeed = 250.;
