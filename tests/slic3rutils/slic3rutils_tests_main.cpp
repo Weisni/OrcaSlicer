@@ -29,6 +29,9 @@ nlohmann::json nested_session_json(const nlohmann::json& metadata)
 std::string resolved_display_name(const nlohmann::json& session)
 {
     Slic3r::OrcaCloudServiceAgent agent("");
+    // Keep this headless parser test away from the OS credential store. With no wxApp and no
+    // configured data directory, encrypted-file mode intentionally skips persistence altogether.
+    agent.set_use_encrypted_token_file(true);
     REQUIRE(agent.set_user_session(session, false));
     return agent.get_user_nickname();
 }
