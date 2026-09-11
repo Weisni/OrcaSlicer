@@ -2085,7 +2085,16 @@ bool Sidebar::priv::sync_extruder_list(bool &only_external_material, bool is_man
 
     // set nozzle volume type after switching prset, so this value can override the old value stored in conf
     auto printer_tab = dynamic_cast<TabPrinter *>(wxGetApp().get_tab(Preset::TYPE_PRINTER));
+    auto nozzle_system = obj->GetNozzleSystem();
     for (size_t idx = 0; idx < target_types.size(); ++idx) {
+        // A single-nozzle extruder does not open the multi-nozzle selector, so refresh its inventory
+        // directly from the connected machine. Otherwise an older 3MF may keep a zero count after
+        // "Sync printer information" and make an installed extruder unavailable to slicing.
+        if (!support_multi_nozzle && nozzle_system) {
+            const int  physical_extruder_id = extruder_map[idx];
+            const bool nozzle_installed     = !nozzle_system->GetExtNozzle(physical_extruder_id).IsEmpty();
+            setExtruderNozzleCount(preset_bundle, int(idx), target_types[idx], int(nozzle_installed), true);
+        }
         printer_tab->set_extruder_volume_type(idx, target_types[idx]);
         printer_tab->set_extruder_nozzle_type(idx, target_nozzle_types[idx]);
     }
