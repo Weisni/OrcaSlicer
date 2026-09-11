@@ -180,8 +180,11 @@ enum class LoadStrategy
     LoadAuxiliary = 16,
     Silence = 32,
     ImperialUnits = 64,
+    PreserveModelObjects = 128,
+    SkipStandard3mfColorMapping = 256,
 
     Restore = 0x10000 | LoadModel | LoadConfig | LoadAuxiliary | Silence,
+    LoadCalibrationModel = 0x20000 | LoadModel | PreserveModelObjects | SkipStandard3mfColorMapping,
 };
 
 inline LoadStrategy operator | (LoadStrategy lhs, LoadStrategy rhs)

@@ -7,6 +7,7 @@
 #include <vector>
 
 #include <wx/choice.h>
+#include <wx/checkbox.h>
 #include <wx/dialog.h>
 #include <wx/msgdlg.h>
 #include <wx/sizer.h>
@@ -118,7 +119,7 @@ public:
     CustomerOrderDialog(
         wxWindow *parent, std::vector<Customer> customers,
         const CustomerOrder *order, const std::string &preferred_customer_id,
-        std::string currency)
+        std::string currency, const InventorySettings &settings)
         : wxDialog(
               parent, wxID_ANY,
               order ? _L("Edit customer order") : _L("Add customer order"),
@@ -156,8 +157,33 @@ public:
         m_invoice = add_text_row(
             this, billing_grid,
             _L("Invoice amount") + " (" + from_u8(m_currency) + ")");
+        m_design_hours = add_text_row(this, billing_grid, _L("Design time (hours)"), "0.00");
+        m_design_rate = add_text_row(
+            this, billing_grid,
+            _L("Design hourly rate") + " (" + from_u8(m_currency) + "/h)",
+            wxString::Format("%.2f", settings.design_per_hour_micros / 1'000'000.0));
+        m_other_cost = add_text_row(
+            this, billing_grid,
+            _L("Other costs") + " (" + from_u8(m_currency) + ")", "0.00");
+        m_discount = add_text_row(this, billing_grid, _L("Overall discount (%)"), "0.00");
         billing->Add(billing_grid, 1, wxEXPAND | wxALL, FromDIP(12));
+        auto *included = new wxStaticBoxSizer(wxVERTICAL, this, _L("Invoice items"));
+        auto *included_grid = new wxGridSizer(2, FromDIP(6), FromDIP(16));
+        const auto add_item = [this, included_grid](const wxString &label, wxCheckBox *&box) {
+            box = new wxCheckBox(this, wxID_ANY, label);
+            box->SetValue(true);
+            included_grid->Add(box);
+        };
+        add_item(_L("Material"), m_bill_material);
+        add_item(_L("Electricity"), m_bill_electricity);
+        add_item(_L("Machine wear"), m_bill_machine_wear);
+        add_item(_L("Maintenance"), m_bill_maintenance);
+        add_item(_L("Repair reserve"), m_bill_repair);
+        add_item(_L("Design"), m_bill_design);
+        add_item(_L("Other costs"), m_bill_other);
+        included->Add(included_grid, 0, wxEXPAND | wxALL, FromDIP(10));
         root->Add(billing, 0, wxEXPAND | wxALL, FromDIP(12));
+        root->Add(included, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(12));
         root->Add(CreateSeparatedButtonSizer(wxOK | wxCANCEL), 0, wxEXPAND | wxALL, FromDIP(12));
 
         std::string customer_id = preferred_customer_id;
@@ -170,6 +196,17 @@ public:
                 m_quote->SetValue(wxString::Format("%.2f", *order->quoted_price_micros / 1'000'000.0));
             if (order->invoice_amount_micros)
                 m_invoice->SetValue(wxString::Format("%.2f", *order->invoice_amount_micros / 1'000'000.0));
+            m_design_hours->SetValue(wxString::Format("%.2f", order->design_time_seconds / 3600.0));
+            m_design_rate->SetValue(wxString::Format("%.2f", order->design_hourly_rate_micros / 1'000'000.0));
+            m_other_cost->SetValue(wxString::Format("%.2f", order->other_cost_micros / 1'000'000.0));
+            m_discount->SetValue(wxString::Format("%.2f", order->discount_basis_points / 100.0));
+            m_bill_material->SetValue(order->bill_material);
+            m_bill_electricity->SetValue(order->bill_electricity);
+            m_bill_machine_wear->SetValue(order->bill_machine_wear);
+            m_bill_maintenance->SetValue(order->bill_maintenance);
+            m_bill_repair->SetValue(order->bill_repair_reserve);
+            m_bill_design->SetValue(order->bill_design);
+            m_bill_other->SetValue(order->bill_other);
         }
         for (std::size_t index = 0; index < m_customers.size(); ++index) {
             if (m_customers[index].id == customer_id) {
@@ -199,6 +236,33 @@ public:
         result.currency = m_currency;
         result.quoted_price_micros.reset();
         result.invoice_amount_micros.reset();
+
+        double design_hours = 0.0;
+        double discount_percent = 0.0;
+        if (!parse_number(m_design_hours->GetValue(), design_hours) || design_hours < 0.0 ||
+            design_hours > static_cast<double>(std::numeric_limits<std::int64_t>::max()) / 3600.0) {
+            error = _L("Design time must be a non-negative number of hours.");
+            return false;
+        }
+        if (!currency_to_micros(m_design_rate->GetValue(), result.design_hourly_rate_micros) ||
+            !currency_to_micros(m_other_cost->GetValue(), result.other_cost_micros)) {
+            error = _L("Design rate and other costs must be non-negative amounts.");
+            return false;
+        }
+        if (!parse_number(m_discount->GetValue(), discount_percent) ||
+            discount_percent < 0.0 || discount_percent > 100.0) {
+            error = _L("Discount must be between 0 and 100 percent.");
+            return false;
+        }
+        result.design_time_seconds = static_cast<std::int64_t>(std::llround(design_hours * 3600.0));
+        result.discount_basis_points = static_cast<std::int64_t>(std::llround(discount_percent * 100.0));
+        result.bill_material = m_bill_material->GetValue();
+        result.bill_electricity = m_bill_electricity->GetValue();
+        result.bill_machine_wear = m_bill_machine_wear->GetValue();
+        result.bill_maintenance = m_bill_maintenance->GetValue();
+        result.bill_repair_reserve = m_bill_repair->GetValue();
+        result.bill_design = m_bill_design->GetValue();
+        result.bill_other = m_bill_other->GetValue();
 
         wxString quote = m_quote->GetValue();
         quote.Trim(true).Trim(false);
@@ -232,6 +296,17 @@ private:
     wxTextCtrl *m_notes {nullptr};
     wxTextCtrl *m_quote {nullptr};
     wxTextCtrl *m_invoice {nullptr};
+    wxTextCtrl *m_design_hours {nullptr};
+    wxTextCtrl *m_design_rate {nullptr};
+    wxTextCtrl *m_other_cost {nullptr};
+    wxTextCtrl *m_discount {nullptr};
+    wxCheckBox *m_bill_material {nullptr};
+    wxCheckBox *m_bill_electricity {nullptr};
+    wxCheckBox *m_bill_machine_wear {nullptr};
+    wxCheckBox *m_bill_maintenance {nullptr};
+    wxCheckBox *m_bill_repair {nullptr};
+    wxCheckBox *m_bill_design {nullptr};
+    wxCheckBox *m_bill_other {nullptr};
 };
 
 class CostSettingsDialog final : public wxDialog
@@ -246,8 +321,10 @@ public:
         auto *root = new wxBoxSizer(wxVERTICAL);
         root->Add(new wxStaticText(
                       this, wxID_ANY,
-                      _L("Electricity cost is calculated from the sliced machine runtime "
-                         "and the average printer power below.")),
+                      _L("Defaults are tailored for a household workshop in Viersen and a "
+                         "Bambu P2S. They are planning assumptions and can be adjusted.\n"
+                         "Changes apply to new print jobs. Use Recalculate costs to update "
+                         "existing customer orders.")),
                   0, wxEXPAND | wxALL, FromDIP(12));
         auto *group = new wxStaticBoxSizer(wxVERTICAL, this, _L("Energy"));
         auto *grid = new wxFlexGridSizer(2, FromDIP(9), FromDIP(12));
@@ -260,6 +337,19 @@ public:
             wxString::Format("%lld", static_cast<long long>(settings.default_machine_power_watts)));
         group->Add(grid, 1, wxEXPAND | wxALL, FromDIP(12));
         root->Add(group, 1, wxEXPAND | wxLEFT | wxRIGHT, FromDIP(12));
+        auto *rates = new wxStaticBoxSizer(wxVERTICAL, this, _L("Hourly rates"));
+        auto *rates_grid = new wxFlexGridSizer(2, FromDIP(9), FromDIP(12));
+        rates_grid->AddGrowableCol(1, 1);
+        m_wear = add_text_row(this, rates_grid, _L("Machine wear (EUR/h)"),
+            wxString::Format("%.2f", settings.machine_wear_per_hour_micros / 1'000'000.0));
+        m_maintenance = add_text_row(this, rates_grid, _L("Maintenance reserve (EUR/h)"),
+            wxString::Format("%.2f", settings.maintenance_per_hour_micros / 1'000'000.0));
+        m_repair = add_text_row(this, rates_grid, _L("Repair reserve (EUR/h)"),
+            wxString::Format("%.2f", settings.repair_reserve_per_hour_micros / 1'000'000.0));
+        m_design = add_text_row(this, rates_grid, _L("Design work (EUR/h)"),
+            wxString::Format("%.2f", settings.design_per_hour_micros / 1'000'000.0));
+        rates->Add(rates_grid, 1, wxEXPAND | wxALL, FromDIP(12));
+        root->Add(rates, 1, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, FromDIP(12));
         root->Add(CreateSeparatedButtonSizer(wxOK | wxCANCEL), 0, wxEXPAND | wxALL, FromDIP(12));
         SetSizerAndFit(root);
         SetMinSize(wxSize(FromDIP(520), GetSize().y));
@@ -282,12 +372,23 @@ public:
         result.currency = "EUR";
         result.electricity_price_per_kwh_micros = electricity;
         result.default_machine_power_watts = static_cast<std::int64_t>(std::llround(watts));
+        if (!currency_to_micros(m_wear->GetValue(), result.machine_wear_per_hour_micros) ||
+            !currency_to_micros(m_maintenance->GetValue(), result.maintenance_per_hour_micros) ||
+            !currency_to_micros(m_repair->GetValue(), result.repair_reserve_per_hour_micros) ||
+            !currency_to_micros(m_design->GetValue(), result.design_per_hour_micros)) {
+            error = _L("Hourly rates must be non-negative amounts.");
+            return false;
+        }
         return true;
     }
 
 private:
     wxTextCtrl *m_electricity {nullptr};
     wxTextCtrl *m_power {nullptr};
+    wxTextCtrl *m_wear {nullptr};
+    wxTextCtrl *m_maintenance {nullptr};
+    wxTextCtrl *m_repair {nullptr};
+    wxTextCtrl *m_design {nullptr};
 };
 
 } // namespace
@@ -339,7 +440,8 @@ std::optional<CustomerOrder> edit_customer_order_interactively(
                  *new_order_currency_override :
                  store.get_settings().currency);
     CustomerOrderDialog dialog(
-        parent, customers, order, preferred_customer_id, currency);
+        parent, customers, order, preferred_customer_id, currency,
+        store.get_settings());
     while (dialog.ShowModal() == wxID_OK) {
         CustomerOrderInput input;
         wxString error;

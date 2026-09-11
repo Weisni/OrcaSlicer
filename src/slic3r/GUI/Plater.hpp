@@ -342,7 +342,7 @@ public:
     int  get_3mf_file_count(std::vector<fs::path> paths);
     void add_file();
     // Returns false when no object was added (e.g. the user cancelled the load dialog).
-    bool add_model(bool imperial_units = false, std::string fname = "");
+    bool add_model(bool imperial_units = false, std::string fname = "", LoadStrategy strategy = LoadStrategy::LoadModel);
     void import_zip_archive();
     void import_sl1_archive();
     void extract_config_from_project();

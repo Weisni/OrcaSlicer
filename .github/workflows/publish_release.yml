@@ -1,8 +1,9 @@
 name: Publish to draft release
 
-# Manually pulls the platform binaries produced by a "Build all" run and uploads
-# them to an existing DRAFT release. Decoupled from the build so you can test a
-# build first, then publish exactly that run's artifacts once you're happy.
+# Pulls the platform binaries produced by a successful main build and uploads
+# them to the matching DRAFT release. Completed main builds are published
+# automatically when their exact commit has a prepared draft release. Manual
+# dispatch remains available for explicitly selected historical runs.
 #
 # Trigger: Actions tab -> "Publish to draft release" -> Run workflow.
 # Locked to a single person: the first step aborts unless the actor matches the
@@ -10,6 +11,10 @@ name: Publish to draft release
 # change that variable: gh variable set RELEASE_PUBLISHER --body "<login>".
 
 on:
+  workflow_run:
+    workflows: ["Build QuackSlicer"]
+    types: [completed]
+    branches: [main]
   workflow_dispatch:
     inputs:
       run_id:
@@ -28,13 +33,40 @@ permissions:
 jobs:
   publish:
     name: Publish binaries to draft release
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      RUN_ID: ${{ inputs.run_id }}
-      TAG: ${{ inputs.tag }}
     steps:
+      - name: Resolve source run and release tag
+        env:
+          DISPATCH_RUN_ID: ${{ inputs.run_id }}
+          DISPATCH_TAG: ${{ inputs.tag }}
+          COMPLETED_RUN_ID: ${{ github.event.workflow_run.id }}
+          COMPLETED_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            run_id="$DISPATCH_RUN_ID"
+            tag="$DISPATCH_TAG"
+          else
+            run_id="$COMPLETED_RUN_ID"
+            tag=$(gh api "repos/$GITHUB_REPOSITORY/releases" --paginate \
+              --jq ".[] | select(.draft == true and .target_commitish == \"$COMPLETED_HEAD_SHA\") | .tag_name" \
+              | head -n 1)
+            if [ -z "$tag" ]; then
+              echo "No draft release targets $COMPLETED_HEAD_SHA; nothing to publish."
+              echo "PUBLISH=false" >> "$GITHUB_ENV"
+              exit 0
+            fi
+          fi
+          echo "PUBLISH=true" >> "$GITHUB_ENV"
+          echo "RUN_ID=$run_id" >> "$GITHUB_ENV"
+          echo "TAG=$tag" >> "$GITHUB_ENV"
+          echo "Resolved build run #$run_id and release $tag"
+
       - name: Restrict to the release publisher
+        if: ${{ env.PUBLISH == 'true' && github.event_name == 'workflow_dispatch' }}
         env:
           PUBLISHER: ${{ vars.RELEASE_PUBLISHER }}
         run: |
@@ -49,6 +81,7 @@ jobs:
           echo "Authorized: @${{ github.actor }}"
 
       - name: Verify target is a draft release
+        if: ${{ env.PUBLISH == 'true' }}
         run: |
           if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft >/dev/null 2>&1; then
             echo "::error::Release '$TAG' not found. Create the draft (with this tag) first."
@@ -61,6 +94,7 @@ jobs:
           fi
 
       - name: Verify source build run
+        if: ${{ env.PUBLISH == 'true' }}
         run: |
           info=$(gh run view "$RUN_ID" --repo "$GITHUB_REPOSITORY" --json workflowName,conclusion,headBranch,headSha)
           name=$(echo "$info" | jq -r '.workflowName')
@@ -86,6 +120,7 @@ jobs:
           fi
 
       - name: Download release artifacts from build run
+        if: ${{ env.PUBLISH == 'true' }}
         run: |
           # Windows_V* (not Windows_*) keeps the MSIX Store artifact out: it goes to Partner Center, not GitHub releases.
           gh run download "$RUN_ID" --repo "$GITHUB_REPOSITORY" --dir artifacts \
@@ -97,6 +132,7 @@ jobs:
           ls -1 artifacts
 
       - name: Assemble release assets
+        if: ${{ env.PUBLISH == 'true' }}
         run: |
           set -euo pipefail
           mkdir -p upload
@@ -136,7 +172,14 @@ jobs:
           fi
 
       - name: Upload assets to draft release
+        if: ${{ env.PUBLISH == 'true' }}
         run: |
           gh release upload "$TAG" upload/* --repo "$GITHUB_REPOSITORY" --clobber
           echo "Uploaded to draft release: $TAG"
           gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name'
+
+      - name: Publish verified release
+        if: ${{ env.PUBLISH == 'true' && github.event_name == 'workflow_run' }}
+        run: |
+          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest
+          echo "Published release: $TAG"

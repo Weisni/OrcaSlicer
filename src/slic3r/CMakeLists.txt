@@ -341,6 +341,8 @@ set(SLIC3R_GUI_SOURCES
     GUI/FilamentAllocationDialog.hpp
     GUI/CustomerOrderDialogs.cpp
     GUI/CustomerOrderDialogs.hpp
+    GUI/CustomerInvoiceDialog.cpp
+    GUI/CustomerInvoiceDialog.hpp
     GUI/FilamentInventoryService.cpp
     GUI/FilamentInventoryService.hpp
     GUI/FilamentManagerPanel.cpp

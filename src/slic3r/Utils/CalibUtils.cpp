@@ -15,6 +15,8 @@
 #include "../GUI/MsgDialog.hpp"
 #include "libslic3r/FlushVolCalc.hpp"
 
+#include <set>
+
 #include "../GUI/DeviceCore/DevConfig.h"
 #include "../GUI/DeviceCore/DevExtruderSystem.h"
 #include "../GUI/DeviceCore/DevManager.h"
@@ -743,7 +745,24 @@ bool CalibUtils::calib_flowrate(int pass, const CalibInfo &calib_info, wxString 
     // adjust parameters
     filament_config.set_key_value("curr_bed_type", new ConfigOptionEnum<BedType>(calib_info.bed_type));
 
-    for (auto _obj : model.objects) {
+    std::vector<double> modifiers;
+    modifiers.reserve(model.objects.size());
+    std::set<double> unique_modifiers;
+    for (const ModelObject *object : model.objects) {
+        const std::optional<double> modifier = flow_ratio_calibration_modifier(object->name);
+        if (!modifier || !unique_modifiers.insert(*modifier).second) {
+            error_message = _L("The flow ratio calibration model is invalid. Expected separate objects named 'flowrate_<modifier>'.");
+            return false;
+        }
+        modifiers.push_back(*modifier);
+    }
+    if (modifiers.size() < 2) {
+        error_message = _L("The flow ratio calibration model does not contain enough separate test objects.");
+        return false;
+    }
+
+    for (size_t object_idx = 0; object_idx < model.objects.size(); ++object_idx) {
+        ModelObject *_obj = model.objects[object_idx];
         _obj->ensure_on_bed();
         _obj->config.set_key_value("wall_loops", new ConfigOptionInt(3));
         _obj->config.set_key_value("only_one_wall_top", new ConfigOptionBool(true));
@@ -762,13 +781,7 @@ bool CalibUtils::calib_flowrate(int pass, const CalibInfo &calib_info, wxString 
         _obj->config.set_key_value("internal_solid_infill_speed", new ConfigOptionFloatsNullable({internal_solid_speed}));
         _obj->config.set_key_value("top_surface_speed", new ConfigOptionFloatsNullable({top_surface_speed}));
 
-        // extract flowrate from name, filename format: flowrate_xxx
-        std::string obj_name = _obj->name;
-        assert(obj_name.length() > 9);
-        obj_name = obj_name.substr(9);
-        if (obj_name[0] == 'm') obj_name[0] = '-';
-        auto modifier = stof(obj_name);
-        _obj->config.set_key_value("print_flow_ratio", new ConfigOptionFloat(1.0f + modifier / 100.f));
+        _obj->config.set_key_value("print_flow_ratio", new ConfigOptionFloat(1.0f + modifiers[object_idx] / 100.f));
     }
     print_config.set_key_value("alternate_extra_wall", new ConfigOptionBool(false));
     print_config.set_key_value("layer_height", new ConfigOptionFloat(layer_height));

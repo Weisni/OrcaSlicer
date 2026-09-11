@@ -68,10 +68,12 @@ private:
     void add_customer_order();
     void edit_customer_order();
     void show_material_breakdown();
+    void show_invoice();
     void show_selected_job_materials(bool history);
     void set_customer_order_status(FilamentInventory::CustomerOrderStatus status);
     void delete_customer_order();
     void edit_cost_settings();
+    void recalculate_costs();
     void show_error(const std::exception &error);
 
     InventoryStore                  *m_store {nullptr};
@@ -113,6 +115,8 @@ private:
     wxButton           *m_add_order_button {nullptr};
     wxButton           *m_edit_order_button {nullptr};
     wxButton           *m_material_breakdown_button {nullptr};
+    wxButton           *m_invoice_button {nullptr};
+    wxButton           *m_recalculate_costs_button {nullptr};
     wxButton           *m_activate_order_button {nullptr};
     wxButton           *m_complete_order_button {nullptr};
     wxButton           *m_cancel_order_button {nullptr};

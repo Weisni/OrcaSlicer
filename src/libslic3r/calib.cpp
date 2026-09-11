@@ -4,8 +4,28 @@
 #include "Model.hpp"
 #include "GCode.hpp"
 #include <cmath>
+#include <locale>
+#include <sstream>
 
 namespace Slic3r {
+
+std::optional<double> flow_ratio_calibration_modifier(const std::string &object_name)
+{
+    static constexpr const char *prefix = "flowrate_";
+    if (object_name.rfind(prefix, 0) != 0 || object_name.size() <= std::char_traits<char>::length(prefix))
+        return std::nullopt;
+
+    std::string modifier = object_name.substr(std::char_traits<char>::length(prefix));
+    if (modifier.front() == 'm')
+        modifier.front() = '-';
+
+    std::istringstream stream(modifier);
+    stream.imbue(std::locale::classic());
+    double value = 0.;
+    if (!(stream >> value) || stream.peek() != std::char_traits<char>::eof())
+        return std::nullopt;
+    return value;
+}
 
 // Calculate the optimal Pressure Advance speed
 float CalibPressureAdvance::find_optimal_PA_speed(const DynamicPrintConfig &config, double line_width, double layer_height, int extruder_id, int filament_idx)

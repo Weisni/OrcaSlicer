@@ -1,4 +1,5 @@
 #pragma once
+#include <optional>
 #include <string>
 #define calib_pressure_advance_dd
 
@@ -62,6 +63,8 @@ enum FlowRatioCalibrationType {
     COMPLETE_CALIBRATION = 0,
     FINE_CALIBRATION,
 };
+
+std::optional<double> flow_ratio_calibration_modifier(const std::string &object_name);
 
 class X1CCalibInfos
 {

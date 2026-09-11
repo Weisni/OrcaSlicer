@@ -291,6 +291,11 @@ void validate_settings(const InventorySettings &settings)
         throw Error(ErrorCode::validation, "Electricity price must not be negative");
     if (settings.default_machine_power_watts <= 0)
         throw Error(ErrorCode::validation, "Default machine power must be positive");
+    if (settings.machine_wear_per_hour_micros < 0 ||
+        settings.maintenance_per_hour_micros < 0 ||
+        settings.repair_reserve_per_hour_micros < 0 ||
+        settings.design_per_hour_micros < 0)
+        throw Error(ErrorCode::validation, "Hourly cost rates must not be negative");
 }
 
 void validate_customer_input(const CustomerInput &input)
@@ -309,6 +314,11 @@ void validate_customer_order_input(const CustomerOrderInput &input)
         throw Error(ErrorCode::validation, "Quoted price must not be negative");
     if (input.invoice_amount_micros && *input.invoice_amount_micros < 0)
         throw Error(ErrorCode::validation, "Invoice amount must not be negative");
+    if (input.design_time_seconds < 0 || input.design_hourly_rate_micros < 0 ||
+        input.other_cost_micros < 0)
+        throw Error(ErrorCode::validation, "Order costs must not be negative");
+    if (input.discount_basis_points < 0 || input.discount_basis_points > 10'000)
+        throw Error(ErrorCode::validation, "Discount must be between 0 and 100 percent");
     (void) normalize_currency(input.currency);
 }
 
@@ -364,6 +374,27 @@ MoneyMicros electricity_cost(MoneyMicros price_per_kwh_micros,
         {price_per_kwh_micros, power_watts, runtime_seconds},
         3'600'000,
         "Electricity cost");
+}
+
+std::string to_string(InvoiceCostCategory value)
+{
+    switch (value) {
+    case InvoiceCostCategory::material:       return "material";
+    case InvoiceCostCategory::electricity:    return "electricity";
+    case InvoiceCostCategory::machine_wear:   return "machine_wear";
+    case InvoiceCostCategory::maintenance:    return "maintenance";
+    case InvoiceCostCategory::repair_reserve: return "repair_reserve";
+    case InvoiceCostCategory::design:         return "design";
+    case InvoiceCostCategory::other:          return "other";
+    case InvoiceCostCategory::discount:       return "discount";
+    }
+    return "other";
+}
+
+MoneyMicros hourly_cost(MoneyMicros rate_per_hour_micros,
+                        std::int64_t runtime_seconds, const char *context)
+{
+    return scaled_cost({rate_per_hour_micros, runtime_seconds}, 3'600, context);
 }
 
 void validate_operation_key(const std::string &value)
@@ -771,7 +802,7 @@ struct Store::Impl
                 INSERT INTO inventory_settings (
                     id, currency, electricity_price_per_kwh_micros,
                     default_machine_power_watts
-                ) VALUES (1, 'EUR', 400000, 150);
+                ) VALUES (1, 'EUR', 400000, 200);
 
                 CREATE TABLE customers (
                     id            TEXT PRIMARY KEY,
@@ -940,6 +971,135 @@ struct Store::Impl
 
                 PRAGMA user_version = 5;
             )SQL");
+        }
+        if (version < 6) {
+            bool cost_columns_exist = false;
+            Statement columns(db, "PRAGMA table_info(inventory_settings)");
+            while (columns.step()) {
+                if (columns.text(1) == "machine_wear_per_hour_micros") {
+                    cost_columns_exist = true;
+                    break;
+                }
+            }
+            if (!cost_columns_exist) {
+                exec_sql(db, R"SQL(
+                ALTER TABLE inventory_settings
+                    ADD COLUMN machine_wear_per_hour_micros INTEGER NOT NULL DEFAULT 1250000
+                    CHECK (machine_wear_per_hour_micros >= 0);
+                ALTER TABLE inventory_settings
+                    ADD COLUMN maintenance_per_hour_micros INTEGER NOT NULL DEFAULT 500000
+                    CHECK (maintenance_per_hour_micros >= 0);
+                ALTER TABLE inventory_settings
+                    ADD COLUMN repair_reserve_per_hour_micros INTEGER NOT NULL DEFAULT 500000
+                    CHECK (repair_reserve_per_hour_micros >= 0);
+                ALTER TABLE inventory_settings
+                    ADD COLUMN design_per_hour_micros INTEGER NOT NULL DEFAULT 45000000
+                    CHECK (design_per_hour_micros >= 0);
+
+                ALTER TABLE print_jobs
+                    ADD COLUMN machine_wear_per_hour_micros INTEGER NOT NULL DEFAULT 0
+                    CHECK (machine_wear_per_hour_micros >= 0);
+                ALTER TABLE print_jobs
+                    ADD COLUMN maintenance_per_hour_micros INTEGER NOT NULL DEFAULT 0
+                    CHECK (maintenance_per_hour_micros >= 0);
+                ALTER TABLE print_jobs
+                    ADD COLUMN repair_reserve_per_hour_micros INTEGER NOT NULL DEFAULT 0
+                    CHECK (repair_reserve_per_hour_micros >= 0);
+                ALTER TABLE print_jobs
+                    ADD COLUMN machine_wear_cost_micros INTEGER NOT NULL DEFAULT 0
+                    CHECK (machine_wear_cost_micros >= 0);
+                ALTER TABLE print_jobs
+                    ADD COLUMN maintenance_cost_micros INTEGER NOT NULL DEFAULT 0
+                    CHECK (maintenance_cost_micros >= 0);
+                ALTER TABLE print_jobs
+                    ADD COLUMN repair_reserve_cost_micros INTEGER NOT NULL DEFAULT 0
+                    CHECK (repair_reserve_cost_micros >= 0);
+
+                ALTER TABLE customer_orders
+                    ADD COLUMN design_time_seconds INTEGER NOT NULL DEFAULT 0
+                    CHECK (design_time_seconds >= 0);
+                ALTER TABLE customer_orders
+                    ADD COLUMN design_hourly_rate_micros INTEGER NOT NULL DEFAULT 45000000
+                    CHECK (design_hourly_rate_micros >= 0);
+                ALTER TABLE customer_orders
+                    ADD COLUMN other_cost_micros INTEGER NOT NULL DEFAULT 0
+                    CHECK (other_cost_micros >= 0);
+                ALTER TABLE customer_orders
+                    ADD COLUMN discount_basis_points INTEGER NOT NULL DEFAULT 0
+                    CHECK (discount_basis_points BETWEEN 0 AND 10000);
+                ALTER TABLE customer_orders ADD COLUMN bill_material INTEGER NOT NULL DEFAULT 1 CHECK (bill_material IN (0, 1));
+                ALTER TABLE customer_orders ADD COLUMN bill_electricity INTEGER NOT NULL DEFAULT 1 CHECK (bill_electricity IN (0, 1));
+                ALTER TABLE customer_orders ADD COLUMN bill_machine_wear INTEGER NOT NULL DEFAULT 1 CHECK (bill_machine_wear IN (0, 1));
+                ALTER TABLE customer_orders ADD COLUMN bill_maintenance INTEGER NOT NULL DEFAULT 1 CHECK (bill_maintenance IN (0, 1));
+                ALTER TABLE customer_orders ADD COLUMN bill_repair_reserve INTEGER NOT NULL DEFAULT 1 CHECK (bill_repair_reserve IN (0, 1));
+                ALTER TABLE customer_orders ADD COLUMN bill_design INTEGER NOT NULL DEFAULT 1 CHECK (bill_design IN (0, 1));
+                ALTER TABLE customer_orders ADD COLUMN bill_other INTEGER NOT NULL DEFAULT 1 CHECK (bill_other IN (0, 1));
+
+                )SQL");
+            }
+            exec_sql(db, "PRAGMA user_version = 6;");
+        }
+        if (version < 7) {
+            InventorySettings settings;
+            Statement settings_statement(db, R"SQL(
+                SELECT machine_wear_per_hour_micros,
+                       maintenance_per_hour_micros,
+                       repair_reserve_per_hour_micros
+                FROM inventory_settings
+                WHERE id = 1
+            )SQL");
+            if (!settings_statement.step())
+                throw Error(ErrorCode::database, "Inventory cost settings are missing");
+            settings.machine_wear_per_hour_micros = settings_statement.integer64(0);
+            settings.maintenance_per_hour_micros = settings_statement.integer64(1);
+            settings.repair_reserve_per_hour_micros = settings_statement.integer64(2);
+
+            struct LegacyJobCostMigration {
+                std::string id;
+                std::int64_t runtime_seconds {0};
+            };
+            std::vector<LegacyJobCostMigration> legacy_jobs;
+            Statement jobs(db, R"SQL(
+                SELECT id, COALESCE(actual_runtime_seconds,
+                                    estimated_runtime_seconds)
+                FROM print_jobs
+                WHERE machine_wear_per_hour_micros = 0
+                  AND maintenance_per_hour_micros = 0
+                  AND repair_reserve_per_hour_micros = 0
+                  AND machine_wear_cost_micros = 0
+                  AND maintenance_cost_micros = 0
+                  AND repair_reserve_cost_micros = 0
+            )SQL");
+            while (jobs.step())
+                legacy_jobs.push_back({jobs.text(0), jobs.integer64(1)});
+
+            for (const LegacyJobCostMigration &job : legacy_jobs) {
+                Statement update(db, R"SQL(
+                    UPDATE print_jobs
+                    SET machine_wear_per_hour_micros = ?,
+                        maintenance_per_hour_micros = ?,
+                        repair_reserve_per_hour_micros = ?,
+                        machine_wear_cost_micros = ?,
+                        maintenance_cost_micros = ?,
+                        repair_reserve_cost_micros = ?
+                    WHERE id = ?
+                )SQL");
+                update.bind(1, settings.machine_wear_per_hour_micros);
+                update.bind(2, settings.maintenance_per_hour_micros);
+                update.bind(3, settings.repair_reserve_per_hour_micros);
+                update.bind(4, hourly_cost(
+                    settings.machine_wear_per_hour_micros, job.runtime_seconds,
+                    "Legacy machine wear cost"));
+                update.bind(5, hourly_cost(
+                    settings.maintenance_per_hour_micros, job.runtime_seconds,
+                    "Legacy maintenance cost"));
+                update.bind(6, hourly_cost(
+                    settings.repair_reserve_per_hour_micros, job.runtime_seconds,
+                    "Legacy repair reserve cost"));
+                update.bind(7, job.id);
+                update.execute();
+            }
+            exec_sql(db, "PRAGMA user_version = 7;");
         }
         transaction.commit();
     }
@@ -1163,12 +1323,18 @@ struct Store::Impl
         job.machine_power_watts = statement.integer64(9);
         job.estimated_runtime_seconds = statement.integer64(10);
         job.electricity_cost_micros = statement.integer64(11);
-        job.created_at      = statement.text(12);
-        job.updated_at      = statement.text(13);
-        job.started_at      = statement.text(14);
-        job.completed_at    = statement.text(15);
-        if (!statement.is_null(16))
-            job.actual_runtime_seconds = statement.integer64(16);
+        job.machine_wear_per_hour_micros = statement.integer64(12);
+        job.maintenance_per_hour_micros = statement.integer64(13);
+        job.repair_reserve_per_hour_micros = statement.integer64(14);
+        job.machine_wear_cost_micros = statement.integer64(15);
+        job.maintenance_cost_micros = statement.integer64(16);
+        job.repair_reserve_cost_micros = statement.integer64(17);
+        job.created_at      = statement.text(18);
+        job.updated_at      = statement.text(19);
+        job.started_at      = statement.text(20);
+        job.completed_at    = statement.text(21);
+        if (!statement.is_null(22))
+            job.actual_runtime_seconds = statement.integer64(22);
 
         // Allocation metadata remains a booking-time snapshot, but price and
         // calculated costs deliberately follow the stable spool UUID. Legacy
@@ -1201,6 +1367,9 @@ struct Store::Impl
                    customer_order_id, state, cost_currency,
                    electricity_price_per_kwh_micros, machine_power_watts,
                    estimated_runtime_seconds, electricity_cost_micros,
+                   machine_wear_per_hour_micros, maintenance_per_hour_micros,
+                   repair_reserve_per_hour_micros, machine_wear_cost_micros,
+                   maintenance_cost_micros, repair_reserve_cost_micros,
                    created_at, updated_at, started_at, completed_at,
                    actual_runtime_seconds
             FROM print_jobs
@@ -1219,6 +1388,9 @@ struct Store::Impl
                    customer_order_id, state, cost_currency,
                    electricity_price_per_kwh_micros, machine_power_watts,
                    estimated_runtime_seconds, electricity_cost_micros,
+                   machine_wear_per_hour_micros, maintenance_per_hour_micros,
+                   repair_reserve_per_hour_micros, machine_wear_cost_micros,
+                   maintenance_cost_micros, repair_reserve_cost_micros,
                    created_at, updated_at, started_at, completed_at,
                    actual_runtime_seconds
             FROM print_jobs
@@ -1250,13 +1422,20 @@ struct Store::Impl
     {
         Statement statement(db, R"SQL(
             SELECT currency, electricity_price_per_kwh_micros,
-                   default_machine_power_watts
+                   default_machine_power_watts,
+                   machine_wear_per_hour_micros,
+                   maintenance_per_hour_micros,
+                   repair_reserve_per_hour_micros,
+                   design_per_hour_micros
             FROM inventory_settings
             WHERE id = 1
         )SQL");
         if (!statement.step())
             throw Error(ErrorCode::database, "Filament inventory settings are missing");
-        return {statement.text(0), statement.integer64(1), statement.integer64(2)};
+        return {
+            statement.text(0), statement.integer64(1), statement.integer64(2),
+            statement.integer64(3), statement.integer64(4),
+            statement.integer64(5), statement.integer64(6)};
     }
 
     Customer read_customer(Statement &statement) const
@@ -1302,8 +1481,19 @@ struct Store::Impl
             order.invoice_amount_micros = statement.integer64(6);
         order.currency   = statement.text(7);
         order.status     = customer_order_status_from_string(statement.text(8));
-        order.created_at = statement.text(9);
-        order.updated_at = statement.text(10);
+        order.design_time_seconds = statement.integer64(9);
+        order.design_hourly_rate_micros = statement.integer64(10);
+        order.other_cost_micros = statement.integer64(11);
+        order.discount_basis_points = statement.integer64(12);
+        order.bill_material = statement.integer(13) != 0;
+        order.bill_electricity = statement.integer(14) != 0;
+        order.bill_machine_wear = statement.integer(15) != 0;
+        order.bill_maintenance = statement.integer(16) != 0;
+        order.bill_repair_reserve = statement.integer(17) != 0;
+        order.bill_design = statement.integer(18) != 0;
+        order.bill_other = statement.integer(19) != 0;
+        order.created_at = statement.text(20);
+        order.updated_at = statement.text(21);
         return order;
     }
 
@@ -1312,6 +1502,10 @@ struct Store::Impl
         Statement statement(db, R"SQL(
             SELECT id, customer_id, order_number, title, notes,
                    quoted_price_micros, invoice_amount_micros, currency, status,
+                   design_time_seconds, design_hourly_rate_micros,
+                   other_cost_micros, discount_basis_points,
+                   bill_material, bill_electricity, bill_machine_wear,
+                   bill_maintenance, bill_repair_reserve, bill_design, bill_other,
                    created_at, updated_at
             FROM customer_orders
             WHERE id = ?
@@ -1350,15 +1544,106 @@ InventorySettings Store::update_settings(const InventorySettings &settings)
     Statement statement(m_impl->db, R"SQL(
         UPDATE inventory_settings
         SET currency = ?, electricity_price_per_kwh_micros = ?,
-            default_machine_power_watts = ?,
+            default_machine_power_watts = ?, machine_wear_per_hour_micros = ?,
+            maintenance_per_hour_micros = ?, repair_reserve_per_hour_micros = ?,
+            design_per_hour_micros = ?,
             updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
         WHERE id = 1
     )SQL");
     statement.bind(1, normalize_currency(settings.currency));
     statement.bind(2, settings.electricity_price_per_kwh_micros);
     statement.bind(3, settings.default_machine_power_watts);
+    statement.bind(4, settings.machine_wear_per_hour_micros);
+    statement.bind(5, settings.maintenance_per_hour_micros);
+    statement.bind(6, settings.repair_reserve_per_hour_micros);
+    statement.bind(7, settings.design_per_hour_micros);
     statement.execute();
     return m_impl->get_settings_unlocked();
+}
+
+std::size_t Store::recalculate_customer_order_costs(
+    const std::vector<std::string> &order_ids)
+{
+    std::lock_guard<std::mutex> lock(m_impl->mutex);
+    Transaction transaction(m_impl->db);
+    const InventorySettings settings = m_impl->get_settings_unlocked();
+    const std::set<std::string> unique_order_ids(order_ids.begin(), order_ids.end());
+    std::size_t updated_jobs = 0;
+
+    for (const std::string &order_id : unique_order_ids) {
+        if (trim_copy(order_id).empty())
+            throw Error(ErrorCode::validation, "Customer order ID must not be empty");
+        const CustomerOrder order = m_impl->get_customer_order_unlocked(order_id);
+        if (normalize_currency(order.currency) != normalize_currency(settings.currency))
+            throw Error(
+                ErrorCode::conflict,
+                "Customer-order currency does not match the current cost settings");
+
+        Statement update_order(m_impl->db, R"SQL(
+            UPDATE customer_orders
+            SET design_hourly_rate_micros = ?,
+                updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+            WHERE id = ?
+        )SQL");
+        update_order.bind(1, settings.design_per_hour_micros);
+        update_order.bind(2, order_id);
+        update_order.execute();
+
+        struct RuntimeSnapshot {
+            std::string id;
+            std::int64_t runtime_seconds {0};
+        };
+        std::vector<RuntimeSnapshot> jobs;
+        Statement select_jobs(m_impl->db, R"SQL(
+            SELECT id, COALESCE(actual_runtime_seconds,
+                                estimated_runtime_seconds)
+            FROM print_jobs
+            WHERE customer_order_id = ? AND state != 'discarded'
+        )SQL");
+        select_jobs.bind(1, order_id);
+        while (select_jobs.step())
+            jobs.push_back({select_jobs.text(0), select_jobs.integer64(1)});
+
+        for (const RuntimeSnapshot &job : jobs) {
+            Statement update_job(m_impl->db, R"SQL(
+                UPDATE print_jobs
+                SET electricity_price_per_kwh_micros = ?,
+                    machine_power_watts = ?,
+                    electricity_cost_micros = ?,
+                    machine_wear_per_hour_micros = ?,
+                    maintenance_per_hour_micros = ?,
+                    repair_reserve_per_hour_micros = ?,
+                    machine_wear_cost_micros = ?,
+                    maintenance_cost_micros = ?,
+                    repair_reserve_cost_micros = ?,
+                    updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                WHERE id = ?
+            )SQL");
+            update_job.bind(1, settings.electricity_price_per_kwh_micros);
+            update_job.bind(2, settings.default_machine_power_watts);
+            update_job.bind(3, electricity_cost(
+                settings.electricity_price_per_kwh_micros,
+                settings.default_machine_power_watts, job.runtime_seconds));
+            update_job.bind(4, settings.machine_wear_per_hour_micros);
+            update_job.bind(5, settings.maintenance_per_hour_micros);
+            update_job.bind(6, settings.repair_reserve_per_hour_micros);
+            update_job.bind(7, hourly_cost(
+                settings.machine_wear_per_hour_micros, job.runtime_seconds,
+                "Recalculated machine wear cost"));
+            update_job.bind(8, hourly_cost(
+                settings.maintenance_per_hour_micros, job.runtime_seconds,
+                "Recalculated maintenance cost"));
+            update_job.bind(9, hourly_cost(
+                settings.repair_reserve_per_hour_micros, job.runtime_seconds,
+                "Recalculated repair reserve cost"));
+            update_job.bind(10, job.id);
+            update_job.execute();
+            ++updated_jobs;
+        }
+    }
+
+    transaction.commit();
+    return updated_jobs;
 }
 
 Spool Store::create_spool(const SpoolInput &input,
@@ -1868,8 +2153,12 @@ CustomerOrder Store::create_customer_order(const CustomerOrderInput &input)
     Statement statement(m_impl->db, R"SQL(
         INSERT INTO customer_orders (
             id, customer_id, order_number, title, notes,
-            quoted_price_micros, invoice_amount_micros, currency, status
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'draft')
+            quoted_price_micros, invoice_amount_micros, currency, status,
+            design_time_seconds, design_hourly_rate_micros, other_cost_micros,
+            discount_basis_points, bill_material, bill_electricity,
+            bill_machine_wear, bill_maintenance, bill_repair_reserve,
+            bill_design, bill_other
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     )SQL");
     statement.bind(1, id);
     statement.bind(2, customer.id);
@@ -1881,6 +2170,17 @@ CustomerOrder Store::create_customer_order(const CustomerOrderInput &input)
     if (input.invoice_amount_micros) statement.bind(7, *input.invoice_amount_micros);
     else statement.bind_null(7);
     statement.bind(8, currency);
+    statement.bind(9, input.design_time_seconds);
+    statement.bind(10, input.design_hourly_rate_micros);
+    statement.bind(11, input.other_cost_micros);
+    statement.bind(12, input.discount_basis_points);
+    statement.bind(13, input.bill_material ? 1 : 0);
+    statement.bind(14, input.bill_electricity ? 1 : 0);
+    statement.bind(15, input.bill_machine_wear ? 1 : 0);
+    statement.bind(16, input.bill_maintenance ? 1 : 0);
+    statement.bind(17, input.bill_repair_reserve ? 1 : 0);
+    statement.bind(18, input.bill_design ? 1 : 0);
+    statement.bind(19, input.bill_other ? 1 : 0);
     statement.execute();
     return m_impl->get_customer_order_unlocked(id);
 }
@@ -1914,6 +2214,11 @@ CustomerOrder Store::update_customer_order(
         UPDATE customer_orders
         SET customer_id = ?, order_number = ?, title = ?, notes = ?,
             quoted_price_micros = ?, invoice_amount_micros = ?, currency = ?,
+            design_time_seconds = ?, design_hourly_rate_micros = ?,
+            other_cost_micros = ?, discount_basis_points = ?,
+            bill_material = ?, bill_electricity = ?, bill_machine_wear = ?,
+            bill_maintenance = ?, bill_repair_reserve = ?, bill_design = ?,
+            bill_other = ?,
             updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
         WHERE id = ?
     )SQL");
@@ -1926,7 +2231,18 @@ CustomerOrder Store::update_customer_order(
     if (input.invoice_amount_micros) statement.bind(6, *input.invoice_amount_micros);
     else statement.bind_null(6);
     statement.bind(7, currency);
-    statement.bind(8, order_id);
+    statement.bind(8, input.design_time_seconds);
+    statement.bind(9, input.design_hourly_rate_micros);
+    statement.bind(10, input.other_cost_micros);
+    statement.bind(11, input.discount_basis_points);
+    statement.bind(12, input.bill_material ? 1 : 0);
+    statement.bind(13, input.bill_electricity ? 1 : 0);
+    statement.bind(14, input.bill_machine_wear ? 1 : 0);
+    statement.bind(15, input.bill_maintenance ? 1 : 0);
+    statement.bind(16, input.bill_repair_reserve ? 1 : 0);
+    statement.bind(17, input.bill_design ? 1 : 0);
+    statement.bind(18, input.bill_other ? 1 : 0);
+    statement.bind(19, order_id);
     statement.execute();
     const CustomerOrder result =
         m_impl->get_customer_order_unlocked(order_id);
@@ -2011,6 +2327,10 @@ std::vector<CustomerOrder> Store::list_customer_orders(
     std::string sql = R"SQL(
         SELECT id, customer_id, order_number, title, notes,
                quoted_price_micros, invoice_amount_micros, currency, status,
+               design_time_seconds, design_hourly_rate_micros,
+               other_cost_micros, discount_basis_points,
+               bill_material, bill_electricity, bill_machine_wear,
+               bill_maintenance, bill_repair_reserve, bill_design, bill_other,
                created_at, updated_at
         FROM customer_orders
     )SQL";
@@ -2178,13 +2498,25 @@ PrintJob Store::reserve_job(const PrintJobInput &job, const std::vector<Allocati
             settings.electricity_price_per_kwh_micros,
             machine_power_watts,
             job.estimated_runtime_seconds);
+        const MoneyMicros wear_cost = hourly_cost(
+            settings.machine_wear_per_hour_micros, job.estimated_runtime_seconds,
+            "Machine wear cost");
+        const MoneyMicros maintenance_cost = hourly_cost(
+            settings.maintenance_per_hour_micros, job.estimated_runtime_seconds,
+            "Maintenance cost");
+        const MoneyMicros repair_cost = hourly_cost(
+            settings.repair_reserve_per_hour_micros, job.estimated_runtime_seconds,
+            "Repair reserve cost");
         Statement insert(m_impl->db, R"SQL(
             INSERT INTO print_jobs (
                 id, idempotency_key, job_name, project_path, printer_id,
                 customer_order_id, state, cost_currency,
                 electricity_price_per_kwh_micros, machine_power_watts,
-                estimated_runtime_seconds, electricity_cost_micros
-            ) VALUES (?, ?, ?, ?, ?, ?, 'reserved', ?, ?, ?, ?, ?)
+                estimated_runtime_seconds, electricity_cost_micros,
+                machine_wear_per_hour_micros, maintenance_per_hour_micros,
+                repair_reserve_per_hour_micros, machine_wear_cost_micros,
+                maintenance_cost_micros, repair_reserve_cost_micros
+            ) VALUES (?, ?, ?, ?, ?, ?, 'reserved', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         )SQL");
         insert.bind(1, job_id);
         insert.bind(2, normalized_job_key);
@@ -2198,6 +2530,12 @@ PrintJob Store::reserve_job(const PrintJobInput &job, const std::vector<Allocati
         insert.bind(9, machine_power_watts);
         insert.bind(10, job.estimated_runtime_seconds);
         insert.bind(11, power_cost);
+        insert.bind(12, settings.machine_wear_per_hour_micros);
+        insert.bind(13, settings.maintenance_per_hour_micros);
+        insert.bind(14, settings.repair_reserve_per_hour_micros);
+        insert.bind(15, wear_cost);
+        insert.bind(16, maintenance_cost);
+        insert.bind(17, repair_cost);
         insert.execute();
     }
 
@@ -2366,11 +2704,22 @@ PrintJob Store::update_print_job(
         existing.electricity_price_per_kwh_micros,
         input.machine_power_watts,
         input.estimated_runtime_seconds);
+    const MoneyMicros wear_cost = hourly_cost(
+        existing.machine_wear_per_hour_micros, input.estimated_runtime_seconds,
+        "Machine wear cost");
+    const MoneyMicros maintenance_cost = hourly_cost(
+        existing.maintenance_per_hour_micros, input.estimated_runtime_seconds,
+        "Maintenance cost");
+    const MoneyMicros repair_cost = hourly_cost(
+        existing.repair_reserve_per_hour_micros, input.estimated_runtime_seconds,
+        "Repair reserve cost");
     Statement update(m_impl->db, R"SQL(
         UPDATE print_jobs
         SET job_name = ?, project_path = ?, printer_id = ?,
             customer_order_id = ?, estimated_runtime_seconds = ?,
             machine_power_watts = ?, electricity_cost_micros = ?,
+            machine_wear_cost_micros = ?, maintenance_cost_micros = ?,
+            repair_reserve_cost_micros = ?,
             updated_at = CASE
                 WHEN state = 'printing' THEN updated_at
                 ELSE strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
@@ -2387,7 +2736,10 @@ PrintJob Store::update_print_job(
     update.bind(5, input.estimated_runtime_seconds);
     update.bind(6, input.machine_power_watts);
     update.bind(7, power_cost);
-    update.bind(8, existing.id);
+    update.bind(8, wear_cost);
+    update.bind(9, maintenance_cost);
+    update.bind(10, repair_cost);
+    update.bind(11, existing.id);
     update.execute();
 
     if (allocations_changed) {
@@ -2457,6 +2809,9 @@ std::vector<PrintJob> Store::list_jobs(bool include_closed, std::size_t limit) c
                customer_order_id, state, cost_currency,
                electricity_price_per_kwh_micros, machine_power_watts,
                estimated_runtime_seconds, electricity_cost_micros,
+               machine_wear_per_hour_micros, maintenance_per_hour_micros,
+               repair_reserve_per_hour_micros, machine_wear_cost_micros,
+               maintenance_cost_micros, repair_reserve_cost_micros,
                created_at, updated_at, started_at, completed_at,
                actual_runtime_seconds
         FROM print_jobs
@@ -2489,6 +2844,9 @@ std::vector<PrintJob> Store::list_customer_order_jobs(
                customer_order_id, state, cost_currency,
                electricity_price_per_kwh_micros, machine_power_watts,
                estimated_runtime_seconds, electricity_cost_micros,
+               machine_wear_per_hour_micros, maintenance_per_hour_micros,
+               repair_reserve_per_hour_micros, machine_wear_cost_micros,
+               maintenance_cost_micros, repair_reserve_cost_micros,
                created_at, updated_at, started_at, completed_at,
                actual_runtime_seconds
         FROM print_jobs
@@ -2770,6 +3128,15 @@ CostSummary summarize_jobs(const std::vector<PrintJob> &jobs, const std::string 
             summary.electricity_cost_micros,
             job.electricity_cost_micros,
             "Electricity cost total");
+        summary.machine_wear_cost_micros = checked_add(
+            summary.machine_wear_cost_micros, job.machine_wear_cost_micros,
+            "Machine wear cost total");
+        summary.maintenance_cost_micros = checked_add(
+            summary.maintenance_cost_micros, job.maintenance_cost_micros,
+            "Maintenance cost total");
+        summary.repair_reserve_cost_micros = checked_add(
+            summary.repair_reserve_cost_micros, job.repair_reserve_cost_micros,
+            "Repair reserve total");
         for (const Allocation &allocation : job.allocations) {
             if (normalize_currency(allocation.cost_currency) != summary.currency)
                 throw Error(ErrorCode::database, "Allocation and print-job currencies do not match");
@@ -2798,7 +3165,51 @@ CostSummary summarize_jobs(const std::vector<PrintJob> &jobs, const std::string 
         summary.material_cost_micros,
         summary.electricity_cost_micros,
         "Print cost total");
+    summary.total_cost_micros = checked_add(
+        summary.total_cost_micros, summary.machine_wear_cost_micros,
+        "Print cost total");
+    summary.total_cost_micros = checked_add(
+        summary.total_cost_micros, summary.maintenance_cost_micros,
+        "Print cost total");
+    summary.total_cost_micros = checked_add(
+        summary.total_cost_micros, summary.repair_reserve_cost_micros,
+        "Print cost total");
+    summary.billable_subtotal_micros = summary.total_cost_micros;
+    summary.calculated_invoice_micros = summary.total_cost_micros;
     return summary;
+}
+
+void apply_order_costs(CostSummary &summary, const CustomerOrder &order)
+{
+    summary.design_cost_micros = hourly_cost(
+        order.design_hourly_rate_micros, order.design_time_seconds,
+        "Design cost");
+    summary.other_cost_micros = order.other_cost_micros;
+    summary.total_cost_micros = checked_add(
+        summary.total_cost_micros, summary.design_cost_micros,
+        "Order cost total");
+    summary.total_cost_micros = checked_add(
+        summary.total_cost_micros, summary.other_cost_micros,
+        "Order cost total");
+
+    MoneyMicros billable = 0;
+    const auto include = [&billable](bool enabled, MoneyMicros value,
+                                     const char *context) {
+        if (enabled)
+            billable = checked_add(billable, value, context);
+    };
+    include(order.bill_material, summary.material_cost_micros, "Billable total");
+    include(order.bill_electricity, summary.electricity_cost_micros, "Billable total");
+    include(order.bill_machine_wear, summary.machine_wear_cost_micros, "Billable total");
+    include(order.bill_maintenance, summary.maintenance_cost_micros, "Billable total");
+    include(order.bill_repair_reserve, summary.repair_reserve_cost_micros, "Billable total");
+    include(order.bill_design, summary.design_cost_micros, "Billable total");
+    include(order.bill_other, summary.other_cost_micros, "Billable total");
+    summary.billable_subtotal_micros = billable;
+    summary.discount_micros = scaled_cost(
+        {billable, order.discount_basis_points}, 10'000, "Discount");
+    summary.calculated_invoice_micros =
+        billable - summary.discount_micros;
 }
 
 } // namespace
@@ -2894,9 +3305,92 @@ CostSummary Store::customer_order_cost_summary(const std::string &order_id) cons
     while (statement.step())
         jobs.emplace_back(m_impl->get_job_unlocked(statement.text(0)));
     CostSummary summary = summarize_jobs(jobs, order.currency);
+    apply_order_costs(summary, order);
     summary.quoted_price_micros = order.quoted_price_micros;
     summary.invoice_amount_micros = order.invoice_amount_micros;
     return summary;
+}
+
+std::vector<InvoiceLine> Store::customer_order_invoice_lines(
+    const std::string &order_id) const
+{
+    std::lock_guard<std::mutex> lock(m_impl->mutex);
+    const CustomerOrder order = m_impl->get_customer_order_unlocked(order_id);
+    Statement statement(m_impl->db, R"SQL(
+        SELECT id FROM print_jobs
+        WHERE customer_order_id = ?
+        ORDER BY created_at, id
+    )SQL");
+    statement.bind(1, order_id);
+    std::vector<PrintJob> jobs;
+    while (statement.step())
+        jobs.emplace_back(m_impl->get_job_unlocked(statement.text(0)));
+
+    const CostSummary costs = [&] {
+        CostSummary result = summarize_jobs(jobs, order.currency);
+        apply_order_costs(result, order);
+        return result;
+    }();
+    std::vector<InvoiceLine> lines;
+    for (const MaterialUsageSummary &material : summarize_material_usage(jobs)) {
+        std::string description;
+        if (!material.manufacturer.empty())
+            description = material.manufacturer;
+        if (!material.material_type.empty()) {
+            if (!description.empty()) description += " ";
+            description += material.material_type;
+        }
+        if (!material.filament_preset_id.empty()) {
+            if (!description.empty()) description += " - ";
+            description += material.filament_preset_id;
+        }
+        if (description.empty())
+            description = material.spool_name.empty() ? "Filament" : material.spool_name;
+        std::ostringstream detail;
+        detail.imbue(std::locale::classic());
+        detail << std::fixed << std::setprecision(1)
+               << material.best_known_weight_mg / 1'000.0 << " g";
+        lines.push_back({
+            InvoiceCostCategory::material, description, detail.str(),
+            material.color_hex, material.best_known_material_cost_micros,
+            order.bill_material ? material.best_known_material_cost_micros : 0,
+            order.bill_material});
+    }
+    const auto add = [&lines](InvoiceCostCategory category,
+                              const char *description, const char *detail,
+                              MoneyMicros amount, bool included) {
+        lines.push_back({category, description, detail, {}, amount,
+                         included ? amount : 0, included});
+    };
+    add(InvoiceCostCategory::electricity, "Electricity", "Calculated from print runtime",
+        costs.electricity_cost_micros, order.bill_electricity);
+    add(InvoiceCostCategory::machine_wear, "Machine wear", "Runtime-based allowance",
+        costs.machine_wear_cost_micros, order.bill_machine_wear);
+    add(InvoiceCostCategory::maintenance, "Maintenance", "Runtime-based allowance",
+        costs.maintenance_cost_micros, order.bill_maintenance);
+    add(InvoiceCostCategory::repair_reserve, "Repair reserve", "Runtime-based allowance",
+        costs.repair_reserve_cost_micros, order.bill_repair_reserve);
+    std::ostringstream design_detail;
+    design_detail.imbue(std::locale::classic());
+    design_detail << std::fixed << std::setprecision(2)
+                  << order.design_time_seconds / 3'600.0 << " h";
+    lines.push_back({
+        InvoiceCostCategory::design, "Design work", design_detail.str(), {},
+        costs.design_cost_micros,
+        order.bill_design ? costs.design_cost_micros : 0,
+        order.bill_design});
+    add(InvoiceCostCategory::other, "Other costs", "Order-specific costs",
+        costs.other_cost_micros, order.bill_other);
+    if (costs.discount_micros > 0) {
+        std::ostringstream discount_detail;
+        discount_detail.imbue(std::locale::classic());
+        discount_detail << std::fixed << std::setprecision(2)
+                        << order.discount_basis_points / 100.0 << " %";
+        lines.push_back({
+            InvoiceCostCategory::discount, "Discount", discount_detail.str(), {},
+            0, -costs.discount_micros, true});
+    }
+    return lines;
 }
 
 CostSummary Store::customer_cost_summary(const std::string &customer_id) const
@@ -2906,6 +3400,10 @@ CostSummary Store::customer_cost_summary(const std::string &customer_id) const
     Statement orders_statement(m_impl->db, R"SQL(
         SELECT id, customer_id, order_number, title, notes,
                quoted_price_micros, invoice_amount_micros, currency, status,
+               design_time_seconds, design_hourly_rate_micros,
+               other_cost_micros, discount_basis_points,
+               bill_material, bill_electricity, bill_machine_wear,
+               bill_maintenance, bill_repair_reserve, bill_design, bill_other,
                created_at, updated_at
         FROM customer_orders
         WHERE customer_id = ?
@@ -2921,7 +3419,9 @@ CostSummary Store::customer_cost_summary(const std::string &customer_id) const
 
     std::optional<MoneyMicros> quoted_total;
     std::optional<MoneyMicros> invoice_total;
-    std::vector<PrintJob> jobs;
+    CostSummary summary;
+    summary.currency = currency;
+    summary.actual_material_cost_micros = 0;
     for (const CustomerOrder &order : orders) {
         if (normalize_currency(order.currency) != normalize_currency(currency))
             throw Error(ErrorCode::conflict, "Customer orders in different currencies cannot be combined");
@@ -2943,11 +3443,37 @@ CostSummary Store::customer_cost_summary(const std::string &customer_id) const
             ORDER BY created_at, id
         )SQL");
         jobs_statement.bind(1, order.id);
+        std::vector<PrintJob> order_jobs;
         while (jobs_statement.step())
-            jobs.emplace_back(m_impl->get_job_unlocked(jobs_statement.text(0)));
+            order_jobs.emplace_back(m_impl->get_job_unlocked(jobs_statement.text(0)));
+        CostSummary order_summary = summarize_jobs(order_jobs, currency);
+        apply_order_costs(order_summary, order);
+        const auto add = [&summary](MoneyMicros &target, MoneyMicros value,
+                                    const char *context) {
+            target = checked_add(target, value, context);
+        };
+        add(summary.estimated_material_cost_micros, order_summary.estimated_material_cost_micros, "Customer cost total");
+        add(summary.material_cost_micros, order_summary.material_cost_micros, "Customer cost total");
+        add(summary.electricity_cost_micros, order_summary.electricity_cost_micros, "Customer cost total");
+        add(summary.machine_wear_cost_micros, order_summary.machine_wear_cost_micros, "Customer cost total");
+        add(summary.maintenance_cost_micros, order_summary.maintenance_cost_micros, "Customer cost total");
+        add(summary.repair_reserve_cost_micros, order_summary.repair_reserve_cost_micros, "Customer cost total");
+        add(summary.design_cost_micros, order_summary.design_cost_micros, "Customer cost total");
+        add(summary.other_cost_micros, order_summary.other_cost_micros, "Customer cost total");
+        add(summary.total_cost_micros, order_summary.total_cost_micros, "Customer cost total");
+        add(summary.billable_subtotal_micros, order_summary.billable_subtotal_micros, "Customer billable total");
+        add(summary.discount_micros, order_summary.discount_micros, "Customer discount total");
+        add(summary.calculated_invoice_micros, order_summary.calculated_invoice_micros, "Customer invoice total");
+        if (summary.actual_material_cost_micros) {
+            if (order_summary.actual_material_cost_micros)
+                *summary.actual_material_cost_micros = checked_add(
+                    *summary.actual_material_cost_micros,
+                    *order_summary.actual_material_cost_micros,
+                    "Customer actual material total");
+            else
+                summary.actual_material_cost_micros.reset();
+        }
     }
-
-    CostSummary summary = summarize_jobs(jobs, currency);
     summary.quoted_price_micros = quoted_total;
     summary.invoice_amount_micros = invoice_total;
     return summary;
