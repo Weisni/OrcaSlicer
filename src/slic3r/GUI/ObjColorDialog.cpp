@@ -14,6 +14,7 @@
 #include "Widgets/ComboBox.hpp"
 #include "Widgets/DialogButtons.hpp"
 #include <wx/sizer.h>
+#include <wx/settings.h>
 
 #include "libslic3r/ObjColorUtils.hpp"
 #include "libslic3r/Model.hpp"
@@ -154,6 +155,7 @@ ObjColorDialog::ObjColorDialog(wxWindow *parent, Slic3r::ObjDialogInOut &in_out,
               }
               m_panel_ObjColor->clear_instance_and_revert_offset();
               m_panel_ObjColor->send_new_filament_to_ui();
+              m_panel_ObjColor->apply_assembly_groups();
               EndModal(wxID_OK);
             }, wxID_OK);
     }
@@ -324,6 +326,11 @@ ObjColorPanel::ObjColorPanel(wxWindow *parent, Slic3r::ObjDialogInOut &in_out, c
                 #endif
                 icon_sizer->Add(m_image_button, 0, wxEXPAND | wxALL,
                                 FromDIP(0)); // wxEXPAND | wxALL
+                if (m_obj_in_out.input_type == ObjDialogInOut::FormatType::Standard3mf && m_obj_in_out.model->objects.size() > 1) {
+                    icon_sizer->AddSpacer(FromDIP(15));
+                    icon_sizer->Add(create_assembly_group_sizer(m_page_simple), 0, wxEXPAND | wxTOP | wxBOTTOM, FromDIP(5));
+                    m_obj_in_out.assembly_groups_handled = true;
+                }
                 cur_combox->Raise();//for mac
 
             m_sizer_simple->Add(icon_sizer, FromDIP(0), wxALIGN_CENTER | wxALL, FromDIP(0));
@@ -420,6 +427,119 @@ ObjColorPanel::ObjColorPanel(wxWindow *parent, Slic3r::ObjDialogInOut &in_out, c
 ObjColorPanel::~ObjColorPanel() {
 }
 
+wxBoxSizer* ObjColorPanel::create_assembly_group_sizer(wxWindow* parent)
+{
+    auto* result = new wxStaticBoxSizer(wxVERTICAL, parent, _L("Assembly groups"));
+    auto* description = new wxStaticText(parent, wxID_ANY,
+        _L("Give related objects the same number. Group 0 keeps an object separate."));
+    description->Wrap(FromDIP(310));
+    result->Add(description, 0, wxLEFT | wxRIGHT | wxTOP | wxEXPAND, FromDIP(10));
+
+    m_assembly_focus_label = new wxStaticText(parent, wxID_ANY, _L("Select an object to highlight it in the preview."));
+    m_assembly_focus_label->SetForegroundColour(wxColour(0, 174, 239));
+    wxFont focus_font = m_assembly_focus_label->GetFont();
+    focus_font.MakeBold();
+    m_assembly_focus_label->SetFont(focus_font);
+    result->Add(m_assembly_focus_label, 0, wxALL | wxEXPAND, FromDIP(10));
+
+    auto* header = new wxBoxSizer(wxHORIZONTAL);
+    auto* object_header = new wxStaticText(parent, wxID_ANY, _L("Object"));
+    auto* group_header = new wxStaticText(parent, wxID_ANY, _L("Assembly group"));
+    wxFont header_font = object_header->GetFont();
+    header_font.MakeBold();
+    object_header->SetFont(header_font);
+    group_header->SetFont(header_font);
+    header->Add(object_header, 1, wxLEFT | wxALIGN_CENTER_VERTICAL, FromDIP(12));
+    header->Add(group_header, 0, wxRIGHT | wxALIGN_CENTER_VERTICAL, FromDIP(12));
+    result->Add(header, 0, wxBOTTOM | wxEXPAND, FromDIP(4));
+
+    auto* scroll = new wxScrolledWindow(parent, wxID_ANY, wxDefaultPosition, FromDIP(wxSize(330, 230)), wxVSCROLL | wxBORDER_NONE);
+    scroll->SetScrollRate(0, FromDIP(10));
+    auto* rows = new wxBoxSizer(wxVERTICAL);
+
+    m_assembly_group_controls.reserve(m_obj_in_out.model->objects.size());
+    m_assembly_group_rows.reserve(m_obj_in_out.model->objects.size());
+    m_assembly_group_badges.reserve(m_obj_in_out.model->objects.size());
+    m_assembly_group_names.reserve(m_obj_in_out.model->objects.size());
+    for (size_t object_idx = 0; object_idx < m_obj_in_out.model->objects.size(); ++object_idx) {
+        wxString name = from_u8(m_obj_in_out.model->objects[object_idx]->name);
+        if (name.empty())
+            name = wxString::Format(_L("Object %d"), int(object_idx + 1));
+
+        auto* row = new wxPanel(scroll, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxBORDER_SIMPLE);
+        row->SetBackgroundColour(wxSystemSettings::GetColour(wxSYS_COLOUR_WINDOW));
+        auto* row_sizer = new wxBoxSizer(wxHORIZONTAL);
+
+        auto* number = new wxStaticText(row, wxID_ANY, wxString::Format("#%d", int(object_idx + 1)),
+                                        wxDefaultPosition, FromDIP(wxSize(34, -1)), wxALIGN_CENTER_HORIZONTAL);
+        number->SetForegroundColour(wxColour(0, 174, 239));
+        number->SetFont(header_font);
+        row_sizer->Add(number, 0, wxLEFT | wxRIGHT | wxALIGN_CENTER_VERTICAL, FromDIP(6));
+
+        auto* object_name = new wxStaticText(row, wxID_ANY, name, wxDefaultPosition, FromDIP(wxSize(155, -1)), wxST_ELLIPSIZE_END);
+        object_name->SetToolTip(name);
+        wxFont name_font = object_name->GetFont();
+        name_font.MakeBold();
+        object_name->SetFont(name_font);
+        row_sizer->Add(object_name, 1, wxRIGHT | wxALIGN_CENTER_VERTICAL, FromDIP(8));
+
+        auto* group = new wxSpinCtrl(row, wxID_ANY, "0", wxDefaultPosition, FromDIP(wxSize(72, -1)), wxSP_ARROW_KEYS,
+                                     0, int(m_obj_in_out.model->objects.size()), 0);
+        group->SetName(format_wxstr(_L("Assembly group for %s"), name));
+        group->SetToolTip(_L("Use 0 for a separate object, or the same positive number for objects that belong to one assembly."));
+        group->Bind(wxEVT_SET_FOCUS, [this, object_idx](wxFocusEvent& event) {
+            focus_assembly_object(object_idx);
+            event.Skip();
+        });
+        m_assembly_group_controls.push_back(group);
+        m_assembly_group_rows.push_back(row);
+        m_assembly_group_badges.push_back(number);
+        m_assembly_group_names.push_back(object_name);
+        row_sizer->Add(group, 0, wxRIGHT | wxALIGN_CENTER_VERTICAL, FromDIP(8));
+        row->SetSizer(row_sizer);
+
+        auto focus_row = [this, object_idx](wxMouseEvent& event) {
+            focus_assembly_object(object_idx);
+            event.Skip();
+        };
+        row->Bind(wxEVT_LEFT_DOWN, focus_row);
+        number->Bind(wxEVT_LEFT_DOWN, focus_row);
+        object_name->Bind(wxEVT_LEFT_DOWN, focus_row);
+        rows->Add(row, 0, wxBOTTOM | wxEXPAND, FromDIP(4));
+    }
+
+    scroll->SetSizer(rows);
+    scroll->FitInside();
+    result->Add(scroll, 1, wxLEFT | wxRIGHT | wxBOTTOM | wxEXPAND, FromDIP(8));
+    return result;
+}
+
+void ObjColorPanel::focus_assembly_object(size_t object_idx)
+{
+    if (object_idx >= m_assembly_group_rows.size() || object_idx >= m_obj_in_out.model->objects.size())
+        return;
+
+    const wxColour normal_background = wxSystemSettings::GetColour(wxSYS_COLOUR_WINDOW);
+    const wxColour normal_text = wxSystemSettings::GetColour(wxSYS_COLOUR_WINDOWTEXT);
+    const wxColour selected_background = wxSystemSettings::GetColour(wxSYS_COLOUR_HIGHLIGHT);
+    const wxColour selected_text = wxSystemSettings::GetColour(wxSYS_COLOUR_HIGHLIGHTTEXT);
+    for (size_t idx = 0; idx < m_assembly_group_rows.size(); ++idx) {
+        const bool selected = idx == object_idx;
+        m_assembly_group_rows[idx]->SetBackgroundColour(selected ? selected_background : normal_background);
+        m_assembly_group_badges[idx]->SetForegroundColour(selected ? selected_text : wxColour(0, 174, 239));
+        m_assembly_group_names[idx]->SetForegroundColour(selected ? selected_text : normal_text);
+        m_assembly_group_rows[idx]->Refresh();
+    }
+
+    m_focused_assembly_object = int(object_idx);
+    wxString name = from_u8(m_obj_in_out.model->objects[object_idx]->name);
+    if (name.empty())
+        name = wxString::Format(_L("Object %d"), int(object_idx + 1));
+    m_assembly_focus_label->SetLabel(wxString::Format(_L("Highlighted: #%d  %s"), int(object_idx + 1), name));
+    m_assembly_focus_label->GetParent()->Layout();
+    generate_thumbnail();
+}
+
 void ObjColorPanel::msw_rescale()
 {
     for (unsigned int i = 0; i < m_extruder_icon_list.size(); ++i) {
@@ -462,6 +582,18 @@ void ObjColorPanel::send_new_filament_to_ui()
         update_filament_ids();
         m_deal_thumbnail_flag = apply_color_mapping_to_model();
     }
+}
+
+void ObjColorPanel::apply_assembly_groups()
+{
+    if (!m_obj_in_out.assembly_groups_handled || m_obj_in_out.model == nullptr || m_assembly_group_controls.empty())
+        return;
+
+    std::vector<size_t> group_ids;
+    group_ids.reserve(m_assembly_group_controls.size());
+    for (const wxSpinCtrl* group : m_assembly_group_controls)
+        group_ids.push_back(size_t(group->GetValue()));
+    m_obj_in_out.model->convert_multipart_objects(group_ids, wxGetApp().filaments_cnt());
 }
 
 void ObjColorPanel::cancel_paint_color() {
@@ -926,7 +1058,8 @@ void ObjColorPanel::generate_thumbnail()
         }
 
         if (m_obj_in_out.input_type == ObjDialogInOut::FormatType::Standard3mf) {
-            wxGetApp().plater()->update_obj_preview_thumbnail(m_obj_in_out.model, colors, (int) m_camera_view_angle_type);
+            wxGetApp().plater()->update_obj_preview_thumbnail(m_obj_in_out.model, colors, (int) m_camera_view_angle_type,
+                                                               m_focused_assembly_object);
         } else if (m_obj_in_out.model->objects.size() == 1) {
             auto mo = m_obj_in_out.model->objects[0];
             wxGetApp().plater()->update_obj_preview_thumbnail(mo, 0, 0, colors, (int) m_camera_view_angle_type);

@@ -383,7 +383,7 @@ public:
     wxString get_project_name();
     void update_all_plate_thumbnails(bool force_update = false);
     void update_obj_preview_thumbnail(ModelObject *, int obj_idx, int vol_idx, std::vector<Slic3r::ColorRGBA> colors, int camera_view_angle_type);
-    void update_obj_preview_thumbnail(Model *, std::vector<Slic3r::ColorRGBA> colors, int camera_view_angle_type);
+    void update_obj_preview_thumbnail(Model *, std::vector<Slic3r::ColorRGBA> colors, int camera_view_angle_type, int highlighted_object_idx = -1);
     void invalid_all_plate_thumbnails();
     void force_update_all_plate_thumbnails();
 

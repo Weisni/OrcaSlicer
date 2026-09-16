@@ -1276,6 +1276,22 @@ void MenuFactory::append_menu_item_merge_parts_to_single_part(wxMenu* menu)
         []() { return obj_list()->can_mesh_boolean(); }, m_parent);
 }
 
+void MenuFactory::append_menu_items_reassign_assembly(wxMenu* menu)
+{
+    append_menu_item(menu, wxID_ANY, _L("Move to assembly") + dots,
+        _L("Move the selected parts to another assembly without changing their positions"),
+        [](wxCommandEvent&) { obj_list()->move_selected_volumes_to_existing_assembly(); }, "", menu,
+        []() { return obj_list()->can_move_selected_volumes_to_existing_assembly(); }, m_parent);
+    append_menu_item(menu, wxID_ANY, _L("Move to new assembly"),
+        _L("Create a new assembly from the selected parts without changing their positions"),
+        [](wxCommandEvent&) { obj_list()->move_selected_volumes_to_new_assembly(); }, "", menu,
+        []() { return obj_list()->can_move_selected_volumes_to_new_assembly(); }, m_parent);
+    append_menu_item(menu, wxID_ANY, _L("Remove from assembly"),
+        _L("Turn each selected part into an individual object without changing its position"),
+        [](wxCommandEvent&) { obj_list()->extract_selected_volumes(); }, "", menu,
+        []() { return obj_list()->can_extract_selected_volumes(); }, m_parent);
+}
+
 void MenuFactory::append_menu_items_mirror(wxMenu* menu)
 {
     wxMenu* mirror_menu = new wxMenu();
@@ -1586,6 +1602,7 @@ void MenuFactory::create_text_part_menu()
 
     append_menu_item_edit_text(menu);
     append_menu_item_delete(menu);
+    append_menu_items_reassign_assembly(menu);
     append_menu_item_fix_through_cgal(menu);
     append_menu_item_simplify(menu);
     append_menu_item_center(menu);
@@ -1602,6 +1619,7 @@ void MenuFactory::create_svg_part_menu()
 
     append_menu_item_edit_svg(menu);
     append_menu_item_delete(menu);
+    append_menu_items_reassign_assembly(menu);
     append_menu_item_fix_through_cgal(menu);
     append_menu_item_simplify(menu);
     append_menu_items_mirror(menu);
@@ -1616,6 +1634,7 @@ void MenuFactory::create_bbl_part_menu()
     wxMenu* menu = &m_part_menu;
 
     append_menu_item_delete(menu);
+    append_menu_items_reassign_assembly(menu);
     append_menu_item_edit_text(menu);
     append_menu_item_fix_through_cgal(menu);
     append_menu_item_simplify(menu);
@@ -1969,6 +1988,7 @@ wxMenu* MenuFactory::multi_selection_menu()
         append_menu_item_fix_through_cgal(menu);
         //append_menu_item_simplify(menu);
         append_menu_item_delete(menu);
+        append_menu_items_reassign_assembly(menu);
         append_menu_items_convert_unit(menu);
         append_menu_item_replace_all_with_stl(menu);
         append_menu_item_change_filament(menu);
