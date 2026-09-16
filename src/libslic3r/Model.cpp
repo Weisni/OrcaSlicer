@@ -32,6 +32,7 @@
 #include "SVG.hpp"
 #include <Eigen/Dense>
 #include <functional>
+#include <numeric>
 #include "GCodeWriter.hpp"
 
 // BBS: for segment
@@ -779,18 +780,31 @@ static inline int auto_extruder_id(unsigned int max_extruders, unsigned int &cnt
 
 void Model::convert_multipart_object(unsigned int max_extruders)
 {
-    assert(this->objects.size() >= 2);
-    if (this->objects.size() < 2)
+    std::vector<size_t> object_indices(this->objects.size());
+    std::iota(object_indices.begin(), object_indices.end(), 0);
+    convert_multipart_object(object_indices, max_extruders);
+}
+
+void Model::convert_multipart_object(const std::vector<size_t>& object_indices, unsigned int /*max_extruders*/)
+{
+    if (object_indices.size() < 2)
+        return;
+
+    std::vector<size_t> sorted_indices = object_indices;
+    std::sort(sorted_indices.begin(), sorted_indices.end());
+    sorted_indices.erase(std::unique(sorted_indices.begin(), sorted_indices.end()), sorted_indices.end());
+    if (sorted_indices.size() < 2 || sorted_indices.back() >= this->objects.size())
         return;
 
     ModelObject* object = new ModelObject(this);
-    object->input_file = this->objects.front()->input_file;
-    object->name = boost::filesystem::path(this->objects.front()->input_file).stem().string();
+    object->input_file = this->objects[sorted_indices.front()]->input_file;
+    object->name = boost::filesystem::path(object->input_file).stem().string();
+    if (object->name.empty())
+        object->name = this->objects[sorted_indices.front()]->name;
     //FIXME copy the config etc?
 
-    unsigned int extruder_counter = 0;
-
-	for (const ModelObject* o : this->objects)
+	for (size_t object_idx : sorted_indices) {
+        const ModelObject* o = this->objects[object_idx];
     	for (const ModelVolume* v : o->volumes) {
             // If there are more than one object, put all volumes together
             // Each object may contain any number of volumes and instances
@@ -799,7 +813,7 @@ void Model::convert_multipart_object(unsigned int max_extruders)
             // Revert the centering operation.
             trafo_volume.set_offset(trafo_volume.get_offset() - o->origin_translation);
             int counter = 1;
-            auto copy_volume = [o, v, max_extruders, &counter, &extruder_counter](ModelVolume *new_v) {
+            auto copy_volume = [o, v, &counter](ModelVolume *new_v) {
                 assert(new_v != nullptr);
                 new_v->name = (counter > 1) ? o->name + "_" + std::to_string(counter++) : o->name;
                 //BBS: Use extruder priority: volumn > object > default
@@ -818,13 +832,166 @@ void Model::convert_multipart_object(unsigned int max_extruders)
                     copy_volume(object->add_volume(*v))->set_transformation(i->get_transformation() * trafo_volume);
             }
         }
+    }
 
     // commented-out to fix #2868
 //    object->add_instance();
 //    object->instances[0]->set_offset(object->raw_mesh_bounding_box().center());
 
-    this->clear_objects();
-    this->objects.push_back(object);
+    const size_t insertion_idx = sorted_indices.front();
+    for (auto it = sorted_indices.rbegin(); it != sorted_indices.rend(); ++it)
+        this->delete_object(*it);
+    this->objects.insert(this->objects.begin() + insertion_idx, object);
+}
+
+void Model::convert_multipart_objects(const std::vector<size_t>& object_group_ids, unsigned int max_extruders)
+{
+    if (object_group_ids.size() != this->objects.size())
+        return;
+
+    std::map<size_t, std::vector<ObjectID>> grouped_object_ids;
+    for (size_t object_idx = 0; object_idx < object_group_ids.size(); ++object_idx)
+        if (object_group_ids[object_idx] != 0)
+            grouped_object_ids[object_group_ids[object_idx]].push_back(this->objects[object_idx]->id());
+
+    for (const auto& [group_id, object_ids] : grouped_object_ids) {
+        if (object_ids.size() < 2)
+            continue;
+
+        std::vector<size_t> current_indices;
+        for (size_t object_idx = 0; object_idx < this->objects.size(); ++object_idx)
+            if (std::find(object_ids.begin(), object_ids.end(), this->objects[object_idx]->id()) != object_ids.end())
+                current_indices.push_back(object_idx);
+        convert_multipart_object(current_indices, max_extruders);
+        if (!current_indices.empty())
+            this->objects[current_indices.front()]->name += " - Group " + std::to_string(group_id);
+    }
+}
+
+static std::vector<size_t> valid_volume_indices(const ModelObject& object, const std::vector<size_t>& volume_indices)
+{
+    std::vector<size_t> result = volume_indices;
+    std::sort(result.begin(), result.end());
+    result.erase(std::unique(result.begin(), result.end()), result.end());
+    if (result.empty() || result.back() >= object.volumes.size() || result.size() >= object.volumes.size())
+        result.clear();
+    return result;
+}
+
+static ModelVolume* copy_volume_with_object_extruder(ModelObject& target, const ModelObject& source, const ModelVolume& volume)
+{
+    ModelVolume* result = target.add_volume(volume);
+    if (!result->config.option("extruder") && source.config.option("extruder"))
+        result->config.set("extruder", source.config.extruder());
+    return result;
+}
+
+size_t Model::move_volumes_to_object(size_t source_object_idx, const std::vector<size_t>& volume_indices, size_t target_object_idx)
+{
+    if (source_object_idx >= objects.size() || target_object_idx >= objects.size() || source_object_idx == target_object_idx)
+        return size_t(-1);
+
+    ModelObject* source = objects[source_object_idx];
+    ModelObject* target = objects[target_object_idx];
+    const std::vector<size_t> indices = valid_volume_indices(*source, volume_indices);
+    if (indices.empty() || source->instances.size() != 1 || target->instances.size() != 1)
+        return size_t(-1);
+
+    const Transform3d source_to_target = target->instances.front()->get_matrix().inverse() *
+                                         source->instances.front()->get_matrix();
+    for (size_t volume_idx : indices) {
+        const ModelVolume& source_volume = *source->volumes[volume_idx];
+        ModelVolume* target_volume = copy_volume_with_object_extruder(*target, *source, source_volume);
+        target_volume->set_transformation(source_to_target * source_volume.get_matrix());
+    }
+    for (auto it = indices.rbegin(); it != indices.rend(); ++it)
+        source->delete_volume(*it);
+
+    source->invalidate_bounding_box();
+    target->invalidate_bounding_box();
+    return target_object_idx;
+}
+
+size_t Model::move_volumes_to_new_object(size_t source_object_idx, const std::vector<size_t>& volume_indices, const std::string& name)
+{
+    if (source_object_idx >= objects.size())
+        return size_t(-1);
+
+    ModelObject* source = objects[source_object_idx];
+    const std::vector<size_t> indices = valid_volume_indices(*source, volume_indices);
+    if (indices.empty() || source->instances.size() != 1)
+        return size_t(-1);
+
+    ModelObject* target = add_object();
+    target->name = name;
+    target->input_file = source->input_file;
+    target->config.assign_config(source->config);
+    ModelInstance* target_instance = target->add_instance();
+    target_instance->printable = source->instances.front()->printable;
+    target_instance->auto_drop = source->instances.front()->auto_drop;
+
+    const Transform3d source_matrix = source->instances.front()->get_matrix();
+    for (size_t volume_idx : indices) {
+        const ModelVolume& source_volume = *source->volumes[volume_idx];
+        ModelVolume* target_volume = copy_volume_with_object_extruder(*target, *source, source_volume);
+        target_volume->set_transformation(source_matrix * source_volume.get_matrix());
+    }
+    for (auto it = indices.rbegin(); it != indices.rend(); ++it)
+        source->delete_volume(*it);
+
+    source->invalidate_bounding_box();
+    target->invalidate_bounding_box();
+    return objects.size() - 1;
+}
+
+std::vector<size_t> Model::extract_volumes_to_objects(size_t source_object_idx, const std::vector<size_t>& volume_indices)
+{
+    std::vector<size_t> result;
+    if (source_object_idx >= objects.size())
+        return result;
+
+    ModelObject* source = objects[source_object_idx];
+    const std::vector<size_t> indices = valid_volume_indices(*source, volume_indices);
+    if (indices.empty() || source->instances.size() != 1)
+        return result;
+
+    const Transform3d source_matrix = source->instances.front()->get_matrix();
+    for (size_t volume_idx : indices) {
+        const ModelVolume& source_volume = *source->volumes[volume_idx];
+        ModelObject* target = add_object();
+        target->name = source_volume.name;
+        target->input_file = source->input_file;
+        target->config.assign_config(source->config);
+        ModelVolume* target_volume = copy_volume_with_object_extruder(*target, *source, source_volume);
+        target_volume->set_transformation(source_matrix * source_volume.get_matrix());
+        ModelInstance* target_instance = target->add_instance();
+        target_instance->printable = source->instances.front()->printable;
+        target_instance->auto_drop = source->instances.front()->auto_drop;
+        target->invalidate_bounding_box();
+        result.push_back(objects.size() - 1);
+    }
+    for (auto it = indices.rbegin(); it != indices.rend(); ++it)
+        source->delete_volume(*it);
+    source->invalidate_bounding_box();
+    return result;
+}
+
+void Model::place_on_bed_preserving_relative_positions()
+{
+    if (objects.empty())
+        return;
+
+    for (ModelObject* object : objects)
+        if (object->instances.empty())
+            object->add_instance();
+
+    const BoundingBoxf3 bounds = bounding_box_exact();
+    if (!bounds.defined)
+        return;
+
+    const Vec3d offset(0., 0., -bounds.min.z());
+    for (ModelObject* object : objects)
+        object->translate_instances(offset);
 }
 
 static constexpr const double volume_threshold_inches = 8.0; // 9 = 2*2*2;

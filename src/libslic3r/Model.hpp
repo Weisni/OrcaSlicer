@@ -1682,6 +1682,12 @@ public:
 
     bool 		  looks_like_multipart_object() const;
     void 		  convert_multipart_object(unsigned int max_extruders);
+    void          convert_multipart_object(const std::vector<size_t>& object_indices, unsigned int max_extruders);
+    void          convert_multipart_objects(const std::vector<size_t>& object_group_ids, unsigned int max_extruders);
+    size_t        move_volumes_to_object(size_t source_object_idx, const std::vector<size_t>& volume_indices, size_t target_object_idx);
+    size_t        move_volumes_to_new_object(size_t source_object_idx, const std::vector<size_t>& volume_indices, const std::string& name);
+    std::vector<size_t> extract_volumes_to_objects(size_t source_object_idx, const std::vector<size_t>& volume_indices);
+    void          place_on_bed_preserving_relative_positions();
     bool          looks_like_imperial_units() const;
     void          convert_from_imperial_units(bool only_small_volumes);
     bool          looks_like_saved_in_meters() const;

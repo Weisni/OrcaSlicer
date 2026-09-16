@@ -27,6 +27,7 @@ public:
     void send_new_filament_to_ui();
     void cancel_paint_color();
     void update_filament_ids();
+    void apply_assembly_groups();
     struct ButtonState
     {
         ComboBox*   bitmap_combox{nullptr};
@@ -43,6 +44,7 @@ private:
     wxBoxSizer *create_add_btn_sizer(wxWindow *parent);
     wxBoxSizer *create_replace_btn_sizer(wxWindow *parent);
     wxBoxSizer *create_reset_btn_sizer(wxWindow *parent);
+    wxBoxSizer *create_assembly_group_sizer(wxWindow *parent);
     wxBoxSizer *create_extruder_icon_and_rgba_sizer(wxWindow *parent, int id, const wxColour& color);
     std::string get_color_str(const wxColour &color);
     wxBoxSizer *create_color_icon_map_rgba_sizer(wxWindow *parent, int id, const wxColour &color);//for display map
@@ -59,6 +61,7 @@ private:
     void deal_thumbnail();
     bool apply_color_mapping_to_model();
     void generate_thumbnail();
+    void focus_assembly_object(size_t object_idx);
     void set_view_angle_type(int);
 private:
     //view ui
@@ -82,6 +85,12 @@ private:
     std::vector<wxGridSizer*> m_row_sizer_list;         // control show or not
     std::vector<wxBoxSizer *> m_row_col_boxsizer_list;
     std::vector<ButtonState*> m_result_icon_list;
+    std::vector<wxSpinCtrl*>  m_assembly_group_controls;
+    std::vector<wxPanel*>     m_assembly_group_rows;
+    std::vector<wxStaticText*> m_assembly_group_badges;
+    std::vector<wxStaticText*> m_assembly_group_names;
+    wxStaticText*             m_assembly_focus_label{nullptr};
+    int                       m_focused_assembly_object{-1};
     int                       m_last_cluster_num{-1};
     const int               m_combox_width{50};
     int                     m_combox_icon_width;

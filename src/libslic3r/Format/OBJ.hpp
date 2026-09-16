@@ -53,6 +53,7 @@ struct ObjDialogInOut
     std::unordered_map<int, std::vector<RGBA>> color_group_map;
     VolumeColorInfoMap volume_colors;
     std::vector<bool> filament_available_on_device;
+    bool assembly_groups_handled{false};
 };
 
 typedef std::function<void(ObjDialogInOut &in_out)> ObjImportColorFn;

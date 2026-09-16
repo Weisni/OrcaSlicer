@@ -310,6 +310,12 @@ public:
     void                del_info_item(const int obj_idx, InfoItemType type);
     void                split();
     void                merge(bool to_multipart_object);
+    bool                can_move_selected_volumes_to_existing_assembly();
+    bool                can_move_selected_volumes_to_new_assembly();
+    bool                can_extract_selected_volumes();
+    void                move_selected_volumes_to_existing_assembly();
+    void                move_selected_volumes_to_new_assembly();
+    void                extract_selected_volumes();
     // void                merge_volumes(); // BBS: merge parts to single part
     void                layers_editing();
 
@@ -487,6 +493,7 @@ private:
 #endif /* __WXOSX__ */
     void OnContextMenu(wxDataViewEvent &event);
     void list_manipulation(const wxPoint& mouse_pos, bool evt_context_menu = false);
+    bool get_selected_volume_indices(int& source_object_idx, std::vector<size_t>& volume_indices);
 
     // BBS
     void update_name_column_width() const;

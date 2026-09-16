@@ -34,6 +34,7 @@ add_executable(${_TEST_NAME}_tests
     test_marchingsquares.cpp
     test_utils.cpp
     test_model_filament_remapping.cpp
+    test_model_multipart.cpp
     test_multi_material_segmentation.cpp
     test_timeutils.cpp
     test_voronoi.cpp

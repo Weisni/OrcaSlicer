@@ -3195,6 +3195,149 @@ void ObjectList::merge(bool to_multipart_object)
     }
 }
 
+bool ObjectList::get_selected_volume_indices(int& source_object_idx, std::vector<size_t>& volume_indices)
+{
+    source_object_idx = -1;
+    volume_indices.clear();
+
+    wxDataViewItemArray selections;
+    GetSelections(selections);
+    for (const wxDataViewItem& item : selections) {
+        if (!(m_objects_model->GetItemType(item) & itVolume))
+            return false;
+
+        int object_idx = -1;
+        int volume_idx = -1;
+        get_selected_item_indexes(object_idx, volume_idx, item);
+        if (object_idx < 0 || volume_idx < 0 || (source_object_idx >= 0 && source_object_idx != object_idx))
+            return false;
+        source_object_idx = object_idx;
+        volume_indices.push_back(size_t(volume_idx));
+    }
+
+    if (source_object_idx < 0)
+        return false;
+    std::sort(volume_indices.begin(), volume_indices.end());
+    volume_indices.erase(std::unique(volume_indices.begin(), volume_indices.end()), volume_indices.end());
+
+    const ModelObject* source = (*m_objects)[source_object_idx];
+    if (source->is_cut() || source->instances.size() != 1 || volume_indices.empty() || volume_indices.size() >= source->volumes.size())
+        return false;
+
+    size_t remaining_model_parts = 0;
+    for (size_t volume_idx = 0; volume_idx < source->volumes.size(); ++volume_idx)
+        if (source->volumes[volume_idx]->is_model_part() &&
+            !std::binary_search(volume_indices.begin(), volume_indices.end(), volume_idx))
+            ++remaining_model_parts;
+    return remaining_model_parts > 0;
+}
+
+bool ObjectList::can_move_selected_volumes_to_existing_assembly()
+{
+    int source_object_idx = -1;
+    std::vector<size_t> volume_indices;
+    if (!get_selected_volume_indices(source_object_idx, volume_indices))
+        return false;
+
+    for (size_t object_idx = 0; object_idx < m_objects->size(); ++object_idx) {
+        const ModelObject* object = (*m_objects)[object_idx];
+        if (int(object_idx) != source_object_idx && object->volumes.size() > 1 && object->instances.size() == 1 && !object->is_cut())
+            return true;
+    }
+    return false;
+}
+
+bool ObjectList::can_move_selected_volumes_to_new_assembly()
+{
+    int source_object_idx = -1;
+    std::vector<size_t> volume_indices;
+    return get_selected_volume_indices(source_object_idx, volume_indices) && volume_indices.size() > 1;
+}
+
+bool ObjectList::can_extract_selected_volumes()
+{
+    int source_object_idx = -1;
+    std::vector<size_t> volume_indices;
+    return get_selected_volume_indices(source_object_idx, volume_indices);
+}
+
+void ObjectList::move_selected_volumes_to_existing_assembly()
+{
+    int source_object_idx = -1;
+    std::vector<size_t> volume_indices;
+    if (!get_selected_volume_indices(source_object_idx, volume_indices))
+        return;
+
+    wxArrayString choices;
+    std::vector<size_t> target_indices;
+    for (size_t object_idx = 0; object_idx < m_objects->size(); ++object_idx) {
+        const ModelObject* object = (*m_objects)[object_idx];
+        if (int(object_idx) == source_object_idx || object->volumes.size() <= 1 || object->instances.size() != 1 || object->is_cut())
+            continue;
+        choices.Add(from_u8(object->name));
+        target_indices.push_back(object_idx);
+    }
+    if (choices.empty())
+        return;
+
+    SingleChoiceDialog dialog(_L("Assembly:"), _L("Move parts to assembly"), choices, 0, this);
+    const int choice = dialog.GetSingleChoiceIndex();
+    if (choice < 0)
+        return;
+
+    take_snapshot(_u8L("Move parts to assembly"));
+    Model* model = (*m_objects)[source_object_idx]->get_model();
+    const size_t target_idx = model->move_volumes_to_object(size_t(source_object_idx), volume_indices, target_indices[size_t(choice)]);
+    if (target_idx == size_t(-1))
+        return;
+
+    reload_all_plates(true);
+    select_item(m_objects_model->GetItemById(int(target_idx)));
+    wxGetApp().plater()->schedule_background_process();
+    wxGetApp().plater()->set_current_canvas_as_dirty();
+}
+
+void ObjectList::move_selected_volumes_to_new_assembly()
+{
+    int source_object_idx = -1;
+    std::vector<size_t> volume_indices;
+    if (!get_selected_volume_indices(source_object_idx, volume_indices) || volume_indices.size() < 2)
+        return;
+
+    take_snapshot(_u8L("Move parts to new assembly"));
+    Model* model = (*m_objects)[source_object_idx]->get_model();
+    const size_t target_idx = model->move_volumes_to_new_object(size_t(source_object_idx), volume_indices, _u8L("Assembly"));
+    if (target_idx == size_t(-1))
+        return;
+
+    reload_all_plates(true);
+    select_item(m_objects_model->GetItemById(int(target_idx)));
+    wxGetApp().plater()->schedule_background_process();
+    wxGetApp().plater()->set_current_canvas_as_dirty();
+}
+
+void ObjectList::extract_selected_volumes()
+{
+    int source_object_idx = -1;
+    std::vector<size_t> volume_indices;
+    if (!get_selected_volume_indices(source_object_idx, volume_indices))
+        return;
+
+    take_snapshot(_u8L("Remove parts from assembly"));
+    Model* model = (*m_objects)[source_object_idx]->get_model();
+    const std::vector<size_t> extracted_indices = model->extract_volumes_to_objects(size_t(source_object_idx), volume_indices);
+    if (extracted_indices.empty())
+        return;
+
+    reload_all_plates(true);
+    wxDataViewItemArray selections;
+    for (size_t object_idx : extracted_indices)
+        selections.Add(m_objects_model->GetItemById(int(object_idx)));
+    select_items(selections);
+    wxGetApp().plater()->schedule_background_process();
+    wxGetApp().plater()->set_current_canvas_as_dirty();
+}
+
 /*void ObjectList::merge_volumes()
 {
     std::vector<int> obj_idxs, vol_idxs;

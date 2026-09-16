@@ -52,6 +52,7 @@
 #include <wx/evtloop.h>
 #include <wx/timer.h>
 #include <wx/wrapsizer.h>
+#include <wx/spinctrl.h>
 #ifdef _WIN32
 #include <wx/richtooltip.h>
 #include <wx/custombgwin.h>
@@ -203,6 +204,64 @@ static const std::pair<unsigned int, unsigned int> THUMBNAIL_SIZE_3MF = { 512, 5
 
 namespace Slic3r {
 namespace GUI {
+
+class ImportAssemblyDialog final : public wxDialog
+{
+public:
+    ImportAssemblyDialog(wxWindow* parent, const Model& model)
+        : wxDialog(parent, wxID_ANY, _L("Assign assembly groups"), wxDefaultPosition, wxDefaultSize,
+                   wxDEFAULT_DIALOG_STYLE | wxRESIZE_BORDER)
+    {
+        auto* main_sizer = new wxBoxSizer(wxVERTICAL);
+        auto* message = new wxStaticText(this, wxID_ANY,
+            _L("Assign a group number to each object. Objects with the same number are imported as one assembly; 0 keeps an object separate."));
+        message->Wrap(FromDIP(480));
+        main_sizer->Add(message, 0, wxALL | wxEXPAND, FromDIP(12));
+
+        auto* scroll = new wxScrolledWindow(this, wxID_ANY, wxDefaultPosition, FromDIP(wxSize(500, 300)), wxVSCROLL);
+        scroll->SetScrollRate(0, FromDIP(10));
+        auto* grid = new wxFlexGridSizer(2, FromDIP(6), FromDIP(12));
+        grid->AddGrowableCol(0, 1);
+        grid->Add(new wxStaticText(scroll, wxID_ANY, _L("Object")), 0, wxALIGN_CENTER_VERTICAL);
+        grid->Add(new wxStaticText(scroll, wxID_ANY, _L("Group")), 0, wxALIGN_CENTER_VERTICAL);
+
+        m_group_controls.reserve(model.objects.size());
+        for (size_t object_idx = 0; object_idx < model.objects.size(); ++object_idx) {
+            wxString name = from_u8(model.objects[object_idx]->name);
+            if (name.empty())
+                name = wxString::Format(_L("Object %d"), int(object_idx + 1));
+            grid->Add(new wxStaticText(scroll, wxID_ANY, name), 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(8));
+
+            auto* group = new wxSpinCtrl(scroll, wxID_ANY, "0", wxDefaultPosition, FromDIP(wxSize(80, -1)), wxSP_ARROW_KEYS,
+                                         0, int(model.objects.size()), 0);
+            group->SetName(format_wxstr(_L("Assembly group for %s"), name));
+            group->SetToolTip(_L("Use 0 for a separate object, or the same positive number for objects that belong to one assembly."));
+            m_group_controls.push_back(group);
+            grid->Add(group, 0, wxALIGN_CENTER_VERTICAL);
+        }
+
+        scroll->SetSizer(grid);
+        scroll->FitInside();
+        main_sizer->Add(scroll, 1, wxLEFT | wxRIGHT | wxBOTTOM | wxEXPAND, FromDIP(12));
+        main_sizer->Add(CreateSeparatedButtonSizer(wxOK | wxCANCEL), 0, wxALL | wxEXPAND, FromDIP(12));
+        SetSizerAndFit(main_sizer);
+        SetMinSize(FromDIP(wxSize(540, 420)));
+        SetSize(FromDIP(wxSize(540, 520)));
+        CentreOnParent();
+    }
+
+    std::vector<size_t> group_ids() const
+    {
+        std::vector<size_t> result;
+        result.reserve(m_group_controls.size());
+        for (const wxSpinCtrl* group : m_group_controls)
+            result.push_back(size_t(group->GetValue()));
+        return result;
+    }
+
+private:
+    std::vector<wxSpinCtrl*> m_group_controls;
+};
 
 wxDEFINE_EVENT(EVT_SCHEDULE_BACKGROUND_PROCESS,     SimpleEvent);
 wxDEFINE_EVENT(EVT_SLICING_UPDATE,                  SlicingStatusEvent);
@@ -6993,6 +7052,8 @@ std::vector<size_t> Plater::priv::load_files(const std::vector<fs::path>& input_
         // const bool type_prusa   = std::regex_match(path.string(), pattern_prusa);
 
         Slic3r::Model model;
+        bool preserve_standard_3mf_positions = false;
+        bool standard_3mf_group_assignment_handled = false;
         // BBS: add auxiliary files related logic
         bool load_aux = strategy & LoadStrategy::LoadAuxiliary, load_old_project = false;
         if (load_model && load_config && type_3mf) {
@@ -7250,18 +7311,14 @@ std::vector<size_t> Plater::priv::load_files(const std::vector<fs::path>& input_
                     }
 
                     if (load_model && en_3mf_file_type == En3mfType::From_Other) {
+                        preserve_standard_3mf_positions = true;
                         for (ModelObject *model_object : model.objects) {
                             model_object->config.reset();
                             for (ModelVolume *model_volume : model_object->volumes)
                                 model_volume->config.reset();
-                            if (model_object->instances.empty()) {
-                                model_object->center_around_origin(false);
+                            if (model_object->instances.empty())
                                 model_object->add_instance();
-                            } else {
-                                model_object->ensure_on_bed(false);
-                            }
                         }
-                        model.center_instances_around_point(this->bed.build_volume().bed_center());
                     }
 
                     if (load_model && en_3mf_file_type == En3mfType::From_Other && !skip_standard_3mf_color_mapping &&
@@ -7296,6 +7353,7 @@ std::vector<size_t> Plater::priv::load_files(const std::vector<fs::path>& input_
                             ObjColorDialog color_dlg(nullptr, color_dialog_in_out, extruder_colours, Sidebar::should_show_SEMM_buttons());
                             if (color_dlg.ShowModal() != wxID_OK)
                                 color_dialog_in_out.filament_ids.clear();
+                            standard_3mf_group_assignment_handled = color_dialog_in_out.assembly_groups_handled;
                         }
                     }
 
@@ -7896,22 +7954,29 @@ std::vector<size_t> Plater::priv::load_files(const std::vector<fs::path>& input_
                 // convert_model_if(model, answer_convert_from_imperial_units == wxID_YES);
             }
 
-             if (!is_project_file && !preserve_model_objects && model.objects.size() > 1 &&
-                 (type_3mf || model.looks_like_multipart_object())) {
-               const wxString question = type_3mf
-                   ? _L("This 3MF file contains several objects.\nDo you want to load it as a single object with multiple parts?")
-                   : _L("This file contains several objects positioned at multiple heights.\nInstead of considering them as multiple objects, should \nthe file be loaded as a single object with multiple parts?");
-               const long dialog_style = wxICON_WARNING | wxYES | wxNO | (type_3mf ? wxNO_DEFAULT : 0);
-               MessageDialog msg_dlg(q, question + "\n", _L("Multi-part object detected"), dialog_style);
-               if (type_3mf) {
-                   msg_dlg.SetButtonLabel(wxID_YES, _L("Load as a single object"), true);
-                   msg_dlg.SetButtonLabel(wxID_NO, _L("Load as separate objects"));
-               }
-                if (msg_dlg.ShowModal() == wxID_YES) {
-                    model.convert_multipart_object(filaments_cnt);
+            if (!is_project_file && !preserve_model_objects && model.objects.size() > 1 &&
+                (type_3mf || model.looks_like_multipart_object())) {
+                if (type_3mf) {
+                    if (!standard_3mf_group_assignment_handled) {
+                        ImportAssemblyDialog dlg(q, model);
+                        wxGetApp().UpdateDlgDarkUI(&dlg);
+                        if (dlg.ShowModal() != wxID_OK) {
+                            q->skip_thumbnail_invalid = false;
+                            return empty_result;
+                        }
+                        model.convert_multipart_objects(dlg.group_ids(), filaments_cnt);
+                    }
+                } else {
+                    const wxString question = _L("This file contains several objects positioned at multiple heights.\nInstead of considering them as multiple objects, should \nthe file be loaded as a single object with multiple parts?");
+                    MessageDialog msg_dlg(q, question + "\n", _L("Multi-part object detected"), wxICON_WARNING | wxYES | wxNO);
+                    if (msg_dlg.ShowModal() == wxID_YES)
+                        model.convert_multipart_object(filaments_cnt);
                 }
             }
         }
+
+        if (preserve_standard_3mf_positions)
+            model.place_on_bed_preserving_relative_positions();
         // else if ((wxGetApp().get_mode() == comSimple) && (type_3mf || type_any_amf) && model_has_advanced_features(model)) {
         //    MessageDialog msg_dlg(q, _L("This file cannot be loaded in a simple mode. Do you want to switch to an advanced mode?")+"\n",
         //        _L("Detected advanced data"), wxICON_WARNING | wxYES | wxNO);
@@ -7945,7 +8010,7 @@ std::vector<size_t> Plater::priv::load_files(const std::vector<fs::path>& input_
                 return empty_result;
             }
 
-            if (!model_object->instances.empty())
+            if (!preserve_standard_3mf_positions && !model_object->instances.empty())
                 model_object->ensure_on_bed(is_project_file);
         }
 
@@ -15075,6 +15140,7 @@ void Plater::update_obj_preview_thumbnail(ModelObject *mo, int obj_idx, int vol_
 {
     PartPlate *      plate            = get_partplate_list().get_plate(0);
     ThumbnailsParams thumbnail_params = {{}, false, true, true, true, 0, false};
+    thumbnail_params.camera_margin_factor = 0.15;
     GLVolumeCollection cur_volumes;
     cur_volumes.load_object_volume(mo, obj_idx, vol_idx, 0, "volume", true, false, false, false);
     ModelObjectPtrs model_objects;
@@ -15083,13 +15149,62 @@ void Plater::update_obj_preview_thumbnail(ModelObject *mo, int obj_idx, int vol_
                                             model_objects, cur_volumes, Camera::EType::Ortho, (Camera::ViewAngleType) camera_view_angle_type, false, false);
 }
 
-void Plater::update_obj_preview_thumbnail(Model *model, std::vector<Slic3r::ColorRGBA> colors, int camera_view_angle_type)
+static void add_object_outline_to_thumbnail(ThumbnailData& thumbnail, const ThumbnailData& object_mask,
+                                            unsigned int object_id)
+{
+    if (!thumbnail.is_valid() || !object_mask.is_valid() || thumbnail.width != object_mask.width ||
+        thumbnail.height != object_mask.height)
+        return;
+
+    const size_t pixel_count = size_t(thumbnail.width) * size_t(thumbnail.height);
+    std::vector<unsigned char> selected(pixel_count, 0);
+    for (size_t pixel_idx = 0; pixel_idx < pixel_count; ++pixel_idx) {
+        const size_t byte_idx = 4 * pixel_idx;
+        const unsigned int mask_id = unsigned(object_mask.pixels[byte_idx]) |
+                                     (unsigned(object_mask.pixels[byte_idx + 1]) << 8) |
+                                     (unsigned(object_mask.pixels[byte_idx + 2]) << 16);
+        selected[pixel_idx] = mask_id == object_id;
+    }
+
+    constexpr int outline_radius = 3;
+    constexpr std::array<unsigned char, 4> outline_color{0, 184, 255, 255};
+    for (int y = 0; y < int(thumbnail.height); ++y) {
+        for (int x = 0; x < int(thumbnail.width); ++x) {
+            const size_t pixel_idx = size_t(y) * thumbnail.width + size_t(x);
+            if (selected[pixel_idx])
+                continue;
+
+            bool next_to_selected = false;
+            for (int dy = -outline_radius; dy <= outline_radius && !next_to_selected; ++dy) {
+                const int neighbor_y = y + dy;
+                if (neighbor_y < 0 || neighbor_y >= int(thumbnail.height))
+                    continue;
+                for (int dx = -outline_radius; dx <= outline_radius; ++dx) {
+                    const int neighbor_x = x + dx;
+                    if (neighbor_x < 0 || neighbor_x >= int(thumbnail.width) || dx * dx + dy * dy > outline_radius * outline_radius)
+                        continue;
+                    if (selected[size_t(neighbor_y) * thumbnail.width + size_t(neighbor_x)]) {
+                        next_to_selected = true;
+                        break;
+                    }
+                }
+            }
+
+            if (next_to_selected)
+                std::copy(outline_color.begin(), outline_color.end(), thumbnail.pixels.begin() + 4 * pixel_idx);
+        }
+    }
+}
+
+void Plater::update_obj_preview_thumbnail(Model *model, std::vector<Slic3r::ColorRGBA> colors, int camera_view_angle_type,
+                                          int highlighted_object_idx)
 {
     if (model == nullptr)
         return;
 
     PartPlate *      plate            = get_partplate_list().get_plate(0);
     ThumbnailsParams thumbnail_params = {{}, false, true, true, true, 0, false};
+    thumbnail_params.camera_margin_factor = 0.15;
     plate->obj_preview_thumbnail_data.reset();
     GLVolumeCollection cur_volumes;
     ModelObjectPtrs model_objects = model->objects;
@@ -15107,8 +15222,27 @@ void Plater::update_obj_preview_thumbnail(Model *model, std::vector<Slic3r::Colo
     if (cur_volumes.volumes.empty())
         return;
 
+    // Solid-color 3MF volumes do not have painted facets. Use their assigned filament color
+    // instead of the neutral mesh color so focusing an object never removes the normal preview colors.
+    for (GLVolume* volume : cur_volumes.volumes) {
+        const int extruder_id = volume->extruder_id;
+        if (extruder_id > 0 && extruder_id <= int(colors.size()))
+            volume->set_color(colors[extruder_id - 1]);
+    }
+
     get_view3D_canvas3D()->render_thumbnail(plate->obj_preview_thumbnail_data, colors, plate->plate_thumbnail_width, plate->plate_thumbnail_height, thumbnail_params,
                                             model_objects, cur_volumes, Camera::EType::Ortho, (Camera::ViewAngleType) camera_view_angle_type, false, false);
+
+    if (highlighted_object_idx >= 0 && highlighted_object_idx < int(model->objects.size())) {
+        for (GLVolume* volume : cur_volumes.volumes)
+            volume->model_object_ID = unsigned(volume->object_idx() + 1);
+
+        ThumbnailData object_mask;
+        get_view3D_canvas3D()->render_thumbnail(object_mask, plate->plate_thumbnail_width, plate->plate_thumbnail_height, thumbnail_params,
+                                                model_objects, cur_volumes, Camera::EType::Ortho,
+                                                (Camera::ViewAngleType) camera_view_angle_type, true, false);
+        add_object_outline_to_thumbnail(plate->obj_preview_thumbnail_data, object_mask, unsigned(highlighted_object_idx + 1));
+    }
 }
 
 //invalid all plate's thumbnails

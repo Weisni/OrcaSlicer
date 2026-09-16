@@ -6343,12 +6343,13 @@ void GLCanvas3D::render_thumbnail_internal(ThumbnailData& thumbnail_data, const 
     double width = volumes_box.max.x() - volumes_box.min.x();
     double depth = volumes_box.max.y() - volumes_box.min.y();
     double height = volumes_box.max.z() - volumes_box.min.z();
-    volumes_box.max.x() = volumes_box.max.x() + width * 0.01f;
-    volumes_box.min.x() = volumes_box.min.x() - width * 0.01f;
-    volumes_box.max.y() = volumes_box.max.y() + depth * 0.01f;
-    volumes_box.min.y() = volumes_box.min.y() - depth * 0.01f;
-    volumes_box.max.z() = volumes_box.max.z() + height * 0.02f;
-    volumes_box.min.z() = volumes_box.min.z() - height * 0.02f;
+    const double vertical_margin_factor = std::max(0.02, thumbnail_params.camera_margin_factor);
+    volumes_box.max.x() = volumes_box.max.x() + width * thumbnail_params.camera_margin_factor;
+    volumes_box.min.x() = volumes_box.min.x() - width * thumbnail_params.camera_margin_factor;
+    volumes_box.max.y() = volumes_box.max.y() + depth * thumbnail_params.camera_margin_factor;
+    volumes_box.min.y() = volumes_box.min.y() - depth * thumbnail_params.camera_margin_factor;
+    volumes_box.max.z() = volumes_box.max.z() + height * vertical_margin_factor;
+    volumes_box.min.z() = volumes_box.min.z() - height * vertical_margin_factor;
 
     Camera camera;
     camera.set_type(camera_type);
