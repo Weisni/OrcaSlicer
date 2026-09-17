@@ -4,6 +4,7 @@
 #include "ObjColorDialog.hpp"
 #include "BitmapCache.hpp"
 #include "GUI.hpp"//for ICON_SIZE
+#include "format.hpp"
 #include "I18N.hpp"
 #include "GUI_App.hpp"
 #include "MsgDialog.hpp"
