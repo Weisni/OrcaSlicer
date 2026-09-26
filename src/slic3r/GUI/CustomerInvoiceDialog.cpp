@@ -15,9 +15,11 @@
 #include <wx/dataview.h>
 #include <wx/datetime.h>
 #include <wx/dcmemory.h>
+#include <wx/display.h>
 #include <wx/filedlg.h>
 #include <wx/filename.h>
 #include <wx/msgdlg.h>
+#include <wx/scrolwin.h>
 #include <wx/sizer.h>
 #include <wx/statbox.h>
 #include <wx/stattext.h>
@@ -381,58 +383,63 @@ public:
         , m_order(order), m_customer(customer), m_lines(std::move(lines))
     {
         auto *root = new wxBoxSizer(wxVERTICAL);
+        auto *body = new wxScrolledWindow(
+            this, wxID_ANY, wxDefaultPosition, wxDefaultSize,
+            wxHSCROLL | wxVSCROLL);
+        body->SetScrollRate(FromDIP(10), FromDIP(10));
+        auto *content = new wxBoxSizer(wxVERTICAL);
         auto *columns = new wxBoxSizer(wxHORIZONTAL);
-        auto *sender = new wxStaticBoxSizer(wxVERTICAL, this, _L("Invoice issuer"));
+        auto *sender = new wxStaticBoxSizer(wxVERTICAL, body, _L("Invoice issuer"));
         auto *sender_grid = new wxFlexGridSizer(2, FromDIP(7), FromDIP(10));
         sender_grid->AddGrowableCol(1, 1);
-        m_seller_name = add_invoice_text(this, sender_grid, _L("Company/name"),
+        m_seller_name = add_invoice_text(body, sender_grid, _L("Company/name"),
             from_u8(config_value("seller_name")));
-        m_seller_address = add_invoice_text(this, sender_grid, _L("Address"),
+        m_seller_address = add_invoice_text(body, sender_grid, _L("Address"),
             from_u8(config_value("seller_address")), wxTE_MULTILINE);
-        m_seller_contact = add_invoice_text(this, sender_grid, _L("Email / phone"),
+        m_seller_contact = add_invoice_text(body, sender_grid, _L("Email / phone"),
             from_u8(config_value("seller_contact")));
-        m_tax_identifier = add_invoice_text(this, sender_grid, _L("Tax number / VAT ID"),
+        m_tax_identifier = add_invoice_text(body, sender_grid, _L("Tax number / VAT ID"),
             from_u8(config_value("tax_identifier")));
         sender->Add(sender_grid, 1, wxEXPAND | wxALL, FromDIP(10));
 
-        auto *recipient = new wxStaticBoxSizer(wxVERTICAL, this, _L("Invoice details"));
+        auto *recipient = new wxStaticBoxSizer(wxVERTICAL, body, _L("Invoice details"));
         auto *recipient_grid = new wxFlexGridSizer(2, FromDIP(7), FromDIP(10));
         recipient_grid->AddGrowableCol(1, 1);
-        m_customer_name = add_invoice_text(this, recipient_grid, _L("Customer"),
+        m_customer_name = add_invoice_text(body, recipient_grid, _L("Customer"),
             from_u8(customer.name));
-        m_customer_address = add_invoice_text(this, recipient_grid, _L("Billing address"), {},
+        m_customer_address = add_invoice_text(body, recipient_grid, _L("Billing address"), {},
             wxTE_MULTILINE);
         const wxString today = wxDateTime::Today().FormatISODate();
         const wxString number = !order.order_number.empty() ?
             from_u8(order.order_number) : "RE-" + wxDateTime::Now().Format("%Y%m%d-%H%M");
-        m_invoice_number = add_invoice_text(this, recipient_grid, _L("Invoice number"), number);
-        m_invoice_date = add_invoice_text(this, recipient_grid, _L("Invoice date"), today);
-        m_service_date = add_invoice_text(this, recipient_grid, _L("Service date"), today);
-        m_due_date = add_invoice_text(this, recipient_grid, _L("Due date"),
+        m_invoice_number = add_invoice_text(body, recipient_grid, _L("Invoice number"), number);
+        m_invoice_date = add_invoice_text(body, recipient_grid, _L("Invoice date"), today);
+        m_service_date = add_invoice_text(body, recipient_grid, _L("Service date"), today);
+        m_due_date = add_invoice_text(body, recipient_grid, _L("Due date"),
             (wxDateTime::Today() + wxDateSpan::Days(14)).FormatISODate());
         recipient->Add(recipient_grid, 1, wxEXPAND | wxALL, FromDIP(10));
         columns->Add(sender, 1, wxEXPAND | wxRIGHT, FromDIP(8));
         columns->Add(recipient, 1, wxEXPAND);
-        root->Add(columns, 0, wxEXPAND | wxALL, FromDIP(12));
+        content->Add(columns, 0, wxEXPAND | wxALL, FromDIP(12));
 
         auto *tax_row = new wxBoxSizer(wxHORIZONTAL);
-        m_small_business = new wxCheckBox(this, wxID_ANY,
+        m_small_business = new wxCheckBox(body, wxID_ANY,
             _L("Small-business regulation (Section 19 UStG, no VAT)"));
         m_small_business->SetValue(config_value("small_business") == "true");
         tax_row->Add(m_small_business, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(18));
-        tax_row->Add(new wxStaticText(this, wxID_ANY, _L("VAT rate")), 0,
+        tax_row->Add(new wxStaticText(body, wxID_ANY, _L("VAT rate")), 0,
                      wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(8));
-        m_vat = new wxChoice(this, wxID_ANY);
+        m_vat = new wxChoice(body, wxID_ANY);
         m_vat->Append("19 %");
         m_vat->Append("7 %");
         m_vat->Append("0 %");
         const std::string configured_vat = config_value("vat_rate");
         m_vat->SetSelection(configured_vat == "7" ? 1 : configured_vat == "0" ? 2 : 0);
         tax_row->Add(m_vat);
-        root->Add(tax_row, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(12));
+        content->Add(tax_row, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(12));
 
         m_list = new wxDataViewListCtrl(
-            this, wxID_ANY, wxDefaultPosition, wxSize(-1, FromDIP(280)),
+            body, wxID_ANY, wxDefaultPosition, wxSize(-1, FromDIP(280)),
             wxDV_ROW_LINES | wxBORDER_SIMPLE);
         m_list->AppendIconTextColumn(_L("Position"), wxDATAVIEW_CELL_INERT, FromDIP(300));
         m_list->AppendTextColumn(_L("Details"), wxDATAVIEW_CELL_INERT, FromDIP(190));
@@ -454,7 +461,9 @@ public:
             row.emplace_back(from_u8(money(line.invoice_amount_micros, order.currency)));
             m_list->AppendItem(row);
         }
-        root->Add(m_list, 1, wxEXPAND | wxLEFT | wxRIGHT, FromDIP(12));
+        content->Add(m_list, 1, wxEXPAND | wxLEFT | wxRIGHT, FromDIP(12));
+        body->SetSizer(content);
+        root->Add(body, 1, wxEXPAND);
 
         m_totals = new wxStaticText(this, wxID_ANY, {});
         wxFont totals_font = m_totals->GetFont();
@@ -473,10 +482,21 @@ public:
         buttons->Add(close);
         root->Add(buttons, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(12));
         SetSizerAndFit(root);
-        SetMinSize(wxSize(FromDIP(980), FromDIP(700)));
-        SetSize(GetMinSize());
-        CentreOnParent();
+        const wxSize work_area = wxDisplay(this).GetClientArea().GetSize();
+        const wxSize dialog_size(
+            std::min(FromDIP(980), std::max(1, work_area.x - FromDIP(32))),
+            std::min(FromDIP(700), std::max(1, work_area.y - FromDIP(32))));
+        SetMinSize(wxSize(
+            std::min(FromDIP(640), dialog_size.x),
+            std::min(FromDIP(420), dialog_size.y)));
+        SetSize(dialog_size);
+        body->FitInside();
         update_totals();
+        CentreOnParent();
+        Bind(wxEVT_SIZE, [this](wxSizeEvent &event) {
+            update_totals();
+            event.Skip();
+        });
         m_small_business->Bind(wxEVT_CHECKBOX, [this](wxCommandEvent &) { update_totals(); });
         m_vat->Bind(wxEVT_CHOICE, [this](wxCommandEvent &) { update_totals(); });
         copy->Bind(wxEVT_BUTTON, [this](wxCommandEvent &) { copy_invoice(); });
@@ -537,6 +557,7 @@ private:
     void update_totals()
     {
         const InvoiceExportData current = data();
+        m_vat->Enable(!current.small_business);
         const MoneyMicros net = invoice_net(current);
         const MoneyMicros tax = invoice_tax(current);
         m_totals->SetLabel(
@@ -544,6 +565,8 @@ private:
             "    " + _L("Net") + ": " + from_u8(money(net, current.currency)) +
             "    " + _L("VAT") + ": " + from_u8(money(tax, current.currency)) +
             "    " + _L("Total") + ": " + from_u8(money(checked_invoice_add(net, tax), current.currency)));
+        m_totals->Wrap(std::max(1, GetClientSize().x - FromDIP(24)));
+        Layout();
     }
 
     void copy_invoice()

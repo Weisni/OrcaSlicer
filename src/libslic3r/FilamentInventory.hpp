@@ -302,6 +302,7 @@ struct CustomerOrder {
     bool bill_design {true};
     bool bill_other {true};
     CustomerOrderStatus status {CustomerOrderStatus::draft};
+    bool archived {false};
     std::string created_at;
     std::string updated_at;
 };
@@ -377,7 +378,7 @@ struct StockEvent {
 class Store
 {
 public:
-    static constexpr int schema_version = 7;
+    static constexpr int schema_version = 8;
 
     // database_path is UTF-8. Parent directories must already exist.
     explicit Store(const std::string &database_path);
@@ -434,11 +435,14 @@ public:
     CustomerOrder update_customer_order(
         const std::string &order_id, const CustomerOrderInput &input);
     void delete_customer_order(const std::string &order_id);
+    void archive_customer_order(const std::string &order_id);
+    void restore_customer_order(const std::string &order_id);
     void set_customer_order_status(
         const std::string &order_id, CustomerOrderStatus status);
     CustomerOrder get_customer_order(const std::string &order_id) const;
     std::vector<CustomerOrder> list_customer_orders(
-        const std::string &customer_id = {}, bool include_closed = true) const;
+        const std::string &customer_id = {}, bool include_closed = true,
+        bool include_archived = false) const;
 
     PrintJob reserve_job(const PrintJobInput &job, const std::vector<AllocationInput> &allocations);
     PrintJob update_print_job(

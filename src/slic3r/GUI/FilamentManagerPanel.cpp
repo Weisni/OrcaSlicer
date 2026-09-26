@@ -10,17 +10,21 @@
 #include <sstream>
 
 #include <wx/button.h>
+#include <wx/checkbox.h>
 #include <wx/choice.h>
 #include <wx/choicdlg.h>
 #include <wx/clipbrd.h>
 #include <wx/cmndata.h>
 #include <wx/dataobj.h>
 #include <wx/dataview.h>
+#include <wx/dc.h>
 #include <wx/dialog.h>
 #include <wx/display.h>
 #include <wx/icon.h>
 #include <wx/msgdlg.h>
 #include <wx/scrolwin.h>
+#include <wx/settings.h>
+#include <wx/srchctrl.h>
 #include <wx/simplebook.h>
 #include <wx/sizer.h>
 #include <wx/statbmp.h>
@@ -29,6 +33,7 @@
 #include <wx/textctrl.h>
 #include <wx/tokenzr.h>
 #include <wx/treelist.h>
+#include <wx/wrapsizer.h>
 
 #include "BitmapComboBox.hpp"
 #include "GUI_App.hpp"
@@ -38,6 +43,7 @@
 #include "FilamentAllocationDialog.hpp"
 #include "FilamentInventoryService.hpp"
 #include "FilamentSpoolEditor.hpp"
+#include "Widgets/Button.hpp"
 #include "Widgets/StateColor.hpp"
 #include "Widgets/TabCtrl.hpp"
 #include "wxExtensions.hpp"
@@ -205,6 +211,101 @@ void style_data_view(wxDataViewCtrl *list)
     list->SetBackgroundColour(StateColor::darkModeColorFor(wxColour("#FFFFFF")));
     list->SetForegroundColour(StateColor::darkModeColorFor(wxColour("#262E30")));
     list->SetAlternateRowColour(StateColor::darkModeColorFor(wxColour("#F8F8F8")));
+}
+
+wxString customer_order_label(const CustomerOrder &order)
+{
+    wxString label = from_u8(order.order_number);
+    if (!order.title.empty()) {
+        if (!label.empty())
+            label += em_dash_separator();
+        label += from_u8(order.title);
+    }
+    return label;
+}
+
+int customer_order_status_rank(CustomerOrderStatus status)
+{
+    switch (status) {
+    case CustomerOrderStatus::active:    return 0;
+    case CustomerOrderStatus::draft:     return 1;
+    case CustomerOrderStatus::completed: return 2;
+    case CustomerOrderStatus::cancelled: return 3;
+    }
+    return 4;
+}
+
+wxString customer_order_status_label(const CustomerOrder &order)
+{
+    wxString label;
+    switch (order.status) {
+    case CustomerOrderStatus::active:    label = _L("Active"); break;
+    case CustomerOrderStatus::draft:     label = _L("Draft"); break;
+    case CustomerOrderStatus::completed: label = _L("Completed"); break;
+    case CustomerOrderStatus::cancelled: label = _L("Cancelled"); break;
+    }
+    return label + (order.archived ? " / " + _L("Archived") : wxString {});
+}
+
+// Keep the status readable without relying on colour alone, including selection
+// and archived records. The stored value remains the full accessible label.
+class OrderStatusRenderer : public wxDataViewCustomRenderer
+{
+public:
+    explicit OrderStatusRenderer(wxWindow *view)
+        : wxDataViewCustomRenderer("string", wxDATAVIEW_CELL_INERT), m_view(view) {}
+
+    bool SetValue(const wxVariant &value) override { m_label = value.GetString(); return true; }
+    bool GetValue(wxVariant &value) const override { value = m_label; return true; }
+    wxSize GetSize() const override
+    {
+        const wxSize text_size = m_view->GetTextExtent(m_label);
+        return wxSize(text_size.x + m_view->FromDIP(16),
+                      std::max(m_view->FromDIP(30), text_size.y + m_view->FromDIP(10)));
+    }
+#if wxUSE_ACCESSIBILITY
+    wxString GetAccessibleDescription() const override { return m_label; }
+#endif
+    bool Render(wxRect cell, wxDC *dc, int) override
+    {
+        const bool dark = wxGetApp().dark_mode();
+        wxColour background(dark ? "#41464F" : "#EEF0F4");
+        wxColour foreground(dark ? "#D7DBE3" : "#4C5668");
+        if (m_label.StartsWith(_L("Active"))) {
+            background = wxColour(dark ? "#184C48" : "#DCF4EF");
+            foreground = wxColour(dark ? "#80E3CF" : "#006B5C");
+        } else if (m_label.StartsWith(_L("Completed"))) {
+            background = wxColour(dark ? "#263F59" : "#E6EFFA");
+            foreground = wxColour(dark ? "#A7CFFC" : "#24598A");
+        } else if (m_label.StartsWith(_L("Cancelled"))) {
+            background = wxColour(dark ? "#523D38" : "#F9EBE6");
+            foreground = wxColour(dark ? "#EDB7A6" : "#8A4A35");
+        }
+        const int padding = m_view->FromDIP(8);
+        const wxSize text_size = dc->GetTextExtent(m_label);
+        const int height = std::min(cell.height, text_size.y + m_view->FromDIP(10));
+        const int width = std::min(cell.width, text_size.x + 2 * padding);
+        const wxRect badge(cell.x, cell.y + (cell.height - height) / 2, width, height);
+        wxDCBrushChanger brush(*dc, wxBrush(background));
+        wxDCPenChanger pen(*dc, *wxTRANSPARENT_PEN);
+        wxDCTextColourChanger text_colour(*dc, foreground);
+        dc->DrawRoundedRectangle(badge, m_view->FromDIP(5));
+        const wxString text = wxControl::Ellipsize(m_label, *dc, wxELLIPSIZE_END,
+                                                  std::max(1, width - 2 * padding));
+        dc->DrawText(text, badge.x + padding, badge.y + (height - text_size.y) / 2);
+        return true;
+    }
+private:
+    wxWindow *m_view;
+    wxString m_label;
+};
+
+Button *management_button(wxWindow *parent, const wxString &label, bool primary = false)
+{
+    auto *button = new Button(parent, label);
+    button->SetStyle(primary ? ButtonStyle::Confirm : ButtonStyle::Regular, ButtonType::Window);
+    button->SetMinSize(parent->FromDIP(wxSize(-1, 32)));
+    return button;
 }
 
 wxStaticText *add_summary_card(wxWindow *parent, wxBoxSizer *row, const wxString &caption)
@@ -1535,6 +1636,7 @@ FilamentManagerPanel::FilamentManagerPanel(wxWindow *parent, wxWindowID id,
                                            long style)
     : wxPanel(parent, id, position, size, style)
     , m_refresh_timer(this)
+    , m_order_search_timer(this)
 {
     auto *root = new wxBoxSizer(wxVERTICAL);
     const wxColour page_background =
@@ -1545,26 +1647,28 @@ FilamentManagerPanel::FilamentManagerPanel(wxWindow *parent, wxWindowID id,
 
     auto *header = new wxPanel(this, wxID_ANY);
     header->SetBackgroundColour(header_background);
-    auto *header_sizer = new wxBoxSizer(wxVERTICAL);
+    auto *header_sizer = new wxBoxSizer(wxHORIZONTAL);
     auto *heading = new wxStaticText(header, wxID_ANY, _L("Filament Manager"));
     heading->SetBackgroundColour(header_background);
     heading->SetForegroundColour(
-        StateColor::darkModeColorFor(wxColour("#009688")));
+        StateColor::darkModeColorFor(wxColour("#262E30")));
     wxFont heading_font = heading->GetFont();
     heading_font.SetWeight(wxFONTWEIGHT_BOLD);
     heading_font.SetPointSize(heading_font.GetPointSize() + 4);
     heading->SetFont(heading_font);
     header_sizer->Add(
-        heading, 0, wxLEFT | wxRIGHT | wxTOP, FromDIP(16));
+        heading, 0, wxALIGN_CENTER_VERTICAL | wxALL, FromDIP(16));
 
     auto *description = new wxStaticText(
         header, wxID_ANY,
-        _L("Track physical spools, reserve sliced material, and confirm completed print jobs."));
+        _L("Manage filament stock, print jobs, customers, orders, and invoices."),
+        wxDefaultPosition, wxDefaultSize, wxST_ELLIPSIZE_END | wxST_NO_AUTORESIZE);
+    description->SetMinSize(wxSize(1, -1));
     description->SetBackgroundColour(header_background);
     description->SetForegroundColour(
         StateColor::darkModeColorFor(wxColour("#6B6B6B")));
     header_sizer->Add(
-        description, 0, wxLEFT | wxRIGHT | wxTOP | wxBOTTOM, FromDIP(16));
+        description, 1, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(16));
     header->SetSizer(header_sizer);
     root->Add(
         header, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, FromDIP(16));
@@ -1609,7 +1713,7 @@ FilamentManagerPanel::FilamentManagerPanel(wxWindow *parent, wxWindowID id,
     spools_sizer->Add(
         summary, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, FromDIP(4));
 
-    auto *spool_buttons = new wxBoxSizer(wxHORIZONTAL);
+    auto *spool_buttons = new wxWrapSizer(wxHORIZONTAL, wxREMOVE_LEADING_SPACES);
     m_add_button = new wxButton(spools_page, wxID_ANY, _L("Add spool"));
     m_edit_button = new wxButton(spools_page, wxID_ANY, _L("Edit"));
     m_remaining_button = new wxButton(spools_page, wxID_ANY, _L("Set remaining"));
@@ -1627,7 +1731,6 @@ FilamentManagerPanel::FilamentManagerPanel(wxWindow *parent, wxWindowID id,
     for (wxButton *button : {
              m_edit_button, m_remaining_button, m_identifiers_button, m_copy_nfc_button})
         spool_buttons->Add(button, 0, wxRIGHT, FromDIP(8));
-    spool_buttons->AddStretchSpacer();
     spool_buttons->Add(m_archive_button, 0, wxRIGHT, FromDIP(8));
     spool_buttons->Add(refresh_spools_button);
     spools_sizer->Add(spool_buttons, 0, wxEXPAND | wxALL, FromDIP(10));
@@ -1659,7 +1762,7 @@ FilamentManagerPanel::FilamentManagerPanel(wxWindow *parent, wxWindowID id,
     auto *jobs_page = new wxPanel(m_pages);
     jobs_page->SetBackgroundColour(page_background);
     auto *jobs_sizer = new wxBoxSizer(wxVERTICAL);
-    auto *job_buttons = new wxBoxSizer(wxHORIZONTAL);
+    auto *job_buttons = new wxWrapSizer(wxHORIZONTAL, wxREMOVE_LEADING_SPACES);
     m_confirm_button = new wxButton(jobs_page, wxID_ANY, _L("Confirm estimated usage"));
     m_correct_button = new wxButton(jobs_page, wxID_ANY, _L("Correct and confirm"));
     m_review_button = new wxButton(jobs_page, wxID_ANY, _L("Review manually"));
@@ -1719,7 +1822,7 @@ FilamentManagerPanel::FilamentManagerPanel(wxWindow *parent, wxWindowID id,
     auto *job_history_page = new wxPanel(m_pages);
     job_history_page->SetBackgroundColour(page_background);
     auto *job_history_sizer = new wxBoxSizer(wxVERTICAL);
-    auto *job_history_toolbar = new wxBoxSizer(wxHORIZONTAL);
+    auto *job_history_toolbar = new wxWrapSizer(wxHORIZONTAL, wxREMOVE_LEADING_SPACES);
     m_edit_job_history_button = new wxButton(
         job_history_page, wxID_ANY, _L("Edit print job..."));
     m_job_history_materials_button = new wxButton(
@@ -1735,7 +1838,7 @@ FilamentManagerPanel::FilamentManagerPanel(wxWindow *parent, wxWindowID id,
     job_history_toolbar->Add(
         m_job_history_materials_button, 0, wxRIGHT, FromDIP(8));
     job_history_toolbar->Add(refresh_job_history_button);
-    job_history_sizer->Add(job_history_toolbar, 0, wxALL, FromDIP(10));
+    job_history_sizer->Add(job_history_toolbar, 0, wxEXPAND | wxALL, FromDIP(10));
     m_job_history_list = new wxDataViewListCtrl(
         job_history_page, wxID_ANY, wxDefaultPosition, wxDefaultSize,
         wxDV_ROW_LINES | wxBORDER_NONE);
@@ -1758,100 +1861,147 @@ FilamentManagerPanel::FilamentManagerPanel(wxWindow *parent, wxWindowID id,
     job_history_page->SetSizer(job_history_sizer);
     m_pages->AddPage(job_history_page, wxEmptyString);
 
+    // Orders own the available height. Customer administration lives on its own
+    // page, so neither a second table nor cached wrap heights separate filters
+    // from the results. Only the result list receives a stretch proportion.
+    auto *orders_page = new wxPanel(m_pages);
+    orders_page->SetBackgroundColour(page_background);
+    auto *orders_sizer = new wxBoxSizer(wxVERTICAL);
+    auto *orders_heading = new wxBoxSizer(wxHORIZONTAL);
+    auto *orders_title = new wxStaticText(orders_page, wxID_ANY, _L("Orders"));
+    orders_title->SetFont(heading_font);
+    orders_heading->Add(orders_title, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(16));
+    m_add_order_button = management_button(orders_page, _L("Add order"), true);
+    auto *refresh_customers_button = management_button(orders_page, _L("Refresh"));
+    auto *cost_settings_button = management_button(orders_page, _L("Cost settings..."));
+    orders_heading->Add(m_add_order_button, 0, wxLEFT, FromDIP(8));
+    orders_heading->Add(refresh_customers_button, 0, wxLEFT, FromDIP(8));
+    orders_heading->Add(cost_settings_button, 0, wxLEFT, FromDIP(8));
+    orders_sizer->Add(orders_heading, 0, wxEXPAND | wxALL, FromDIP(12));
+
+    auto *order_filters = new wxBoxSizer(wxHORIZONTAL);
+    m_order_search = new wxSearchCtrl(orders_page, wxID_ANY);
+    m_order_search->SetDescriptiveText(_L("Search orders or customers"));
+    m_order_search->SetMinSize(FromDIP(wxSize(280, 32)));
+    m_order_search->SetMaxSize(FromDIP(wxSize(520, -1)));
+    m_order_search->ShowCancelButton(true);
+    order_filters->Add(m_order_search, 1, wxEXPAND | wxRIGHT, FromDIP(12));
+    m_order_status_filter = new wxChoice(orders_page, wxID_ANY);
+    for (const wxString &label : {_L("All statuses"), _L("Active"), _L("Draft"),
+                                  _L("Completed"), _L("Cancelled")})
+        m_order_status_filter->Append(label);
+    m_order_status_filter->SetSelection(0);
+    m_order_status_filter->SetToolTip(_L("Filter orders by status"));
+    order_filters->Add(m_order_status_filter, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(8));
+    m_order_filter = new wxChoice(orders_page, wxID_ANY);
+    m_order_filter->Append(_L("Not archived"));
+    m_order_filter->Append(_L("Archived"));
+    m_order_filter->Append(_L("All orders"));
+    m_order_filter->SetSelection(0);
+    m_order_filter->SetToolTip(_L("Show or hide archived orders"));
+    order_filters->Add(m_order_filter, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(12));
+    m_order_cost_details = new wxCheckBox(orders_page, wxID_ANY, _L("Cost details"));
+    m_order_cost_details->SetToolTip(_L("Show weight, material, electricity, wear, design, discount and quoted price columns."));
+    order_filters->Add(m_order_cost_details, 0, wxALIGN_CENTER_VERTICAL);
+    orders_sizer->Add(order_filters, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(12));
+
+    m_order_list = new wxDataViewListCtrl(
+        orders_page, wxID_ANY, wxDefaultPosition, wxDefaultSize,
+        wxDV_ROW_LINES | wxBORDER_NONE);
+    m_order_list->AppendColumn(new wxDataViewColumn(_L("Status"),
+        new OrderStatusRenderer(m_order_list), 0, FromDIP(175), wxALIGN_LEFT,
+        wxDATAVIEW_COL_RESIZABLE));
+    m_order_list->AppendTextColumn(_L("Order"), wxDATAVIEW_CELL_INERT, FromDIP(240));
+    m_order_list->AppendTextColumn(_L("Customer"), wxDATAVIEW_CELL_INERT, FromDIP(160));
+    m_order_list->AppendTextColumn(_L("Print jobs"), wxDATAVIEW_CELL_INERT, FromDIP(80), wxALIGN_RIGHT);
+    m_order_list->AppendTextColumn(_L("Duration"), wxDATAVIEW_CELL_INERT, FromDIP(110), wxALIGN_RIGHT);
+    m_order_list->AppendTextColumn(_L("Internal cost"), wxDATAVIEW_CELL_INERT, FromDIP(120), wxALIGN_RIGHT);
+    m_order_list->AppendTextColumn(_L("Calculated invoice"), wxDATAVIEW_CELL_INERT, FromDIP(145), wxALIGN_RIGHT);
+    m_order_list->AppendTextColumn(_L("Invoice"), wxDATAVIEW_CELL_INERT, FromDIP(120));
+    m_order_list->AppendTextColumn(_L("Weight"), wxDATAVIEW_CELL_INERT, FromDIP(100), wxALIGN_RIGHT);
+    m_order_list->AppendTextColumn(_L("Material cost"), wxDATAVIEW_CELL_INERT, FromDIP(120), wxALIGN_RIGHT);
+    m_order_list->AppendTextColumn(_L("Electricity estimate"), wxDATAVIEW_CELL_INERT, FromDIP(145), wxALIGN_RIGHT);
+    m_order_list->AppendTextColumn(_L("Wear & reserves"), wxDATAVIEW_CELL_INERT, FromDIP(140), wxALIGN_RIGHT);
+    m_order_list->AppendTextColumn(_L("Design & other"), wxDATAVIEW_CELL_INERT, FromDIP(130), wxALIGN_RIGHT);
+    m_order_list->AppendTextColumn(_L("Discount"), wxDATAVIEW_CELL_INERT, FromDIP(100), wxALIGN_RIGHT);
+    m_order_list->AppendTextColumn(_L("Quoted"), wxDATAVIEW_CELL_INERT, FromDIP(120), wxALIGN_RIGHT);
+    for (unsigned int column = 8; column < m_order_list->GetColumnCount(); ++column)
+        m_order_list->GetColumn(column)->SetHidden(true);
+    m_order_list->Bind(wxEVT_SIZE, [this](wxSizeEvent &event) {
+        const int extra = std::max(0, event.GetSize().x - FromDIP(1150) -
+            wxSystemSettings::GetMetric(wxSYS_VSCROLL_X, m_order_list) - FromDIP(2));
+        m_order_list->GetColumn(1)->SetWidth(FromDIP(240) + std::min(extra * 3 / 4, FromDIP(480)));
+        m_order_list->GetColumn(2)->SetWidth(FromDIP(160) + std::min(extra / 4, FromDIP(160)));
+        m_order_list->GetColumn(7)->SetWidth(FromDIP(120));
+        event.Skip();
+    });
+    style_data_view(m_order_list);
+    orders_sizer->Add(m_order_list, 1, wxEXPAND | wxLEFT | wxRIGHT, FromDIP(12));
+
+    m_order_summary = new wxStaticText(orders_page, wxID_ANY, wxEmptyString,
+        wxDefaultPosition, wxDefaultSize, wxST_ELLIPSIZE_END | wxST_NO_AUTORESIZE);
+    m_order_summary->SetMinSize(wxSize(1, -1));
+    m_order_summary->SetForegroundColour(StateColor::darkModeColorFor(wxColour("#6B6B6B")));
+    orders_sizer->Add(m_order_summary, 0, wxEXPAND | wxALL, FromDIP(12));
+
+    auto *order_actions = new wxPanel(orders_page);
+    order_actions->SetBackgroundColour(header_background);
+    auto *actions_sizer = new wxBoxSizer(wxVERTICAL);
+    m_selected_order_label = new wxStaticText(order_actions, wxID_ANY, _L("Select an order"),
+        wxDefaultPosition, wxDefaultSize, wxST_ELLIPSIZE_END | wxST_NO_AUTORESIZE);
+    m_selected_order_label->SetMinSize(wxSize(1, -1));
+    m_selected_order_label->SetFont(m_selected_order_label->GetFont().Bold());
+    actions_sizer->Add(m_selected_order_label, 0, wxEXPAND | wxALL, FromDIP(12));
+    auto *order_toolbar = new wxWrapSizer(wxHORIZONTAL, wxREMOVE_LEADING_SPACES);
+    m_edit_order_button = management_button(order_actions, _L("Edit order"));
+    m_invoice_button = management_button(order_actions, _L("Invoice..."));
+    m_material_breakdown_button = management_button(order_actions, _L("Material breakdown..."));
+    m_recalculate_costs_button = management_button(order_actions, _L("Recalculate costs..."));
+    for (Button *button : {m_edit_order_button, m_invoice_button,
+                           m_material_breakdown_button, m_recalculate_costs_button})
+        order_toolbar->Add(button, 0, wxRIGHT | wxBOTTOM, FromDIP(8));
+    order_toolbar->AddSpacer(FromDIP(12));
+    m_activate_order_button = management_button(order_actions, _L("Activate"), true);
+    m_complete_order_button = management_button(order_actions, _L("Complete"), true);
+    m_archive_order_button = management_button(order_actions, _L("Archive order"));
+    m_cancel_order_button = management_button(order_actions, _L("Cancel order"));
+    m_delete_order_button = management_button(order_actions, _L("Delete draft"));
+    for (Button *button : {m_activate_order_button, m_complete_order_button,
+                           m_archive_order_button, m_cancel_order_button, m_delete_order_button})
+        order_toolbar->Add(button, 0, wxRIGHT | wxBOTTOM, FromDIP(8));
+    actions_sizer->Add(order_toolbar, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(12));
+    order_actions->SetSizer(actions_sizer);
+    orders_sizer->Add(order_actions, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(12));
+    orders_page->SetSizer(orders_sizer);
+    m_pages->AddPage(orders_page, wxEmptyString);
+
     auto *customers_page = new wxPanel(m_pages);
     customers_page->SetBackgroundColour(page_background);
     auto *customers_sizer = new wxBoxSizer(wxVERTICAL);
-
-    auto *cost_bar = new wxBoxSizer(wxHORIZONTAL);
-    auto *cost_text = new wxStaticText(
-        customers_page, wxID_ANY,
-        _L("Costs combine material usage with sliced machine runtime and electricity."));
-    auto *cost_settings_button = new wxButton(
-        customers_page, wxID_ANY, _L("Cost settings..."));
-    m_recalculate_costs_button = new wxButton(
-        customers_page, wxID_ANY, _L("Recalculate costs..."));
-    cost_bar->Add(cost_text, 0, wxALIGN_CENTER_VERTICAL);
-    cost_bar->AddStretchSpacer();
-    cost_bar->Add(m_recalculate_costs_button, 0, wxRIGHT, FromDIP(8));
-    cost_bar->Add(cost_settings_button);
-    customers_sizer->Add(cost_bar, 0, wxEXPAND | wxALL, FromDIP(10));
-
-    auto *customer_toolbar = new wxBoxSizer(wxHORIZONTAL);
-    auto *add_customer_button = new wxButton(
-        customers_page, wxID_ANY, _L("Add customer"));
-    m_edit_customer_button = new wxButton(
-        customers_page, wxID_ANY, _L("Edit customer"));
-    m_archive_customer_button = new wxButton(
-        customers_page, wxID_ANY, _L("Archive customer"));
-    customer_toolbar->Add(add_customer_button, 0, wxRIGHT, FromDIP(8));
-    customer_toolbar->Add(m_edit_customer_button, 0, wxRIGHT, FromDIP(8));
-    customer_toolbar->Add(m_archive_customer_button, 0, wxRIGHT, FromDIP(8));
-    customers_sizer->Add(
-        customer_toolbar, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(10));
-
+    auto *customer_heading = new wxStaticText(customers_page, wxID_ANY, _L("Customers"));
+    customer_heading->SetFont(heading_font);
+    customers_sizer->Add(customer_heading, 0, wxALL, FromDIP(12));
+    auto *customer_toolbar = new wxWrapSizer(wxHORIZONTAL, wxREMOVE_LEADING_SPACES);
+    auto *add_customer_button = management_button(customers_page, _L("Add customer"), true);
+    m_edit_customer_button = management_button(customers_page, _L("Edit customer"));
+    m_archive_customer_button = management_button(customers_page, _L("Archive customer"));
+    for (Button *button : {add_customer_button, m_edit_customer_button, m_archive_customer_button})
+        customer_toolbar->Add(button, 0, wxRIGHT | wxBOTTOM, FromDIP(8));
+    customers_sizer->Add(customer_toolbar, 0, wxEXPAND | wxLEFT | wxRIGHT, FromDIP(12));
     m_customer_list = new wxDataViewListCtrl(
         customers_page, wxID_ANY, wxDefaultPosition, wxDefaultSize,
         wxDV_ROW_LINES | wxBORDER_NONE);
-    m_customer_list->AppendTextColumn(_L("Customer"), wxDATAVIEW_CELL_INERT, FromDIP(210));
+    m_customer_list->AppendTextColumn(_L("Customer"), wxDATAVIEW_CELL_INERT, FromDIP(240));
     m_customer_list->AppendTextColumn(_L("Contact"), wxDATAVIEW_CELL_INERT, FromDIP(180));
-    m_customer_list->AppendTextColumn(_L("Email"), wxDATAVIEW_CELL_INERT, FromDIP(220));
-    m_customer_list->AppendTextColumn(_L("Phone"), wxDATAVIEW_CELL_INERT, FromDIP(140));
-    m_customer_list->AppendTextColumn(_L("Accumulated cost"), wxDATAVIEW_CELL_INERT, FromDIP(140));
+    m_customer_list->AppendTextColumn(_L("Email"), wxDATAVIEW_CELL_INERT, FromDIP(240));
+    m_customer_list->AppendTextColumn(_L("Phone"), wxDATAVIEW_CELL_INERT, FromDIP(150));
+    m_customer_list->AppendTextColumn(_L("Accumulated cost"), wxDATAVIEW_CELL_INERT, FromDIP(150), wxALIGN_RIGHT);
     style_data_view(m_customer_list);
-    customers_sizer->Add(
-        m_customer_list, 1, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(10));
-
-    auto *order_toolbars = new wxBoxSizer(wxVERTICAL);
-    auto *order_toolbar = new wxBoxSizer(wxHORIZONTAL);
-    m_add_order_button = new wxButton(customers_page, wxID_ANY, _L("Add order"));
-    m_edit_order_button = new wxButton(customers_page, wxID_ANY, _L("Edit order"));
-    m_material_breakdown_button = new wxButton(
-        customers_page, wxID_ANY, _L("Material breakdown..."));
-    m_invoice_button = new wxButton(
-        customers_page, wxID_ANY, _L("Create invoice..."));
-    m_activate_order_button = new wxButton(customers_page, wxID_ANY, _L("Activate"));
-    m_complete_order_button = new wxButton(customers_page, wxID_ANY, _L("Complete"));
-    m_cancel_order_button = new wxButton(customers_page, wxID_ANY, _L("Cancel order"));
-    m_delete_order_button = new wxButton(customers_page, wxID_ANY, _L("Delete draft"));
-    auto *refresh_customers_button = new wxButton(customers_page, wxID_ANY, _L("Refresh"));
-    for (wxButton *button : {
-             m_add_order_button, m_edit_order_button,
-             m_material_breakdown_button, m_invoice_button})
-        order_toolbar->Add(button, 0, wxRIGHT, FromDIP(8));
-    order_toolbar->AddStretchSpacer();
-    order_toolbar->Add(refresh_customers_button);
-    order_toolbars->Add(order_toolbar, 0, wxEXPAND | wxBOTTOM, FromDIP(8));
-    auto *order_status_toolbar = new wxBoxSizer(wxHORIZONTAL);
-    for (wxButton *button : {
-             m_activate_order_button, m_complete_order_button,
-             m_cancel_order_button, m_delete_order_button})
-        order_status_toolbar->Add(button, 0, wxRIGHT, FromDIP(8));
-    order_toolbars->Add(order_status_toolbar, 0, wxEXPAND);
-    customers_sizer->Add(
-        order_toolbars, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(10));
-
-    m_order_list = new wxDataViewListCtrl(
-        customers_page, wxID_ANY, wxDefaultPosition, wxDefaultSize,
-        wxDV_ROW_LINES | wxBORDER_NONE);
-    m_order_list->AppendTextColumn(_L("Order"), wxDATAVIEW_CELL_INERT, FromDIP(210));
-    m_order_list->AppendTextColumn(_L("Customer"), wxDATAVIEW_CELL_INERT, FromDIP(180));
-    m_order_list->AppendTextColumn(_L("Status"), wxDATAVIEW_CELL_INERT, FromDIP(100));
-    m_order_list->AppendTextColumn(_L("Print jobs"), wxDATAVIEW_CELL_INERT, FromDIP(90));
-    m_order_list->AppendTextColumn(_L("Duration"), wxDATAVIEW_CELL_INERT, FromDIP(110));
-    m_order_list->AppendTextColumn(_L("Weight"), wxDATAVIEW_CELL_INERT, FromDIP(100));
-    m_order_list->AppendTextColumn(_L("Material cost"), wxDATAVIEW_CELL_INERT, FromDIP(110));
-    m_order_list->AppendTextColumn(
-        _L("Electricity estimate"), wxDATAVIEW_CELL_INERT, FromDIP(125));
-    m_order_list->AppendTextColumn(_L("Wear & reserves"), wxDATAVIEW_CELL_INERT, FromDIP(120));
-    m_order_list->AppendTextColumn(_L("Design & other"), wxDATAVIEW_CELL_INERT, FromDIP(120));
-    m_order_list->AppendTextColumn(_L("Internal cost"), wxDATAVIEW_CELL_INERT, FromDIP(110));
-    m_order_list->AppendTextColumn(_L("Discount"), wxDATAVIEW_CELL_INERT, FromDIP(100));
-    m_order_list->AppendTextColumn(_L("Calculated invoice"), wxDATAVIEW_CELL_INERT, FromDIP(125));
-    m_order_list->AppendTextColumn(_L("Quoted"), wxDATAVIEW_CELL_INERT, FromDIP(110));
-    m_order_list->AppendTextColumn(_L("Invoice"), wxDATAVIEW_CELL_INERT, FromDIP(110));
-    style_data_view(m_order_list);
-    customers_sizer->Add(
-        m_order_list, 2, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(10));
+    customers_sizer->Add(m_customer_list, 1, wxEXPAND | wxLEFT | wxRIGHT, FromDIP(12));
+    auto *customer_help = new wxStaticText(customers_page, wxID_ANY,
+        _L("Double-click a customer to edit. Select a customer here to prefill your next new order."));
+    customer_help->SetForegroundColour(StateColor::darkModeColorFor(wxColour("#6B6B6B")));
+    customers_sizer->Add(customer_help, 0, wxALL, FromDIP(12));
     customers_page->SetSizer(customers_sizer);
     m_pages->AddPage(customers_page, wxEmptyString);
 
@@ -1859,7 +2009,8 @@ FilamentManagerPanel::FilamentManagerPanel(wxWindow *parent, wxWindowID id,
     m_tabs->AppendItem(_L("Open print jobs"));
     m_tabs->AppendItem(_L("Stock history"));
     m_tabs->AppendItem(_L("Job history"));
-    m_tabs->AppendItem(_L("Customers & orders"));
+    m_tabs->AppendItem(_L("Orders"));
+    m_tabs->AppendItem(_L("Customers"));
     m_tabs->Bind(wxEVT_TAB_SEL_CHANGED, [this](wxCommandEvent &event) {
         const int selection = event.GetSelection();
         if (selection >= 0 && selection < static_cast<int>(m_pages->GetPageCount()))
@@ -1926,6 +2077,34 @@ FilamentManagerPanel::FilamentManagerPanel(wxWindow *parent, wxWindowID id,
     });
     m_delete_order_button->Bind(
         wxEVT_BUTTON, [this](wxCommandEvent &) { delete_customer_order(); });
+    m_archive_order_button->Bind(
+        wxEVT_BUTTON, [this](wxCommandEvent &) { archive_or_restore_customer_order(); });
+    const auto filter_orders = [this]() {
+        m_order_search_timer.Stop();
+        if (!initialize_store())
+            return;
+        try {
+            refresh_customers_and_orders();
+            update_button_state();
+        } catch (const std::exception &error) {
+            show_error(error);
+        }
+    };
+    m_order_status_filter->Bind(wxEVT_CHOICE, [filter_orders](wxCommandEvent &) { filter_orders(); });
+    m_order_cost_details->Bind(wxEVT_CHECKBOX, [this](wxCommandEvent &) {
+        for (unsigned int column = 8; column < m_order_list->GetColumnCount(); ++column)
+            m_order_list->GetColumn(column)->SetHidden(!m_order_cost_details->GetValue());
+        m_order_list->GetParent()->Layout();
+    });
+    m_order_filter->Bind(wxEVT_CHOICE, [filter_orders](wxCommandEvent &) { filter_orders(); });
+    m_order_search->Bind(wxEVT_TEXT, [this](wxCommandEvent &) {
+        m_order_search_timer.StartOnce(200);
+    });
+    Bind(wxEVT_TIMER, [filter_orders](wxTimerEvent &) { filter_orders(); }, m_order_search_timer.GetId());
+    m_order_search->Bind(wxEVT_SEARCHCTRL_CANCEL_BTN, [this, filter_orders](wxCommandEvent &) {
+        m_order_search->ChangeValue(wxEmptyString);
+        filter_orders();
+    });
     cost_settings_button->Bind(
         wxEVT_BUTTON, [this](wxCommandEvent &) { edit_cost_settings(); });
     m_recalculate_costs_button->Bind(
@@ -2095,11 +2274,14 @@ void FilamentManagerPanel::refresh_spools()
 
 void FilamentManagerPanel::refresh_jobs()
 {
+    const int selected_row = selected_job_row();
+    const std::string selected_id = selected_row >= 0 &&
+        static_cast<std::size_t>(selected_row) < m_jobs.size() ? m_jobs[selected_row].id : std::string {};
     m_jobs = m_store->list_open_jobs();
     m_job_list->DeleteAllItems();
 
     std::map<std::string, CustomerOrder> orders;
-    for (const CustomerOrder &order : m_store->list_customer_orders({}, true))
+    for (const CustomerOrder &order : m_store->list_customer_orders({}, true, true))
         orders.emplace(order.id, order);
     std::map<std::string, Customer> customers;
     for (const Customer &customer : m_store->list_customers(true))
@@ -2136,6 +2318,8 @@ void FilamentManagerPanel::refresh_jobs()
             format_money(costs.total_cost_micros, costs.currency),
             from_u8(job.created_at)
         });
+        if (job.id == selected_id)
+            m_job_list->SelectRow(m_job_list->GetItemCount() - 1);
     }
 }
 
@@ -2161,10 +2345,13 @@ void FilamentManagerPanel::refresh_history()
 
 void FilamentManagerPanel::refresh_job_history()
 {
+    const int selected_row = selected_job_history_row();
+    const std::string selected_id = selected_row >= 0 &&
+        static_cast<std::size_t>(selected_row) < m_job_history.size() ? m_job_history[selected_row].id : std::string {};
     m_job_history = m_store->list_jobs(true, 1'000);
     m_job_history_list->DeleteAllItems();
     std::map<std::string, CustomerOrder> orders;
-    for (const CustomerOrder &order : m_store->list_customer_orders({}, true))
+    for (const CustomerOrder &order : m_store->list_customer_orders({}, true, true))
         orders.emplace(order.id, order);
     std::map<std::string, Customer> customers;
     for (const Customer &customer : m_store->list_customers(true))
@@ -2209,11 +2396,16 @@ void FilamentManagerPanel::refresh_job_history()
             from_u8(job.created_at),
             job.completed_at.empty() ? em_dash() : from_u8(job.completed_at)
         });
+        if (job.id == selected_id)
+            m_job_history_list->SelectRow(m_job_history_list->GetItemCount() - 1);
     }
 }
 
 void FilamentManagerPanel::refresh_customers_and_orders()
 {
+    const int customer_row = selected_customer_row();
+    const std::string selected_customer_id = customer_row >= 0 &&
+        static_cast<std::size_t>(customer_row) < m_customers.size() ? m_customers[customer_row].id : std::string {};
     std::string selected_order_id;
     const int selected_row = selected_order_row();
     if (selected_row >= 0 &&
@@ -2222,7 +2414,12 @@ void FilamentManagerPanel::refresh_customers_and_orders()
             m_customer_orders[static_cast<std::size_t>(selected_row)].id;
 
     m_customers = m_store->list_customers();
-    m_customer_orders = m_store->list_customer_orders({}, true);
+    m_customer_orders = m_store->list_customer_orders({}, true, true);
+    m_archived_order_ids.clear();
+    for (const CustomerOrder &order : m_customer_orders) {
+        if (order.archived)
+            m_archived_order_ids.insert(order.id);
+    }
     m_customer_list->DeleteAllItems();
     m_order_list->DeleteAllItems();
 
@@ -2238,7 +2435,41 @@ void FilamentManagerPanel::refresh_customers_and_orders()
             from_u8(customer.phone),
             format_money(costs.total_cost_micros, costs.currency)
         });
+        if (customer.id == selected_customer_id)
+            m_customer_list->SelectRow(m_customer_list->GetItemCount() - 1);
     }
+
+    const std::size_t total_orders = m_customer_orders.size();
+    const int filter = m_order_filter->GetSelection();
+    const int status_filter = m_order_status_filter->GetSelection();
+    wxString search = m_order_search->GetValue();
+    search.Trim(true).Trim(false);
+    search.MakeLower();
+    m_customer_orders.erase(
+        std::remove_if(m_customer_orders.begin(), m_customer_orders.end(),
+            [&](const CustomerOrder &order) {
+                if ((filter == 0 && order.archived) || (filter == 1 && !order.archived))
+                    return true;
+                if (status_filter > 0 && customer_order_status_rank(order.status) != status_filter - 1)
+                    return true;
+                const auto customer = customers.find(order.customer_id);
+                const wxString searchable = from_u8(order.order_number + " " + order.title + " " + order.notes) +
+                    " " + (customer != customers.end() ? from_u8(customer->second.name) : wxString {});
+                return !search.empty() && !searchable.Lower().Contains(search);
+            }),
+        m_customer_orders.end());
+
+    // Sort the backing vector, not just the view: selection/actions use its
+    // indexes. Refresh and filtering must preserve the same status/name order.
+    std::sort(m_customer_orders.begin(), m_customer_orders.end(),
+        [](const CustomerOrder &left, const CustomerOrder &right) {
+            const int left_rank = customer_order_status_rank(left.status);
+            const int right_rank = customer_order_status_rank(right.status);
+            if (left_rank != right_rank)
+                return left_rank < right_rank;
+            const int by_name = customer_order_label(left).CmpNoCase(customer_order_label(right));
+            return by_name != 0 ? by_name < 0 : left.id < right.id;
+        });
 
     std::map<std::string, std::int64_t> duration_by_order;
     std::map<std::string, Milligrams> weight_by_order;
@@ -2283,42 +2514,27 @@ void FilamentManagerPanel::refresh_customers_and_orders()
         const CustomerOrder &order = m_customer_orders[row];
         const auto customer = customers.find(order.customer_id);
         const CostSummary costs = m_store->customer_order_cost_summary(order.id);
-        wxString order_label = from_u8(order.order_number);
-        if (!order.title.empty()) {
-            if (!order_label.empty())
-                order_label += em_dash_separator();
-            order_label += from_u8(order.title);
-        }
         append_row(m_order_list, {
-            order_label,
-            customer != customers.end() ?
-                from_u8(customer->second.name) : from_u8(order.customer_id),
-            from_u8(to_string(order.status)),
+            customer_order_status_label(order),
+            customer_order_label(order),
+            customer != customers.end() ? from_u8(customer->second.name) : from_u8(order.customer_id),
             wxString::Format("%zu", m_order_job_counts[order.id]),
-            mark_estimate(
-                format_duration(duration_by_order[order.id]),
-                orders_with_estimated_duration.count(order.id) == 0),
-            mark_estimate(
-                format_weight(weight_by_order[order.id]),
-                orders_with_estimated_weight.count(order.id) == 0),
-            mark_estimate(
-                format_money(costs.material_cost_micros, costs.currency),
-                orders_with_estimated_material_cost.count(order.id) == 0),
-            format_money(costs.electricity_cost_micros, costs.currency),
-            format_money(
-                costs.machine_wear_cost_micros + costs.maintenance_cost_micros +
-                    costs.repair_reserve_cost_micros,
-                costs.currency),
-            format_money(
-                costs.design_cost_micros + costs.other_cost_micros,
-                costs.currency),
-            mark_estimate(
-                format_money(costs.total_cost_micros, costs.currency),
-                orders_with_estimated_total_cost.count(order.id) == 0),
-            format_money(costs.discount_micros, costs.currency),
+            mark_estimate(format_duration(duration_by_order[order.id]),
+                          orders_with_estimated_duration.count(order.id) == 0),
+            mark_estimate(format_money(costs.total_cost_micros, costs.currency),
+                          orders_with_estimated_total_cost.count(order.id) == 0),
             format_money(costs.calculated_invoice_micros, costs.currency),
-            format_optional_money(order.quoted_price_micros, order.currency),
-            format_optional_money(order.invoice_amount_micros, order.currency)
+            format_optional_money(order.invoice_amount_micros, order.currency),
+            mark_estimate(format_weight(weight_by_order[order.id]),
+                          orders_with_estimated_weight.count(order.id) == 0),
+            mark_estimate(format_money(costs.material_cost_micros, costs.currency),
+                          orders_with_estimated_material_cost.count(order.id) == 0),
+            format_money(costs.electricity_cost_micros, costs.currency),
+            format_money(costs.machine_wear_cost_micros + costs.maintenance_cost_micros +
+                             costs.repair_reserve_cost_micros, costs.currency),
+            format_money(costs.design_cost_micros + costs.other_cost_micros, costs.currency),
+            format_money(costs.discount_micros, costs.currency),
+            format_optional_money(order.quoted_price_micros, order.currency)
         });
         if (!selected_order_id.empty() && order.id == selected_order_id)
             restored_row = static_cast<int>(row);
@@ -2328,6 +2544,15 @@ void FilamentManagerPanel::refresh_customers_and_orders()
         restored_row = 0;
     if (restored_row != wxNOT_FOUND)
         m_order_list->SelectRow(static_cast<unsigned int>(restored_row));
+
+    wxString summary = wxString::Format(_L("Showing %zu of %zu orders."), m_customer_orders.size(), total_orders);
+    if (m_customer_orders.empty())
+        summary = total_orders == 0 ? _L("No orders yet. Add a customer on the Customers tab, then create an order.") :
+                                    _L("No matching orders. Change the status/archive filters or clear the search.");
+    summary += "  " + _L("Sorted by status, then order A-Z.");
+    m_order_summary->SetLabel(summary);
+    m_order_summary->SetToolTip(summary);
+    m_order_summary->GetParent()->Layout();
 }
 
 int FilamentManagerPanel::selected_spool_row() const
@@ -2385,8 +2610,16 @@ void FilamentManagerPanel::update_button_state()
     const bool selected_order_has_open_jobs =
         selected_order != nullptr &&
         m_orders_with_open_jobs.count(selected_order->id) != 0;
+    const bool order_editable = store_ready && order_selected && !selected_order->archived;
+    const bool history_order_archived = history_job_selected &&
+        m_job_history[selected_job_history_row()].customer_order_id &&
+        m_archived_order_ids.count(*m_job_history[selected_job_history_row()].customer_order_id) != 0;
+    m_selected_order_label->SetLabel(selected_order != nullptr ?
+        customer_order_label(*selected_order) + em_dash_separator() + customer_order_status_label(*selected_order) :
+        _L("Select an order to view its details and available actions"));
+    m_selected_order_label->SetToolTip(m_selected_order_label->GetLabel());
     m_add_button->Enable(store_ready);
-    for (wxButton *button : m_refresh_buttons)
+    for (wxWindow *button : m_refresh_buttons)
         button->Enable(store_ready);
     for (wxButton *button : {m_edit_button, m_remaining_button, m_archive_button,
                              m_identifiers_button, m_copy_nfc_button})
@@ -2406,31 +2639,45 @@ void FilamentManagerPanel::update_button_state()
     m_edit_job_button->Enable(store_ready && job_selected);
     m_job_materials_button->Enable(store_ready && job_selected);
     m_edit_job_history_button->Enable(
-        store_ready && history_job_selected);
+        store_ready && history_job_selected && !history_order_archived);
+    m_edit_job_history_button->SetToolTip(history_order_archived ?
+        _L("Restore the archived customer order before editing this print job.") :
+        _L("Assign or correct the customer order and tracked job parameters"));
     m_job_history_materials_button->Enable(
         store_ready && history_job_selected);
 
     m_edit_customer_button->Enable(store_ready && customer_selected);
     m_archive_customer_button->Enable(store_ready && customer_selected);
     m_add_order_button->Enable(store_ready && !m_customers.empty());
-    m_edit_order_button->Enable(store_ready && order_selected);
+    m_edit_order_button->Enable(order_editable);
     m_material_breakdown_button->Enable(
         store_ready && order_selected && selected_order_job_count > 0);
     m_invoice_button->Enable(store_ready && order_selected);
-    m_recalculate_costs_button->Enable(store_ready && order_selected);
+    m_recalculate_costs_button->Enable(order_editable);
+    m_archive_order_button->SetLabel(selected_order != nullptr && selected_order->archived ?
+        _L("Restore order") : _L("Archive order"));
+    m_archive_order_button->Enable(store_ready && order_selected &&
+        (selected_order->archived ||
+         ((selected_order->status == CustomerOrderStatus::completed ||
+           selected_order->status == CustomerOrderStatus::cancelled) && !selected_order_has_open_jobs)));
+    m_archive_order_button->SetToolTip(selected_order != nullptr && selected_order->archived ?
+        _L("Return this order to the unarchived list. Its status and history are preserved.") :
+        _L("Archive a completed or cancelled order after all print jobs have been resolved. History and costs are kept."));
+    m_edit_order_button->SetToolTip(selected_order != nullptr && selected_order->archived ?
+        _L("Restore this order before editing it.") : _L("Edit the selected customer order"));
     m_delete_order_button->Enable(
-        store_ready && order_selected &&
+        order_editable &&
         selected_order->status == CustomerOrderStatus::draft &&
         selected_order_job_count == 0);
     m_activate_order_button->Enable(
-        store_ready && order_selected &&
+        order_editable &&
         selected_order->status == CustomerOrderStatus::draft);
     m_complete_order_button->Enable(
-        store_ready && order_selected &&
+        order_editable &&
         selected_order->status == CustomerOrderStatus::active &&
         !selected_order_has_open_jobs);
     m_cancel_order_button->Enable(
-        store_ready && order_selected &&
+        order_editable &&
         (selected_order->status == CustomerOrderStatus::draft ||
          selected_order->status == CustomerOrderStatus::active) &&
         !selected_order_has_open_jobs);
@@ -2765,9 +3012,21 @@ void FilamentManagerPanel::add_customer_order()
     const int row = selected_customer_row();
     if (row >= 0 && static_cast<std::size_t>(row) < m_customers.size())
         preferred_customer_id = m_customers[static_cast<std::size_t>(row)].id;
-    if (edit_customer_order_interactively(
-            this, *m_store, nullptr, preferred_customer_id))
+    if (const auto order = edit_customer_order_interactively(
+            this, *m_store, nullptr, preferred_customer_id)) {
+        m_order_filter->SetSelection(0);
+        m_order_status_filter->SetSelection(0);
+        m_order_search->ChangeValue(wxEmptyString);
         refresh();
+        for (std::size_t index = 0; index < m_customer_orders.size(); ++index) {
+            if (m_customer_orders[index].id == order->id) {
+                m_order_list->SelectRow(static_cast<unsigned int>(index));
+                m_order_list->EnsureVisible(m_order_list->RowToItem(static_cast<int>(index)));
+                break;
+            }
+        }
+        update_button_state();
+    }
 }
 
 void FilamentManagerPanel::edit_customer_order()
@@ -2778,6 +3037,10 @@ void FilamentManagerPanel::edit_customer_order()
     if (row < 0 || static_cast<std::size_t>(row) >= m_customer_orders.size())
         return;
     const CustomerOrder order = m_customer_orders[static_cast<std::size_t>(row)];
+    if (order.archived) {
+        show_invoice();
+        return;
+    }
     if (edit_customer_order_interactively(this, *m_store, &order))
         refresh();
 }
@@ -2874,6 +3137,25 @@ void FilamentManagerPanel::set_customer_order_status(CustomerOrderStatus status)
     }
 }
 
+void FilamentManagerPanel::archive_or_restore_customer_order()
+{
+    if (!initialize_store())
+        return;
+    const int row = selected_order_row();
+    if (row < 0 || static_cast<std::size_t>(row) >= m_customer_orders.size())
+        return;
+    const CustomerOrder order = m_customer_orders[static_cast<std::size_t>(row)];
+    try {
+        if (order.archived)
+            m_store->restore_customer_order(order.id);
+        else
+            m_store->archive_customer_order(order.id);
+        refresh();
+    } catch (const std::exception &error) {
+        show_error(error);
+    }
+}
+
 void FilamentManagerPanel::delete_customer_order()
 {
     if (!initialize_store())
@@ -2917,7 +3199,7 @@ void FilamentManagerPanel::recalculate_costs()
     wxArrayString choices;
     choices.Add(_L("Selected order"));
     choices.Add(_L("All open orders"));
-    choices.Add(_L("All orders, including completed and cancelled"));
+    choices.Add(_L("All unarchived orders, including completed and cancelled"));
     wxSingleChoiceDialog scope_dialog(
         this,
         _L("Choose which orders should use the current cost settings."),
@@ -2937,14 +3219,19 @@ void FilamentManagerPanel::recalculate_costs()
             order.status == CustomerOrderStatus::cancelled ||
             order.invoice_amount_micros.has_value();
     } else {
-        for (const CustomerOrder &order : m_customer_orders) {
-            const bool open = order.status == CustomerOrderStatus::draft ||
-                              order.status == CustomerOrderStatus::active;
-            if (scope == 2 || open) {
-                order_ids.push_back(order.id);
-                includes_closed_or_invoiced = includes_closed_or_invoiced ||
-                    !open || order.invoice_amount_micros.has_value();
+        try {
+            for (const CustomerOrder &order : m_store->list_customer_orders()) {
+                const bool open = order.status == CustomerOrderStatus::draft ||
+                                  order.status == CustomerOrderStatus::active;
+                if (scope == 2 || open) {
+                    order_ids.push_back(order.id);
+                    includes_closed_or_invoiced = includes_closed_or_invoiced ||
+                        !open || order.invoice_amount_micros.has_value();
+                }
             }
+        } catch (const std::exception &error) {
+            show_error(error);
+            return;
         }
     }
     if (order_ids.empty()) {

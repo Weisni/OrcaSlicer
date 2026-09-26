@@ -9,7 +9,9 @@
 #include <wx/choice.h>
 #include <wx/checkbox.h>
 #include <wx/dialog.h>
+#include <wx/display.h>
 #include <wx/msgdlg.h>
+#include <wx/scrolwin.h>
 #include <wx/sizer.h>
 #include <wx/statbox.h>
 #include <wx/stattext.h>
@@ -55,6 +57,31 @@ wxTextCtrl *add_text_row(
     return control;
 }
 
+void fit_scrollable_dialog(
+    wxDialog &dialog, wxBoxSizer *root, wxScrolledWindow *body, int preferred_width)
+{
+    // Keep the buttons visible even when the form exceeds the available display.
+    const wxSize content_size = body->GetSizer()->GetMinSize();
+    body->SetMinSize(wxSize(content_size.x + dialog.FromDIP(24), content_size.y));
+    dialog.SetSizerAndFit(root);
+    const wxSize fitted_size = dialog.GetSize();
+    body->SetMinSize(wxSize(1, 1));
+
+    const wxSize work_area = wxDisplay(
+        dialog.GetParent() != nullptr ? dialog.GetParent() : &dialog).GetClientArea().GetSize();
+    const wxSize dialog_size(
+        std::min(std::max(dialog.FromDIP(preferred_width), fitted_size.x),
+                 std::max(1, work_area.x - dialog.FromDIP(32))),
+        std::min(fitted_size.y, std::max(1, work_area.y - dialog.FromDIP(32))));
+    dialog.SetMinSize(wxSize(
+        std::min(dialog.FromDIP(420), dialog_size.x),
+        std::min(dialog.FromDIP(300), dialog_size.y)));
+    dialog.SetSize(dialog_size);
+    dialog.Layout();
+    body->FitInside();
+    dialog.CentreOnParent();
+}
+
 class CustomerDialog final : public wxDialog
 {
 public:
@@ -65,20 +92,27 @@ public:
               wxDEFAULT_DIALOG_STYLE | wxRESIZE_BORDER)
     {
         auto *root = new wxBoxSizer(wxVERTICAL);
-        auto *details = new wxStaticBoxSizer(wxVERTICAL, this, _L("Customer details"));
+        auto *body = new wxScrolledWindow(
+            this, wxID_ANY, wxDefaultPosition, wxDefaultSize,
+            wxVSCROLL | wxHSCROLL | wxTAB_TRAVERSAL);
+        body->SetScrollRate(FromDIP(10), FromDIP(10));
+        auto *content = new wxBoxSizer(wxVERTICAL);
+        auto *details = new wxStaticBoxSizer(wxVERTICAL, body, _L("Customer details"));
         auto *grid = new wxFlexGridSizer(2, FromDIP(9), FromDIP(12));
         grid->AddGrowableCol(1, 1);
-        m_name = add_text_row(this, grid, _L("Name"));
-        m_contact = add_text_row(this, grid, _L("Contact person"));
-        m_email = add_text_row(this, grid, _L("Email"));
-        m_phone = add_text_row(this, grid, _L("Phone"));
-        grid->Add(new wxStaticText(this, wxID_ANY, _L("Notes")), 0, wxALIGN_TOP | wxTOP, FromDIP(4));
+        m_name = add_text_row(body, grid, _L("Name"));
+        m_contact = add_text_row(body, grid, _L("Contact person"));
+        m_email = add_text_row(body, grid, _L("Email"));
+        m_phone = add_text_row(body, grid, _L("Phone"));
+        grid->Add(new wxStaticText(body, wxID_ANY, _L("Notes")), 0, wxALIGN_TOP | wxTOP, FromDIP(4));
         m_notes = new wxTextCtrl(
-            this, wxID_ANY, {}, wxDefaultPosition, wxSize(FromDIP(320), FromDIP(90)),
+            body, wxID_ANY, {}, wxDefaultPosition, wxSize(FromDIP(320), FromDIP(90)),
             wxTE_MULTILINE);
         grid->Add(m_notes, 1, wxEXPAND);
         details->Add(grid, 1, wxEXPAND | wxALL, FromDIP(12));
-        root->Add(details, 1, wxEXPAND | wxALL, FromDIP(12));
+        content->Add(details, 1, wxEXPAND | wxALL, FromDIP(12));
+        body->SetSizer(content);
+        root->Add(body, 1, wxEXPAND);
         root->Add(CreateSeparatedButtonSizer(wxOK | wxCANCEL), 0, wxEXPAND | wxALL, FromDIP(12));
 
         if (customer != nullptr) {
@@ -89,9 +123,8 @@ public:
             m_notes->SetValue(from_u8(customer->notes));
         }
 
-        SetSizerAndFit(root);
-        SetMinSize(wxSize(FromDIP(520), GetSize().y));
-        CentreOnParent();
+        fit_scrollable_dialog(*this, root, body, 520);
+        m_name->SetFocus();
     }
 
     CustomerInput input() const
@@ -129,48 +162,53 @@ public:
         , m_currency(std::move(currency))
     {
         auto *root = new wxBoxSizer(wxVERTICAL);
-        auto *details = new wxStaticBoxSizer(wxVERTICAL, this, _L("Order details"));
+        auto *body = new wxScrolledWindow(
+            this, wxID_ANY, wxDefaultPosition, wxDefaultSize,
+            wxVSCROLL | wxHSCROLL | wxTAB_TRAVERSAL);
+        body->SetScrollRate(FromDIP(10), FromDIP(10));
+        auto *content = new wxBoxSizer(wxVERTICAL);
+        auto *details = new wxStaticBoxSizer(wxVERTICAL, body, _L("Order details"));
         auto *grid = new wxFlexGridSizer(2, FromDIP(9), FromDIP(12));
         grid->AddGrowableCol(1, 1);
 
-        grid->Add(new wxStaticText(this, wxID_ANY, _L("Customer")), 0, wxALIGN_CENTER_VERTICAL);
-        m_customer = new wxChoice(this, wxID_ANY);
+        grid->Add(new wxStaticText(body, wxID_ANY, _L("Customer")), 0, wxALIGN_CENTER_VERTICAL);
+        m_customer = new wxChoice(body, wxID_ANY);
         for (const Customer &item : m_customers)
             m_customer->Append(from_u8(item.name));
         grid->Add(m_customer, 1, wxEXPAND);
-        m_number = add_text_row(this, grid, _L("Order number"));
-        m_title = add_text_row(this, grid, _L("Title"));
-        grid->Add(new wxStaticText(this, wxID_ANY, _L("Notes")), 0, wxALIGN_TOP | wxTOP, FromDIP(4));
+        m_number = add_text_row(body, grid, _L("Order number"));
+        m_title = add_text_row(body, grid, _L("Title"));
+        grid->Add(new wxStaticText(body, wxID_ANY, _L("Notes")), 0, wxALIGN_TOP | wxTOP, FromDIP(4));
         m_notes = new wxTextCtrl(
-            this, wxID_ANY, {}, wxDefaultPosition, wxSize(FromDIP(320), FromDIP(76)),
+            body, wxID_ANY, {}, wxDefaultPosition, wxSize(FromDIP(320), FromDIP(76)),
             wxTE_MULTILINE);
         grid->Add(m_notes, 1, wxEXPAND);
         details->Add(grid, 1, wxEXPAND | wxALL, FromDIP(12));
-        root->Add(details, 1, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, FromDIP(12));
+        content->Add(details, 1, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, FromDIP(12));
 
-        auto *billing = new wxStaticBoxSizer(wxVERTICAL, this, _L("Optional billing"));
+        auto *billing = new wxStaticBoxSizer(wxVERTICAL, body, _L("Optional billing"));
         auto *billing_grid = new wxFlexGridSizer(2, FromDIP(9), FromDIP(12));
         billing_grid->AddGrowableCol(1, 1);
         m_quote = add_text_row(
-            this, billing_grid,
+            body, billing_grid,
             _L("Quoted price") + " (" + from_u8(m_currency) + ")");
         m_invoice = add_text_row(
-            this, billing_grid,
+            body, billing_grid,
             _L("Invoice amount") + " (" + from_u8(m_currency) + ")");
-        m_design_hours = add_text_row(this, billing_grid, _L("Design time (hours)"), "0.00");
+        m_design_hours = add_text_row(body, billing_grid, _L("Design time (hours)"), "0.00");
         m_design_rate = add_text_row(
-            this, billing_grid,
+            body, billing_grid,
             _L("Design hourly rate") + " (" + from_u8(m_currency) + "/h)",
             wxString::Format("%.2f", settings.design_per_hour_micros / 1'000'000.0));
         m_other_cost = add_text_row(
-            this, billing_grid,
+            body, billing_grid,
             _L("Other costs") + " (" + from_u8(m_currency) + ")", "0.00");
-        m_discount = add_text_row(this, billing_grid, _L("Overall discount (%)"), "0.00");
+        m_discount = add_text_row(body, billing_grid, _L("Overall discount (%)"), "0.00");
         billing->Add(billing_grid, 1, wxEXPAND | wxALL, FromDIP(12));
-        auto *included = new wxStaticBoxSizer(wxVERTICAL, this, _L("Invoice items"));
+        auto *included = new wxStaticBoxSizer(wxVERTICAL, body, _L("Invoice items"));
         auto *included_grid = new wxGridSizer(2, FromDIP(6), FromDIP(16));
-        const auto add_item = [this, included_grid](const wxString &label, wxCheckBox *&box) {
-            box = new wxCheckBox(this, wxID_ANY, label);
+        const auto add_item = [body, included_grid](const wxString &label, wxCheckBox *&box) {
+            box = new wxCheckBox(body, wxID_ANY, label);
             box->SetValue(true);
             included_grid->Add(box);
         };
@@ -182,8 +220,10 @@ public:
         add_item(_L("Design"), m_bill_design);
         add_item(_L("Other costs"), m_bill_other);
         included->Add(included_grid, 0, wxEXPAND | wxALL, FromDIP(10));
-        root->Add(billing, 0, wxEXPAND | wxALL, FromDIP(12));
-        root->Add(included, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(12));
+        content->Add(billing, 0, wxEXPAND | wxALL, FromDIP(12));
+        content->Add(included, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(12));
+        body->SetSizer(content);
+        root->Add(body, 1, wxEXPAND);
         root->Add(CreateSeparatedButtonSizer(wxOK | wxCANCEL), 0, wxEXPAND | wxALL, FromDIP(12));
 
         std::string customer_id = preferred_customer_id;
@@ -217,9 +257,8 @@ public:
         if (m_customer->GetSelection() == wxNOT_FOUND && !m_customers.empty())
             m_customer->SetSelection(0);
 
-        SetSizerAndFit(root);
-        SetMinSize(wxSize(FromDIP(540), GetSize().y));
-        CentreOnParent();
+        fit_scrollable_dialog(*this, root, body, 540);
+        m_customer->SetFocus();
     }
 
     bool input(CustomerOrderInput &result, wxString &error) const
@@ -319,41 +358,48 @@ public:
               wxDEFAULT_DIALOG_STYLE | wxRESIZE_BORDER)
     {
         auto *root = new wxBoxSizer(wxVERTICAL);
-        root->Add(new wxStaticText(
-                      this, wxID_ANY,
-                      _L("Defaults are tailored for a household workshop in Viersen and a "
-                         "Bambu P2S. They are planning assumptions and can be adjusted.\n"
-                         "Changes apply to new print jobs. Use Recalculate costs to update "
-                         "existing customer orders.")),
-                  0, wxEXPAND | wxALL, FromDIP(12));
-        auto *group = new wxStaticBoxSizer(wxVERTICAL, this, _L("Energy"));
+        auto *body = new wxScrolledWindow(
+            this, wxID_ANY, wxDefaultPosition, wxDefaultSize,
+            wxVSCROLL | wxHSCROLL | wxTAB_TRAVERSAL);
+        body->SetScrollRate(FromDIP(10), FromDIP(10));
+        auto *content = new wxBoxSizer(wxVERTICAL);
+        auto *hint = new wxStaticText(
+            body, wxID_ANY,
+            _L("Defaults are tailored for a household workshop in Viersen and a "
+               "Bambu P2S. They are planning assumptions and can be adjusted.\n"
+               "Changes apply to new print jobs. Use Recalculate costs to update "
+               "existing customer orders."));
+        hint->Wrap(FromDIP(560));
+        content->Add(hint, 0, wxEXPAND | wxALL, FromDIP(12));
+        auto *group = new wxStaticBoxSizer(wxVERTICAL, body, _L("Energy"));
         auto *grid = new wxFlexGridSizer(2, FromDIP(9), FromDIP(12));
         grid->AddGrowableCol(1, 1);
         m_electricity = add_text_row(
-            this, grid, _L("Electricity price (EUR/kWh)"),
+            body, grid, _L("Electricity price (EUR/kWh)"),
             wxString::Format("%.3f", settings.electricity_price_per_kwh_micros / 1'000'000.0));
         m_power = add_text_row(
-            this, grid, _L("Average printer power (W)"),
+            body, grid, _L("Average printer power (W)"),
             wxString::Format("%lld", static_cast<long long>(settings.default_machine_power_watts)));
         group->Add(grid, 1, wxEXPAND | wxALL, FromDIP(12));
-        root->Add(group, 1, wxEXPAND | wxLEFT | wxRIGHT, FromDIP(12));
-        auto *rates = new wxStaticBoxSizer(wxVERTICAL, this, _L("Hourly rates"));
+        content->Add(group, 1, wxEXPAND | wxLEFT | wxRIGHT, FromDIP(12));
+        auto *rates = new wxStaticBoxSizer(wxVERTICAL, body, _L("Hourly rates"));
         auto *rates_grid = new wxFlexGridSizer(2, FromDIP(9), FromDIP(12));
         rates_grid->AddGrowableCol(1, 1);
-        m_wear = add_text_row(this, rates_grid, _L("Machine wear (EUR/h)"),
+        m_wear = add_text_row(body, rates_grid, _L("Machine wear (EUR/h)"),
             wxString::Format("%.2f", settings.machine_wear_per_hour_micros / 1'000'000.0));
-        m_maintenance = add_text_row(this, rates_grid, _L("Maintenance reserve (EUR/h)"),
+        m_maintenance = add_text_row(body, rates_grid, _L("Maintenance reserve (EUR/h)"),
             wxString::Format("%.2f", settings.maintenance_per_hour_micros / 1'000'000.0));
-        m_repair = add_text_row(this, rates_grid, _L("Repair reserve (EUR/h)"),
+        m_repair = add_text_row(body, rates_grid, _L("Repair reserve (EUR/h)"),
             wxString::Format("%.2f", settings.repair_reserve_per_hour_micros / 1'000'000.0));
-        m_design = add_text_row(this, rates_grid, _L("Design work (EUR/h)"),
+        m_design = add_text_row(body, rates_grid, _L("Design work (EUR/h)"),
             wxString::Format("%.2f", settings.design_per_hour_micros / 1'000'000.0));
         rates->Add(rates_grid, 1, wxEXPAND | wxALL, FromDIP(12));
-        root->Add(rates, 1, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, FromDIP(12));
+        content->Add(rates, 1, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, FromDIP(12));
+        body->SetSizer(content);
+        root->Add(body, 1, wxEXPAND);
         root->Add(CreateSeparatedButtonSizer(wxOK | wxCANCEL), 0, wxEXPAND | wxALL, FromDIP(12));
-        SetSizerAndFit(root);
-        SetMinSize(wxSize(FromDIP(520), GetSize().y));
-        CentreOnParent();
+        fit_scrollable_dialog(*this, root, body, 520);
+        m_electricity->SetFocus();
     }
 
     bool settings(InventorySettings &result, wxString &error) const

@@ -1101,6 +1101,23 @@ struct Store::Impl
             }
             exec_sql(db, "PRAGMA user_version = 7;");
         }
+        if (version < 8) {
+            bool archived_column_exists = false;
+            Statement columns(db, "PRAGMA table_info(customer_orders)");
+            while (columns.step()) {
+                if (columns.text(1) == "archived") {
+                    archived_column_exists = true;
+                    break;
+                }
+            }
+            if (!archived_column_exists)
+                exec_sql(db, R"SQL(
+                    ALTER TABLE customer_orders
+                        ADD COLUMN archived INTEGER NOT NULL DEFAULT 0
+                        CHECK (archived IN (0, 1));
+                )SQL");
+            exec_sql(db, "PRAGMA user_version = 8;");
+        }
         transaction.commit();
     }
 
@@ -1494,6 +1511,7 @@ struct Store::Impl
         order.bill_other = statement.integer(19) != 0;
         order.created_at = statement.text(20);
         order.updated_at = statement.text(21);
+        order.archived = statement.integer(22) != 0;
         return order;
     }
 
@@ -1506,7 +1524,7 @@ struct Store::Impl
                    other_cost_micros, discount_basis_points,
                    bill_material, bill_electricity, bill_machine_wear,
                    bill_maintenance, bill_repair_reserve, bill_design, bill_other,
-                   created_at, updated_at
+                   created_at, updated_at, archived
             FROM customer_orders
             WHERE id = ?
         )SQL");
@@ -1574,6 +1592,8 @@ std::size_t Store::recalculate_customer_order_costs(
         if (trim_copy(order_id).empty())
             throw Error(ErrorCode::validation, "Customer order ID must not be empty");
         const CustomerOrder order = m_impl->get_customer_order_unlocked(order_id);
+        if (order.archived)
+            throw Error(ErrorCode::conflict, "Restore the archived customer order before recalculating its costs");
         if (normalize_currency(order.currency) != normalize_currency(settings.currency))
             throw Error(
                 ErrorCode::conflict,
@@ -2194,6 +2214,8 @@ CustomerOrder Store::update_customer_order(
     std::lock_guard<std::mutex> lock(m_impl->mutex);
     Transaction transaction(m_impl->db);
     const CustomerOrder existing = m_impl->get_customer_order_unlocked(order_id);
+    if (existing.archived)
+        throw Error(ErrorCode::conflict, "Restore the archived customer order before editing it");
     const Customer customer = m_impl->get_customer_unlocked(customer_id);
     if (customer.archived && customer.id != existing.customer_id)
         throw Error(ErrorCode::conflict, "An order cannot be moved to an archived customer");
@@ -2254,12 +2276,64 @@ void Store::delete_customer_order(const std::string &order_id)
 {
     std::lock_guard<std::mutex> lock(m_impl->mutex);
     Transaction transaction(m_impl->db);
-    (void) m_impl->get_customer_order_unlocked(order_id);
+    if (m_impl->get_customer_order_unlocked(order_id).archived)
+        throw Error(ErrorCode::conflict, "Restore the archived customer order before deleting it");
     Statement jobs(m_impl->db, "SELECT 1 FROM print_jobs WHERE customer_order_id = ? LIMIT 1");
     jobs.bind(1, order_id);
     if (jobs.step())
         throw Error(ErrorCode::conflict, "An order with print jobs cannot be deleted");
     Statement statement(m_impl->db, "DELETE FROM customer_orders WHERE id = ?");
+    statement.bind(1, order_id);
+    statement.execute();
+    transaction.commit();
+}
+
+void Store::archive_customer_order(const std::string &order_id)
+{
+    std::lock_guard<std::mutex> lock(m_impl->mutex);
+    Transaction transaction(m_impl->db);
+    const CustomerOrder order = m_impl->get_customer_order_unlocked(order_id);
+    if (order.archived) {
+        transaction.commit();
+        return;
+    }
+    if (order.status != CustomerOrderStatus::completed &&
+        order.status != CustomerOrderStatus::cancelled)
+        throw Error(ErrorCode::conflict, "Only completed or cancelled customer orders can be archived");
+
+    Statement open_jobs(m_impl->db, R"SQL(
+        SELECT 1 FROM print_jobs
+        WHERE customer_order_id = ?
+          AND state IN ('reserved', 'printing', 'needs_review')
+        LIMIT 1
+    )SQL");
+    open_jobs.bind(1, order_id);
+    if (open_jobs.step())
+        throw Error(ErrorCode::conflict, "A customer order with open print jobs cannot be archived");
+
+    Statement statement(m_impl->db, R"SQL(
+        UPDATE customer_orders
+        SET archived = 1, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+        WHERE id = ?
+    )SQL");
+    statement.bind(1, order_id);
+    statement.execute();
+    transaction.commit();
+}
+
+void Store::restore_customer_order(const std::string &order_id)
+{
+    std::lock_guard<std::mutex> lock(m_impl->mutex);
+    Transaction transaction(m_impl->db);
+    if (!m_impl->get_customer_order_unlocked(order_id).archived) {
+        transaction.commit();
+        return;
+    }
+    Statement statement(m_impl->db, R"SQL(
+        UPDATE customer_orders
+        SET archived = 0, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+        WHERE id = ?
+    )SQL");
     statement.bind(1, order_id);
     statement.execute();
     transaction.commit();
@@ -2275,6 +2349,8 @@ void Store::set_customer_order_status(
         transaction.commit();
         return;
     }
+    if (order.archived)
+        throw Error(ErrorCode::conflict, "Restore the archived customer order before changing its status");
 
     const bool valid_transition =
         (order.status == CustomerOrderStatus::draft &&
@@ -2319,7 +2395,7 @@ CustomerOrder Store::get_customer_order(const std::string &order_id) const
 }
 
 std::vector<CustomerOrder> Store::list_customer_orders(
-    const std::string &customer_id, bool include_closed) const
+    const std::string &customer_id, bool include_closed, bool include_archived) const
 {
     std::lock_guard<std::mutex> lock(m_impl->mutex);
     if (!customer_id.empty())
@@ -2331,18 +2407,16 @@ std::vector<CustomerOrder> Store::list_customer_orders(
                other_cost_micros, discount_basis_points,
                bill_material, bill_electricity, bill_machine_wear,
                bill_maintenance, bill_repair_reserve, bill_design, bill_other,
-               created_at, updated_at
+               created_at, updated_at, archived
         FROM customer_orders
+        WHERE 1 = 1
     )SQL";
-    bool has_where = false;
-    if (!customer_id.empty()) {
-        sql += " WHERE customer_id = ?";
-        has_where = true;
-    }
+    if (!customer_id.empty())
+        sql += " AND customer_id = ?";
     if (!include_closed)
-        sql += has_where ?
-            " AND status IN ('draft', 'active')" :
-            " WHERE status IN ('draft', 'active')";
+        sql += " AND status IN ('draft', 'active')";
+    if (!include_archived)
+        sql += " AND archived = 0";
     sql += " ORDER BY created_at DESC";
 
     Statement statement(m_impl->db, sql.c_str());
@@ -2413,7 +2487,7 @@ PrintJob Store::reserve_job(const PrintJobInput &job, const std::vector<Allocati
     std::string cost_currency = normalize_currency(settings.currency);
     if (customer_order_id) {
         const CustomerOrder order = m_impl->get_customer_order_unlocked(*customer_order_id);
-        if (!existing && (order.status == CustomerOrderStatus::completed ||
+        if (!existing && (order.archived || order.status == CustomerOrderStatus::completed ||
                           order.status == CustomerOrderStatus::cancelled))
             throw Error(ErrorCode::conflict, "A closed customer order cannot receive another print job");
         cost_currency = order.currency;
@@ -2655,12 +2729,15 @@ PrintJob Store::update_print_job(
         transaction.commit();
         return existing;
     }
+    if (existing.customer_order_id &&
+        m_impl->get_customer_order_unlocked(*existing.customer_order_id).archived)
+        throw Error(ErrorCode::conflict, "Restore the archived customer order before editing its print jobs");
 
     if (customer_order_id) {
         const CustomerOrder order =
             m_impl->get_customer_order_unlocked(*customer_order_id);
         if (existing.customer_order_id != customer_order_id &&
-            (order.status == CustomerOrderStatus::completed ||
+            (order.archived || order.status == CustomerOrderStatus::completed ||
              order.status == CustomerOrderStatus::cancelled))
             throw Error(
                 ErrorCode::conflict,
@@ -3404,7 +3481,7 @@ CostSummary Store::customer_cost_summary(const std::string &customer_id) const
                other_cost_micros, discount_basis_points,
                bill_material, bill_electricity, bill_machine_wear,
                bill_maintenance, bill_repair_reserve, bill_design, bill_other,
-               created_at, updated_at
+               created_at, updated_at, archived
         FROM customer_orders
         WHERE customer_id = ?
         ORDER BY created_at, id

@@ -12,8 +12,12 @@
 
 #include "libslic3r/FilamentInventory.hpp"
 
+class Button;
 class wxButton;
+class wxCheckBox;
+class wxChoice;
 class wxDataViewListCtrl;
+class wxSearchCtrl;
 class wxSimplebook;
 class wxStaticText;
 class TabCtrl;
@@ -71,6 +75,7 @@ private:
     void show_invoice();
     void show_selected_job_materials(bool history);
     void set_customer_order_status(FilamentInventory::CustomerOrderStatus status);
+    void archive_or_restore_customer_order();
     void delete_customer_order();
     void edit_cost_settings();
     void recalculate_costs();
@@ -87,6 +92,7 @@ private:
     std::vector<CustomerOrder>      m_customer_orders;
     std::map<std::string, std::size_t> m_order_job_counts;
     std::set<std::string>           m_orders_with_open_jobs;
+    std::set<std::string>           m_archived_order_ids;
 
     TabCtrl            *m_tabs {nullptr};
     wxSimplebook       *m_pages {nullptr};
@@ -110,23 +116,31 @@ private:
     wxButton           *m_job_materials_button {nullptr};
     wxButton           *m_edit_job_history_button {nullptr};
     wxButton           *m_job_history_materials_button {nullptr};
-    wxButton           *m_edit_customer_button {nullptr};
-    wxButton           *m_archive_customer_button {nullptr};
-    wxButton           *m_add_order_button {nullptr};
-    wxButton           *m_edit_order_button {nullptr};
-    wxButton           *m_material_breakdown_button {nullptr};
-    wxButton           *m_invoice_button {nullptr};
-    wxButton           *m_recalculate_costs_button {nullptr};
-    wxButton           *m_activate_order_button {nullptr};
-    wxButton           *m_complete_order_button {nullptr};
-    wxButton           *m_cancel_order_button {nullptr};
-    wxButton           *m_delete_order_button {nullptr};
+    Button             *m_edit_customer_button {nullptr};
+    Button             *m_archive_customer_button {nullptr};
+    Button             *m_add_order_button {nullptr};
+    Button             *m_edit_order_button {nullptr};
+    Button             *m_material_breakdown_button {nullptr};
+    Button             *m_invoice_button {nullptr};
+    Button             *m_recalculate_costs_button {nullptr};
+    Button             *m_activate_order_button {nullptr};
+    Button             *m_complete_order_button {nullptr};
+    Button             *m_cancel_order_button {nullptr};
+    Button             *m_delete_order_button {nullptr};
+    Button             *m_archive_order_button {nullptr};
+    wxChoice           *m_order_status_filter {nullptr};
+    wxCheckBox         *m_order_cost_details {nullptr};
+    wxStaticText       *m_selected_order_label {nullptr};
+    wxChoice           *m_order_filter {nullptr};
+    wxSearchCtrl       *m_order_search {nullptr};
+    wxStaticText       *m_order_summary {nullptr};
     wxStaticText       *m_active_spools_value {nullptr};
     wxStaticText       *m_available_value {nullptr};
     wxStaticText       *m_reserved_value {nullptr};
     wxStaticText       *m_low_stock_value {nullptr};
-    std::vector<wxButton *> m_refresh_buttons;
+    std::vector<wxWindow *> m_refresh_buttons;
     wxTimer             m_refresh_timer;
+    wxTimer             m_order_search_timer;
     std::uint64_t       m_seen_service_revision {0};
 };
 

@@ -627,10 +627,11 @@ set(LIBDIR_BIN ${CMAKE_CURRENT_BINARY_DIR}/src)
 message(STATUS "LIBDIR: ${LIBDIR}")
 message(STATUS "LIBDIR_BIN: ${LIBDIR_BIN}")
 
-# For the bundled boost libraries (boost::nowide)
-include_directories(SYSTEM ${LIBDIR})
+# Keep project headers in the normal include path, visible to dependency
+# scanners. Only third-party headers below should be treated as external.
+include_directories(${LIBDIR})
 # For generated header files
-include_directories(SYSTEM ${LIBDIR_BIN}/dev-utils/platform)
+include_directories(${LIBDIR_BIN}/dev-utils/platform)
 # For ligigl
 include_directories(SYSTEM ${LIBDIR}/libigl)
 

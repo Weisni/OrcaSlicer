@@ -1540,6 +1540,227 @@ TEST_CASE("customer orders only close after their print jobs", "[FilamentInvento
         ErrorCode::conflict);
 }
 
+TEST_CASE("archived customer orders retain their status history and costs after reopening",
+          "[FilamentInventory][Customer][Archive]")
+{
+    const CustomerOrderStatus closed_status = GENERATE(
+        CustomerOrderStatus::completed, CustomerOrderStatus::cancelled);
+    TemporaryInventory inventory;
+    SpoolInput spool_data = spool_input("Archive history");
+    spool_data.material_price_per_kg_micros = 20'000'000;
+    const Spool spool = inventory.store->create_spool(spool_data);
+    const Customer customer =
+        inventory.store->create_customer(customer_input("Archive history customer"));
+    CustomerOrderInput order_data = order_input(customer.id, "Finished order");
+    order_data.design_time_seconds = 3'600;
+    order_data.design_hourly_rate_micros = 30'000'000;
+    order_data.quoted_price_micros = 50'000'000;
+    order_data.invoice_amount_micros = 45'000'000;
+    order_data.discount_basis_points = 1'000;
+    const CustomerOrder order = inventory.store->create_customer_order(order_data);
+    inventory.store->set_customer_order_status(order.id, CustomerOrderStatus::active);
+    PrintJobInput input = job_input("archive:history");
+    input.customer_order_id = order.id;
+    input.estimated_runtime_seconds = 7'200;
+    const PrintJob completed = inventory.store->reserve_job(input, {{spool.id, 0, 100'000}});
+    inventory.store->commit_job(completed.id, {{0, 90'000}});
+    input.idempotency_key = "archive:discarded";
+    const PrintJob discarded = inventory.store->reserve_job(input, {{spool.id, 0, 50'000}});
+    inventory.store->discard_job(discarded.id);
+    inventory.store->set_customer_order_status(order.id, closed_status);
+    const CostSummary costs = inventory.store->customer_order_cost_summary(order.id);
+    const CostSummary customer_costs = inventory.store->customer_cost_summary(customer.id);
+    const std::vector<InvoiceLine> invoice = inventory.store->customer_order_invoice_lines(order.id);
+    const std::vector<StockEvent> events = inventory.store->list_stock_events(spool.id);
+
+    inventory.store->archive_customer_order(order.id);
+    inventory.store->archive_customer_order(order.id);
+    inventory.store.reset();
+    inventory.store = std::make_unique<Store>(inventory.path.string());
+
+    const CustomerOrder archived = inventory.store->get_customer_order(order.id);
+    CHECK(archived.archived);
+    CHECK(archived.status == closed_status);
+    CHECK(archived.title == order_data.title);
+    CHECK(archived.quoted_price_micros == order_data.quoted_price_micros);
+    CHECK(archived.invoice_amount_micros == order_data.invoice_amount_micros);
+    CHECK(archived.created_at == order.created_at);
+    CHECK(inventory.store->list_customer_orders().empty());
+    CHECK(inventory.store->list_customer_orders(customer.id).empty());
+    REQUIRE(inventory.store->list_customer_orders({}, true, true).size() == 1);
+    REQUIRE(inventory.store->list_customer_orders(customer.id, true, true).size() == 1);
+    CHECK(inventory.store->list_customer_orders(customer.id, true, true).front().archived);
+    CHECK(inventory.store->list_customer_orders(customer.id, false, true).empty());
+    const CostSummary archived_costs = inventory.store->customer_order_cost_summary(order.id);
+    CHECK(archived_costs.total_cost_micros == costs.total_cost_micros);
+    CHECK(archived_costs.material_cost_micros == costs.material_cost_micros);
+    CHECK(archived_costs.calculated_invoice_micros == costs.calculated_invoice_micros);
+    CHECK(inventory.store->customer_cost_summary(customer.id).total_cost_micros ==
+          customer_costs.total_cost_micros);
+    CHECK(inventory.store->customer_cost_summary(customer.id).invoice_amount_micros ==
+          customer_costs.invoice_amount_micros);
+    const std::vector<InvoiceLine> archived_invoice =
+        inventory.store->customer_order_invoice_lines(order.id);
+    REQUIRE(archived_invoice.size() == invoice.size());
+    for (std::size_t i = 0; i < invoice.size(); ++i) {
+        CHECK(archived_invoice[i].category == invoice[i].category);
+        CHECK(archived_invoice[i].internal_amount_micros == invoice[i].internal_amount_micros);
+        CHECK(archived_invoice[i].invoice_amount_micros == invoice[i].invoice_amount_micros);
+    }
+    REQUIRE(inventory.store->list_customer_order_jobs(order.id).size() == 2);
+    CHECK(inventory.store->get_job(completed.id).customer_order_id == order.id);
+    CHECK(inventory.store->get_job(completed.id).state == JobState::completed);
+    CHECK(inventory.store->get_job(discarded.id).state == JobState::discarded);
+    CHECK(inventory.store->get_spool(spool.id).current_weight_mg ==
+          spool.current_weight_mg - 90'000);
+    CHECK(inventory.store->get_spool(spool.id).reserved_weight_mg == 0);
+    CHECK(inventory.store->list_stock_events(spool.id).size() == events.size());
+
+    inventory.store->restore_customer_order(order.id);
+    inventory.store->restore_customer_order(order.id);
+    inventory.store.reset();
+    inventory.store = std::make_unique<Store>(inventory.path.string());
+    CHECK_FALSE(inventory.store->get_customer_order(order.id).archived);
+    CHECK(inventory.store->get_customer_order(order.id).status == closed_status);
+    REQUIRE(inventory.store->list_customer_orders(customer.id).size() == 1);
+    CHECK(inventory.store->list_customer_orders(customer.id, false).empty());
+}
+
+TEST_CASE("archived customer orders require restoration before edits and assignments",
+          "[FilamentInventory][Customer][Archive]")
+{
+    TemporaryInventory inventory;
+    const Spool spool = inventory.store->create_spool(spool_input("Archive edits"));
+    const Customer customer =
+        inventory.store->create_customer(customer_input("Archive edits customer"));
+    CustomerOrderInput order_data = order_input(customer.id, "Original order");
+    const CustomerOrder order = inventory.store->create_customer_order(order_data);
+    PrintJobInput input = job_input("archive:original");
+    input.customer_order_id = order.id;
+    const PrintJob job = inventory.store->reserve_job(input, {{spool.id, 0, 10'000}});
+    inventory.store->commit_job(job.id);
+    inventory.store->set_customer_order_status(order.id, CustomerOrderStatus::cancelled);
+    inventory.store->archive_customer_order(order.id);
+
+    order_data.title = "Edited order";
+    check_error_code([&] { inventory.store->update_customer_order(order.id, order_data); },
+                     ErrorCode::conflict);
+    check_error_code([&] { inventory.store->delete_customer_order(order.id); },
+                     ErrorCode::conflict);
+    check_error_code([&] { inventory.store->recalculate_customer_order_costs({order.id}); },
+                     ErrorCode::conflict);
+    check_error_code([&] {
+        inventory.store->set_customer_order_status(order.id, CustomerOrderStatus::active);
+    }, ErrorCode::conflict);
+    input.idempotency_key = "archive:new";
+    check_error_code([&] { inventory.store->reserve_job(input, {{spool.id, 0, 10'000}}); },
+                     ErrorCode::conflict);
+    PrintJobUpdateInput edit = update_input(inventory.store->get_job(job.id));
+    edit.job_name = "Edited print";
+    check_error_code([&] { inventory.store->update_print_job(job.id, edit); },
+                     ErrorCode::conflict);
+    edit.customer_order_id.reset();
+    check_error_code([&] { inventory.store->update_print_job(job.id, edit); },
+                     ErrorCode::conflict);
+    const PrintJob unrelated = inventory.store->reserve_job(
+        job_input("archive:unrelated"), {{spool.id, 0, 5'000}});
+    PrintJobUpdateInput assign = update_input(unrelated);
+    assign.customer_order_id = order.id;
+    check_error_code([&] { inventory.store->update_print_job(unrelated.id, assign); },
+                     ErrorCode::conflict);
+    CHECK(inventory.store->get_job(job.id).customer_order_id == order.id);
+    CHECK(inventory.store->get_customer_order(order.id).title == "Original order");
+
+    input.idempotency_key = "archive:original";
+    CHECK(inventory.store->reserve_job(input, {{spool.id, 0, 10'000}}).id == job.id);
+    inventory.store->commit_job(job.id);
+    inventory.store->restore_customer_order(order.id);
+    CHECK(inventory.store->update_customer_order(order.id, order_data).title == "Edited order");
+    edit.customer_order_id = order.id;
+    CHECK(inventory.store->update_print_job(job.id, edit).job_name == "Edited print");
+    CHECK(inventory.store->get_customer_order(order.id).status == CustomerOrderStatus::cancelled);
+}
+
+TEST_CASE("customer orders cannot be archived while unfinished work remains",
+          "[FilamentInventory][Customer][Archive]")
+{
+    const JobState open_state = GENERATE(
+        JobState::reserved, JobState::printing, JobState::needs_review);
+    TemporaryInventory inventory;
+    const Spool spool = inventory.store->create_spool(spool_input("Archive restrictions"));
+    const Customer customer =
+        inventory.store->create_customer(customer_input("Archive restrictions customer"));
+    const CustomerOrder order =
+        inventory.store->create_customer_order(order_input(customer.id, "Unfinished order"));
+    check_error_code([&] { inventory.store->archive_customer_order(order.id); }, ErrorCode::conflict);
+    inventory.store->set_customer_order_status(order.id, CustomerOrderStatus::active);
+    check_error_code([&] { inventory.store->archive_customer_order(order.id); }, ErrorCode::conflict);
+    check_error_code([&] { inventory.store->archive_customer_order("missing"); }, ErrorCode::not_found);
+    check_error_code([&] { inventory.store->restore_customer_order("missing"); }, ErrorCode::not_found);
+    PrintJobInput input = job_input("archive:unfinished");
+    input.customer_order_id = order.id;
+    const PrintJob job = inventory.store->reserve_job(input, {{spool.id, 0, 10'000}});
+    if (open_state == JobState::printing)
+        inventory.store->mark_printing(job.id);
+    else if (open_state == JobState::needs_review)
+        inventory.store->mark_needs_review(job.id);
+
+    // Imported or externally edited databases can contain closed orders with
+    // open jobs, even though the normal status transition rejects that state.
+    sqlite3 *db = nullptr;
+    REQUIRE(sqlite3_open(inventory.path.string().c_str(), &db) == SQLITE_OK);
+    const int result = sqlite3_exec(db, "UPDATE customer_orders SET status = 'completed';",
+                                   nullptr, nullptr, nullptr);
+    REQUIRE(sqlite3_close(db) == SQLITE_OK);
+    REQUIRE(result == SQLITE_OK);
+    check_error_code([&] { inventory.store->archive_customer_order(order.id); }, ErrorCode::conflict);
+    CHECK_FALSE(inventory.store->get_customer_order(order.id).archived);
+    CHECK(inventory.store->get_job(job.id).state == open_state);
+    CHECK(inventory.store->get_spool(spool.id).reserved_weight_mg == 10'000);
+    inventory.store->discard_job(job.id);
+    inventory.store->archive_customer_order(order.id);
+    CHECK(inventory.store->get_customer_order(order.id).archived);
+}
+
+TEST_CASE("customer order archive migration keeps existing orders visible",
+          "[FilamentInventory][Customer][Archive][Migration]")
+{
+    TemporaryInventory inventory;
+    const Customer customer =
+        inventory.store->create_customer(customer_input("Archive migration customer"));
+    const CustomerOrder draft =
+        inventory.store->create_customer_order(order_input(customer.id, "Existing draft"));
+    CustomerOrderInput closed_input = order_input(customer.id, "Existing cancelled order");
+    closed_input.order_number = "Q-2026-002";
+    closed_input.invoice_amount_micros = 20'000'000;
+    const CustomerOrder closed = inventory.store->create_customer_order(closed_input);
+    inventory.store->set_customer_order_status(closed.id, CustomerOrderStatus::cancelled);
+    inventory.store.reset();
+
+    sqlite3 *db = nullptr;
+    REQUIRE(sqlite3_open(inventory.path.string().c_str(), &db) == SQLITE_OK);
+    const int result = sqlite3_exec(db,
+        "ALTER TABLE customer_orders DROP COLUMN archived; PRAGMA user_version = 7;",
+        nullptr, nullptr, nullptr);
+    REQUIRE(sqlite3_close(db) == SQLITE_OK);
+    REQUIRE(result == SQLITE_OK);
+    inventory.store = std::make_unique<Store>(inventory.path.string());
+    CHECK(inventory.store->current_schema_version() == Store::schema_version);
+    CHECK_FALSE(inventory.store->get_customer_order(draft.id).archived);
+    CHECK_FALSE(inventory.store->get_customer_order(closed.id).archived);
+    CHECK(inventory.store->get_customer_order(draft.id).status == CustomerOrderStatus::draft);
+    CHECK(inventory.store->get_customer_order(closed.id).status == CustomerOrderStatus::cancelled);
+    CHECK(inventory.store->get_customer_order(closed.id).invoice_amount_micros ==
+          closed_input.invoice_amount_micros);
+    CHECK(inventory.store->list_customer_orders(customer.id).size() == 2);
+    REQUIRE(inventory.store->list_customer_orders(customer.id, false).size() == 1);
+    CHECK(inventory.store->list_customer_orders(customer.id, false).front().id == draft.id);
+    inventory.store->archive_customer_order(closed.id);
+    REQUIRE(inventory.store->list_customer_orders(customer.id).size() == 1);
+    CHECK(inventory.store->list_customer_orders(customer.id).front().id == draft.id);
+    CHECK(inventory.store->list_customer_orders(customer.id, true, true).size() == 2);
+}
+
 TEST_CASE(
     "job material costs follow current spool prices while other snapshots remain stable",
     "[FilamentInventory][Cost]")

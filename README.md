@@ -71,6 +71,78 @@ QuackSlicer.
 Only download binaries from a release page you trust. The two projects have
 separate maintainers and release channels.
 
+## Development progress and open tasks
+
+### QuackSlicer 2.5.17
+
+This release adds reversible order archiving and a redesigned order workspace.
+See the [release notes](docs/releases/2.5.17.md) for changes, upgrade information,
+and validation coverage. The release pipeline builds and tests the supported
+platforms before publishing the matching binaries.
+
+### Windows startup recovery (2026-09-26)
+
+The local startup crash was traced to incompatible class layouts in stale
+Release object files: the 3D-view caller allocated `0x3280` bytes while its newer
+constructor wrote beyond that size. The initial NVIDIA/heap stack identified
+where corruption was detected, not its source. See the
+[diagnostic and recovery record](docs/WINDOWS_STARTUP_DIAGNOSTIC.md).
+
+- [x] Capture the first invalid write using an isolated executable/profile.
+- [x] Remove temporary verifier settings and separate project headers from external includes.
+- [x] Finish a consistent rebuild and verify normal GUI startup and project-copy loading before the arrangement rollback.
+
+### Arrangement extension withdrawn (2026-09-26)
+
+At the user's request, the additional adaptive/grid arrangement feature,
+preview dialog, and its dedicated tests/fixture were removed. The existing
+built-in arrangement implementation and controls are restored. Order archiving,
+management UI improvements, and the startup/build correction are retained.
+The original Bottle Thread Game 3MF was not edited.
+
+- [x] Restore the original arrangement sources and tests.
+- [x] Rebuild the local Release application; all 59 arrangement/inventory tests
+  passed (744 assertions). An isolated startup check reached the responsive
+  main window and initialized the 3D canvas, then shut down normally.
+
+### Order archiving and management UI (2026-09-24)
+
+Completed and cancelled customer orders can now be archived and restored in
+**Filaments > Orders**. The order filter offers **Not archived**,
+**Archived**, and **All orders**; search matches order numbers, titles, notes,
+and customer names. Archiving preserves status, print jobs, costs, and invoice
+details. Restore an order before editing it or its historical print jobs.
+
+- [x] Add reversible order archiving and an additive inventory schema 7-to-8 migration.
+- [x] Add archive filtering, search, empty-state guidance, and state-aware actions.
+- [x] Preserve customer and print-job selection during refresh.
+- [x] Wrap management toolbars and make customer, order, cost, and invoice forms scrollable.
+- [x] Review inventory, tracking, allocation, billing, settings, and navigation workflows.
+- [x] Build the Windows Release app and pass 49 inventory/lifecycle tests (695 assertions).
+- [x] Verify order sorting/filtering and archive/restore in the Windows GUI with synthetic data.
+- [ ] Complete the remaining management dialog, keyboard, and export checks listed in the UI review.
+- [ ] Validate layouts on macOS/Linux and with additional DPI and language settings.
+
+The [UI review and verification notes](docs/ORDER_ARCHIVE_UI_REVIEW.md) track
+coverage, remaining improvements, and compatibility boundaries.
+
+### Order workspace redesign (2026-09-26)
+
+Orders and customers now have separate tabs. Search and status/archive filters
+sit directly above the order table; selection-specific actions are grouped below
+it. Status badges lead each row. The default order is Active, Draft, Completed,
+Cancelled, then the displayed order name alphabetically, ignoring case.
+
+Eight primary columns cover progress and totals. **Cost details** reveals the
+remaining weight and cost columns without losing data. Buttons use the existing
+application style, and wrapping toolbars no longer stretch their last action.
+
+- [x] Separate customer administration from daily order work.
+- [x] Add status-first sorting, a status filter, badges, and optional cost details.
+- [x] Build and verify the rendered layout in light/dark themes, filtering,
+  selection, and archive/restore. All 49 inventory tests (695 assertions) pass.
+- [ ] Validate other platforms, increased DPI, and translated labels.
+
 ## Building from source
 
 QuackSlicer retains OrcaSlicer's CMake-based, cross-platform build system. The
