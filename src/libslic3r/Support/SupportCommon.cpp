@@ -1629,7 +1629,6 @@ void generate_support_toolpaths(
 
             // This layer is a raft contact layer. Any contact polygons at this layer are raft contacts.
             bool raft_layer = slicing_params.interface_raft_layers && top_contact_layer.layer && is_approx(top_contact_layer.layer->print_z, slicing_params.raft_contact_top_z);
-            // ORCA: Organic tree uses projected contacts to build the interface stack; avoid extra bottom-contact extrusion.
             const bool organic_tree = support_params.support_style == SupportMaterialStyle::smsTreeOrganic;
             const bool top_interfaces = support_params.num_top_interface_layers > 0;
             const bool bottom_interfaces = support_params.num_bottom_interface_layers > 0;
@@ -1671,7 +1670,7 @@ void generate_support_toolpaths(
                     bottom_contact_layer.set_polygons_to_extrude(
                         diff(bottom_contact_layer.polygons_to_extrude(), top_contact_layer.polygons_to_extrude()));
                 }
-            } else if (bottom_contact_layer.could_merge(interface_layer) && ! organic_tree) {
+            } else if (bottom_contact_layer.could_merge(interface_layer)) {
                 const bool interface_layer_is_bottom = interface_layer.layer->layer_type == SupporLayerType::BottomInterface;
                 if (bottom_interfaces && interface_layer_is_bottom) {
                     bottom_contact_layer.merge(std::move(interface_layer));
@@ -1690,6 +1689,8 @@ void generate_support_toolpaths(
                 Polygons interface_polygons;
                 if (!top_contact_layer.empty())
                     polygons_append(interface_polygons, top_contact_layer.polygons_to_extrude());
+                if (bottom_interfaces && !bottom_contact_layer.empty())
+                    polygons_append(interface_polygons, bottom_contact_layer.polygons_to_extrude());
                 if (!interface_layer.empty())
                     polygons_append(interface_polygons, interface_layer.polygons_to_extrude());
                 if (!interface_polygons.empty()) {
@@ -1759,8 +1760,9 @@ void generate_support_toolpaths(
                 }
             };
             extrude_interface(top_contact_layer,    raft_layer ? InterfaceLayerType::RaftContact : top_interfaces ? InterfaceLayerType::TopContact : InterfaceLayerType::InterfaceAsBase);
-            if (!organic_tree)
-                extrude_interface(bottom_contact_layer, bottom_interfaces ? InterfaceLayerType::BottomContact : InterfaceLayerType::InterfaceAsBase);
+            // The configured count includes this contact; generate_interface_layers()
+            // projects only the remaining layers, also for organic supports.
+            extrude_interface(bottom_contact_layer, bottom_interfaces ? InterfaceLayerType::BottomContact : InterfaceLayerType::InterfaceAsBase);
             const bool interface_layer_enabled = !interface_layer.empty() &&
                 (interface_layer.layer->layer_type == SupporLayerType::BottomInterface ? bottom_interfaces : top_interfaces);
             extrude_interface(interface_layer,      interface_layer_enabled ? InterfaceLayerType::Interface : InterfaceLayerType::InterfaceAsBase);

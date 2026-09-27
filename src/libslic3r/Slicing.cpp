@@ -98,7 +98,7 @@ SlicingParameters SlicingParameters::create_from_config(
         (object_config.support_interface_bottom_layers.value < 0  // Negative value means "use same as top"
             ? object_config.support_interface_top_layers.value
             : object_config.support_interface_bottom_layers.value) > 0 &&  // Has some bottom interface layers
-        (support_bottom_z_gap == 0.0 || zero_topZ_contact);
+        support_bottom_z_gap == 0.0;
 
     const bool zero_gap_interface_raft =
         raft_z_gap == 0.0 || zero_topZ_contact;

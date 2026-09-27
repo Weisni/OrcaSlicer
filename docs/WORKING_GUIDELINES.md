@@ -32,5 +32,9 @@ Consider them before every command, together with the applicable `AGENTS.md`.
 - P2S research must distinguish explicit P2S experience from other printer
   models, vendor claims from independent results, and software defaults or
   proposed experiment settings from measured hardware limits.
+- For support-interface corrections, verify contact presence, material, gap,
+  and extrusion-volume intersection with the model. Layer/path counts alone
+  do not establish correct placement. Preserve source project snapshots and
+  recheck the latest saved project when its settings or instances change.
 
 Source: user instructions and the root `AGENTS.md`, recorded 2026-09-24.

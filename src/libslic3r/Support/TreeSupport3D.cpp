@@ -3905,18 +3905,17 @@ void organic_draw_branches(
                     LayerIndex(layer_schedule.internal_layer_for_output(output_idx)),
                     LayerIndex(move_bounds.size() - 1));
             };
-            auto collision_for_output = [&volumes, &config, &internal_layer_for_output](
+            auto collision_for_output = [&volumes, &config, &slicing_params, &layer_schedule, &internal_layer_for_output](
                                             size_t output_idx, bool min_xy_dist) {
                 const LayerIndex internal_end = internal_layer_for_output(output_idx);
                 if (! config.independent_support_layer_height)
                     return Polygons(volumes.getCollision(0, internal_end, min_xy_dist));
 
-                LayerIndex internal_begin = internal_end;
-                if (output_idx > 0) {
-                    const LayerIndex internal_previous = internal_layer_for_output(output_idx - 1);
-                    if (internal_previous < internal_end)
-                        internal_begin = internal_previous + 1;
-                }
+                // A printable layer can straddle the previous collision layer.
+                // Its ceil-mapped predecessor must not exclude the model volume
+                // between the actual bottom Z and that predecessor's top Z.
+                const LayerIndex internal_begin = std::min(internal_end,
+                    layer_idx_floor(slicing_params, config, layer_schedule[output_idx].bottom_z + EPSILON) + 1);
                 Polygons collision;
                 for (LayerIndex internal_idx = internal_begin; internal_idx <= internal_end; ++ internal_idx)
                     append(collision, volumes.getCollision(0, internal_idx, min_xy_dist));
@@ -4041,8 +4040,9 @@ void organic_draw_branches(
                              // Only propagate until the rest area is smaller than this threshold.
                             //double                          support_area_min = 0.1 * support_area_min_radius;
                             for (LayerIndex layer_idx = layer_begin - 1; layer_idx >= layer_bottommost; -- layer_idx) {
-                                LayerIndex collision_layer = (layer_idx == layer_begin - 1) ? layer_begin : layer_idx;
-                                Polygons collision = collision_for_output(collision_layer, false);
+                                // Each extension occupies its destination layer, not the
+                                // clear layer above the model surface.
+                                Polygons collision = collision_for_output(layer_idx, false);
                                 rest_support = diff_clipped(rest_support.empty() ? slice_front_contact : rest_support, collision, ApplySafetyOffset::Yes);
                                 remove_small(rest_support, tiny_area);
                                 double rest_support_area = area(rest_support);
@@ -4068,25 +4068,15 @@ void organic_draw_branches(
                             }
 #endif
                             if (config.settings.support_floor_layers > 0) {
+                                const LayerIndex contact_layer = layer_begin - LayerIndex(bottom_extra_slices.size());
+                                const Polygons &contact_footprint = bottom_extra_slices.empty() ?
+                                    slice_front_contact : bottom_extra_slices.back().polygons;
                                 Polygons contacts;
-                                if (!bottom_extra_slices.empty()) {
-                                    const int contact_idx = int(bottom_extra_slices.size()) - 1; // Use the lowest contact slice as the footprint.
-
-                                    // ORCA: non-zero bottom Z should not be clipped by placeable areas.
-                                    if (config.support_rests_on_model && config.z_distance_bottom_layers > 0 && layer_begin > 0)
-                                        contacts = intersection_clipped(bottom_extra_slices[contact_idx].polygons, Polygons{volumes.m_bed_area}, ApplySafetyOffset::Yes);
-                                    else {
-                                        Polygons placeable = volumes.getPlaceableAreas(0, internal_layer_for_output(layer_begin), [] {});
-                                        contacts = intersection_clipped(bottom_extra_slices[contact_idx].polygons, placeable, ApplySafetyOffset::Yes);
-                                    }
-                                } else {
-                                    // Fallback: use the current contact slice when no propagation happened.
-                                    if (config.support_rests_on_model && config.z_distance_bottom_layers > 0 && layer_begin > 0)
-                                        contacts = slice_front_contact;
-                                    else {
-                                        Polygons placeable = volumes.getPlaceableAreas(0, internal_layer_for_output(layer_begin), [] {});
-                                        contacts = intersection_clipped(slice_front_contact, placeable, ApplySafetyOffset::Yes);
-                                    }
+                                if (config.support_rests_on_model && config.z_distance_bottom_layers > 0 && contact_layer > 0)
+                                    contacts = contact_footprint;
+                                else {
+                                    Polygons placeable = volumes.getPlaceableAreas(0, internal_layer_for_output(contact_layer), [] {});
+                                    contacts = intersection_clipped(contact_footprint, placeable, ApplySafetyOffset::Yes);
                                 }
 
                                 remove_small(contacts, tiny_area);
@@ -4095,8 +4085,8 @@ void organic_draw_branches(
                                     bottom_contacts.emplace_back(std::move(contacts));
 
                                 // ORCA: ensure bottom contacts exist if clipping removed them.
-                                if (bottom_contacts.empty() && config.support_rests_on_model && layer_begin > 0 && !slice_front_contact.empty())
-                                    bottom_contacts.emplace_back(slice_front_contact);
+                                if (bottom_contacts.empty() && config.support_rests_on_model && contact_layer > 0 && !contact_footprint.empty())
+                                    bottom_contacts.emplace_back(contact_footprint);
                             }
                             layer_begin -= LayerIndex(bottom_extra_slices.size());
                             slices.insert(slices.begin(), bottom_extra_slices.size(), {});
@@ -4108,8 +4098,8 @@ void organic_draw_branches(
                         // ORCA: retain bottom contacts even when no placeable areas intersect.
                         if (branch.has_root && config.support_rests_on_model && branch.path.front()->state.layer_idx > 0 &&
                             config.settings.support_floor_layers > 0 && config.z_distance_bottom_layers > 0 &&
-                            bottom_contacts.empty() && !slice_front_contact.empty())
-                            bottom_contacts.emplace_back(slice_front_contact);
+                            bottom_contacts.empty() && !slices.front().empty())
+                            bottom_contacts.emplace_back(slices.front());
 
                     }
                     // ORCA: bottom contacts provide the footprint; interface layers are built later.

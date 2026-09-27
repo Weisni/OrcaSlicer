@@ -73,6 +73,21 @@ separate maintainers and release channels.
 
 ## Development progress and open tasks
 
+### QuackSlicer 2.5.18
+
+This release fixes missing organic bottom support interfaces and interfaces
+placed inside the model. It also respects the configured bottom Z gap when
+the top gap is zero. Existing project files and profiles remain compatible.
+See the [release notes](docs/releases/2.5.18.md) for behavior and validation.
+
+- [x] Correct bottom contact extrusion, collision placement, and gap handling.
+- [x] Verify 11 support cases / 660 assertions and 529 passing CTest cases
+  (five NumPy-dependent tests skipped in the local test interpreter).
+- [x] Re-slice the reported PETG/PLA project and check lower contact geometry;
+  the user confirmed that the reported problem is resolved.
+- [ ] Complete the cross-platform release build and verify published assets.
+- [ ] Validate physical adhesion, removal, and final print quality separately.
+
 ### QuackSlicer 2.5.17
 
 This release adds reversible order archiving and a redesigned order workspace.

@@ -2,6 +2,7 @@
 
 #include "libslic3r/GCodeReader.hpp"
 #include "libslic3r/Layer.hpp"
+#include "libslic3r/ClipperUtils.hpp"
 
 #include "test_helpers.hpp" // get access to init_print, etc
 
@@ -17,9 +18,9 @@ constexpr double bridge_underside_z = 5.0;
 constexpr double organic_object_layer_height = 0.2;
 
 DynamicPrintConfig organic_bridge_config(
-    bool independent_layer_height, double requested_top_gap, int top_interface_layers = 3)
+    bool independent_layer_height, double requested_top_gap, int top_interface_layers = 3, unsigned int filaments = 1)
 {
-    DynamicPrintConfig config = DynamicPrintConfig::full_print_config();
+    DynamicPrintConfig config = filaments == 1 ? DynamicPrintConfig::full_print_config() : multifilament_config(filaments);
     config.set_deserialize_strict({
         { "enable_support", true },
         { "support_type", "tree(auto)" },
@@ -96,6 +97,114 @@ double highest_extruded_support_z(const PrintObject &object)
 }
 
 } // namespace
+
+TEST_CASE("Organic support prints its bottom contact with the interface material", "[SupportMaterial][Regression]")
+{
+    const int bottom_layers = GENERATE(1, 2, 3, -1, 0);
+    const bool separate_interface_material = GENERATE(false, true);
+    const double bottom_gap = GENERATE(0.0, 0.2);
+    constexpr double floor_z = 5.0;
+    constexpr int top_layers = 2;
+    DynamicPrintConfig config = multifilament_config(2);
+    config.set_deserialize_strict({
+        { "enable_support", true },
+        { "support_type", "tree(auto)" },
+        { "support_style", "organic" },
+        { "layer_height", organic_object_layer_height },
+        { "initial_layer_print_height", organic_object_layer_height },
+        { "independent_support_layer_height", false },
+        { "support_top_z_distance", 0.0 },
+        { "support_interface_top_layers", top_layers },
+        { "support_interface_spacing", 0.0 },
+        { "support_threshold_angle", 30 },
+        { "support_remove_small_overhang", false },
+        { "max_bridge_length", 0.0 },
+        { "bridge_no_support", false },
+        { "support_on_build_plate_only", false },
+        { "support_bottom_z_distance", bottom_gap },
+        { "support_interface_bottom_layers", bottom_layers },
+        { "support_bottom_interface_spacing", 0.0 },
+        { "support_filament", 1 },
+        { "support_interface_filament", separate_interface_material ? 2 : 1 },
+    });
+    // A wide floor keeps the branches on the model instead of letting them
+    // escape a small hole sideways and reach the build plate.
+    TriangleMesh model = make_cube(70.0, 40.0, floor_z);
+    model.translate(65.0, 69.5, 0.0);
+    TriangleMesh roof = mesh(TestMesh::bridge);
+    roof.translate(0.0, 0.0, floor_z);
+    model.merge(roof);
+    Print print;
+    init_and_process_print({ model }, print, config);
+
+    const PrintObject &object = *print.objects().front();
+    const int requested_layers = bottom_layers < 0 ? top_layers : bottom_layers;
+    const int expected_interface_layers = requested_layers -
+        (separate_interface_material && requested_layers > 1 ? 1 : 0);
+    size_t bottom_interface_count = 0;
+    const SupportLayer *contact = nullptr;
+    for (const SupportLayer *layer : object.support_layers()) {
+        // The bridge has a flat floor at 5 mm and a roof at 10 mm.
+        if (layer->print_z > floor_z + EPSILON && layer->print_z < floor_z + 2.0 &&
+            layer_has_support_interface(*layer)) {
+            ++bottom_interface_count;
+            if (contact == nullptr)
+                contact = layer;
+        }
+    }
+    CAPTURE(bottom_layers, separate_interface_material, bottom_gap);
+    CHECK(bottom_interface_count == expected_interface_layers);
+    if (requested_layers > 0) {
+        REQUIRE(contact != nullptr);
+        CHECK_THAT(contact->bottom_z(), Catch::Matchers::WithinAbs(floor_z + bottom_gap, 1e-4));
+    }
+}
+
+TEST_CASE("Organic bottom contacts do not intersect the model floor", "[SupportMaterial][Regression]")
+{
+    const bool independent = GENERATE(false, true);
+    const float slope = GENERATE(0.0f, 0.04f);
+    const bool separate_interface_material = GENERATE(false, true);
+    DynamicPrintConfig config = organic_bridge_config(independent, 0.0, 2, 2);
+    config.set_deserialize_strict({
+        { "support_on_build_plate_only", false },
+        { "support_bottom_z_distance", 0.0 },
+        { "support_interface_bottom_layers", 2 },
+        { "support_bottom_interface_spacing", 0.0 },
+        { "support_filament", 1 },
+        { "support_interface_filament", separate_interface_material ? 2 : 1 },
+    });
+    TriangleMesh model = make_cube(70.0, 40.0, 5.0);
+    for (Vec3f &vertex : model.its.vertices)
+        if (vertex.z() > 0.0f)
+            vertex.z() += slope * vertex.x();
+    model.translate(65.0, 69.5, 0.0);
+    TriangleMesh roof = mesh(TestMesh::bridge);
+    roof.translate(0.0, 0.0, 5.0);
+    model.merge(roof);
+    Print print;
+    init_and_process_print({ model }, print, config);
+    const PrintObject &object = *print.objects().front();
+    const double floor_max_z = 5.0 + 70.0 * slope;
+    // A roof interface alone must not make the collision regression pass.
+    const auto support_layers = object.support_layers();
+    CAPTURE(independent, slope, separate_interface_material);
+    REQUIRE(std::any_of(support_layers.begin(), support_layers.end(), [&](const SupportLayer *support) {
+        return support->print_z < floor_max_z + 2.0 * object.slicing_parameters().max_suport_layer_height &&
+            layer_has_support_interface(*support);
+    }));
+    for (const SupportLayer *support : object.support_layers()) {
+        const Polygons extrusions = support->support_fills.polygons_covered_by_width();
+        for (const Layer *layer : object.layers()) {
+            if (layer->print_z <= support->bottom_z() + EPSILON ||
+                layer->bottom_z() >= support->print_z - EPSILON)
+                continue;
+            const ExPolygons overlap = intersection_ex(extrusions, to_polygons(layer->lslices));
+            CAPTURE(independent, slope, support->print_z, layer->print_z);
+            CHECK(area(overlap) * SCALING_FACTOR * SCALING_FACTOR <= 1e-4);
+        }
+    }
+}
 
 TEST_CASE("Three raft layers are created", "[SupportMaterial]")
 {
