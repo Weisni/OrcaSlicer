@@ -10580,7 +10580,8 @@ int DynamicPrintConfig::update_values_from_single_to_multi(DynamicPrintConfig& m
                 if (src_opt) {
                     ConfigOptionFloats * opt = this->option<ConfigOptionFloats>(key, true);
 
-                    assert(variant_count == src_opt->size());
+                    if (variant_count != src_opt->size())
+                        BOOST_LOG_TRIVIAL(warning) << __FUNCTION__ << boost::format(", Line %1%: variant count %2% differs from %3% values for %4%") % __LINE__ % variant_count % src_opt->size() % key;
                     opt->resize(variant_count, opt);
 
                     for (int index = 0; index < variant_count; index++)
@@ -10601,7 +10602,8 @@ int DynamicPrintConfig::update_values_from_single_to_multi(DynamicPrintConfig& m
                 if (src_opt) {
                     ConfigOptionFloatsOrPercents * opt = this->option<ConfigOptionFloatsOrPercents>(key, true);
 
-                    assert(variant_count == src_opt->size());
+                    if (variant_count != src_opt->size())
+                        BOOST_LOG_TRIVIAL(warning) << __FUNCTION__ << boost::format(", Line %1%: variant count %2% differs from %3% values for %4%") % __LINE__ % variant_count % src_opt->size() % key;
                     opt->resize(variant_count, opt);
 
                     for (int index = 0; index < variant_count; index++)
@@ -10621,7 +10623,8 @@ int DynamicPrintConfig::update_values_from_single_to_multi(DynamicPrintConfig& m
                 {
                     ConfigOptionBools * opt = this->option<ConfigOptionBools>(key, true);
 
-                    assert(variant_count == src_opt->size());
+                    if (variant_count != src_opt->size())
+                        BOOST_LOG_TRIVIAL(warning) << __FUNCTION__ << boost::format(", Line %1%: variant count %2% differs from %3% values for %4%") % __LINE__ % variant_count % src_opt->size() % key;
                     opt->resize(variant_count, opt);
                 }
 
@@ -10789,8 +10792,8 @@ int DynamicPrintConfig::update_values_from_multi_to_multi(DynamicPrintConfig& ne
                 int old_count = old_values.size();
                 int new_count = src_opt->values.size();
 
-                assert(variant_count == old_count);
-                assert(new_variant_count == new_count);
+                if (variant_count != old_count || new_variant_count != new_count)
+                    BOOST_LOG_TRIVIAL(warning) << __FUNCTION__ << boost::format(", Line %1%: variant/value width mismatch for %2% (%3%/%4% -> %5%/%6%)") % __LINE__ % key % variant_count % old_count % new_variant_count % new_count;
                 opt->values = src_opt->values;
 
                 for (int i = 0; i < new_extruder_count; i++)
@@ -10801,7 +10804,6 @@ int DynamicPrintConfig::update_values_from_multi_to_multi(DynamicPrintConfig& ne
                         continue;
 
                     for(auto idx : variant_indices){
-                        assert(idx < old_count);
                         //the counts come from the variant columns, the arrays from the options;
                         //they disagree when a config was authored at a different variant width
                         if (idx >= old_count || new_variant_index >= (int)opt->values.size())
@@ -10823,8 +10825,8 @@ int DynamicPrintConfig::update_values_from_multi_to_multi(DynamicPrintConfig& ne
                 int old_count = old_values.size();
                 int new_count = src_opt->values.size();
 
-                assert(variant_count == old_count);
-                assert(new_variant_count == new_count);
+                if (variant_count != old_count || new_variant_count != new_count)
+                    BOOST_LOG_TRIVIAL(warning) << __FUNCTION__ << boost::format(", Line %1%: variant/value width mismatch for %2% (%3%/%4% -> %5%/%6%)") % __LINE__ % key % variant_count % old_count % new_variant_count % new_count;
                 opt->values = src_opt->values;
 
                 for (int i = 0; i < new_extruder_count; i++)
@@ -10835,7 +10837,6 @@ int DynamicPrintConfig::update_values_from_multi_to_multi(DynamicPrintConfig& ne
                         continue;
 
                     for(auto idx : variant_indices){
-                        assert(idx < old_count);
                         //the counts come from the variant columns, the arrays from the options;
                         //they disagree when a config was authored at a different variant width
                         if (idx >= old_count || new_variant_index >= (int)opt->values.size())
@@ -10857,8 +10858,8 @@ int DynamicPrintConfig::update_values_from_multi_to_multi(DynamicPrintConfig& ne
                 int old_count = old_values.size();
                 int new_count = src_opt->values.size();
 
-                assert(variant_count == old_count);
-                assert(new_variant_count == new_count);
+                if (variant_count != old_count || new_variant_count != new_count)
+                    BOOST_LOG_TRIVIAL(warning) << __FUNCTION__ << boost::format(", Line %1%: variant/value width mismatch for %2% (%3%/%4% -> %5%/%6%)") % __LINE__ % key % variant_count % old_count % new_variant_count % new_count;
                 opt->values = src_opt->values;
 
                 for (int i = 0; i < new_extruder_count; i++)
@@ -10869,7 +10870,6 @@ int DynamicPrintConfig::update_values_from_multi_to_multi(DynamicPrintConfig& ne
                         continue;
 
                     for(auto idx : variant_indices){
-                        assert(idx < old_count);
                         if (idx >= old_count || new_variant_index >= (int)opt->values.size())
                             continue;
                         if (old_values[idx]) //enabled

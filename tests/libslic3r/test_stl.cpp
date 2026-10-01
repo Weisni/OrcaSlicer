@@ -64,48 +64,57 @@ TEST_CASE("ASCII STL metadata stays within its fixed-width buffers", "[STL][Regr
     const auto write_single_triangle = [](const ScopedTemporaryFile &file, const std::string &solid_name) {
         std::ofstream out(file.string());
         REQUIRE(out.is_open());
-        out << "solid " << solid_name << '\n'
-            << "facet normal 0 0 1\n"
-            << "outer loop\n"
-            << "vertex 0 0 0\n"
-            << "vertex 1 0 0\n"
-            << "vertex 0 1 0\n"
-            << "endloop\n"
-            << "endfacet\n"
-            << "endsolid " << solid_name << '\n';
+        out << "solid " << solid_name << '\n';
+        // ADMesh probes 128 bytes after its binary-header offset before deciding
+        // that a file is ASCII. Two valid facets keep even the shortest fixture
+        // above that minimum without adding syntax the parser would reject.
+        for (int i = 0; i < 2; ++i) {
+            out << "facet normal 0 0 1\n"
+                << "outer loop\n"
+                << "vertex 0 0 0\n"
+                << "vertex 1 0 0\n"
+                << "vertex 0 1 0\n"
+                << "endloop\n"
+                << "endfacet\n";
+        }
+        out << "endsolid " << solid_name << '\n';
     };
 
-    SECTION("metadata beyond the solid-name buffer is ignored") {
+    const auto read_metadata = [&](const std::string &solid_name) {
         ScopedTemporaryFile file(".stl");
-        write_single_triangle(file, std::string(256, 'x') + " MW 1.0 model-id US");
+        write_single_triangle(file, solid_name);
 
-        std::string captured_model_id;
-        std::string captured_country;
+        std::pair<std::string, std::string> captured;
         const auto capture_metadata = [&](int, int, bool &, std::string &model_id, std::string &country) {
-            captured_model_id = model_id;
-            captured_country  = country;
+            captured = {model_id, country};
         };
 
         stl_file stl;
         REQUIRE(stl_open(&stl, file.string().c_str(), capture_metadata));
-        CHECK(captured_model_id.empty());
-        CHECK(captured_country.empty());
+        return captured;
+    };
+
+    SECTION("valid metadata is preserved") {
+        const auto [model_id, country] = read_metadata("MW 1.0 model-id US");
+        CHECK(model_id == "model-id");
+        CHECK(country == "US");
     }
 
-    SECTION("oversized metadata fields are truncated before copying") {
-        ScopedTemporaryFile file(".stl");
-        write_single_triangle(file, "MW 1.0 " + std::string(140, 'm') + " " + std::string(20, 'c'));
+    SECTION("metadata beyond the solid-name buffer is ignored") {
+        const auto [model_id, country] = read_metadata(std::string(256, 'x') + " MW 1.0 model-id US");
+        CHECK(model_id.empty());
+        CHECK(country.empty());
+    }
 
-        std::string captured_model_id;
-        std::string captured_country;
-        const auto capture_metadata = [&](int, int, bool &, std::string &model_id, std::string &country) {
-            captured_model_id = model_id;
-            captured_country  = country;
-        };
+    SECTION("a full solid-name buffer ending in MW is ignored") {
+        const auto [model_id, country] = read_metadata(std::string(253, 'x') + "MW");
+        CHECK(model_id.empty());
+        CHECK(country.empty());
+    }
 
-        stl_file stl;
-        REQUIRE(stl_open(&stl, file.string().c_str(), capture_metadata));
-        CHECK(captured_model_id.size() <= 127);
-        CHECK(captured_country.size() <= 15);
+    SECTION("oversized metadata fields are rejected without token reassignment") {
+        const auto [model_id, country] = read_metadata("MW 1.0 " + std::string(140, 'm') + " " + std::string(20, 'c'));
+        CHECK(model_id.empty());
+        CHECK(country.empty());
     }
 }

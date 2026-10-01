@@ -26,6 +26,9 @@
 #include <math.h>
 #include <assert.h>
 
+#include <cctype>
+#include <sstream>
+
 #include <boost/log/trivial.hpp>
 #include <boost/nowide/cstdio.hpp>
 #include <boost/predef/other/endian.h>
@@ -165,26 +168,20 @@ static bool stl_read(stl_file *stl, FILE *fp, int first_facet, bool first, Impor
             int res_solid = fscanf(fp, " solid %255[^\n]", solid_name);
             if (res_solid == 1) {
                 char* mw_position = strstr(solid_name, "MW");
-                if (mw_position != NULL) {
-                    // Extract the value after "MW"
-                    char version_str[16];
-                    char model_id_str[128]; 
-                    char country_code_str[16];
-                    int num_values = sscanf(mw_position + 3, "%15s %127s %15s", version_str, model_id_str, country_code_str);
-                    if (num_values == 3) {
-                        if (strcmp(version_str, "1.0") == 0) {
-                            model_id = model_id_str;
-                            country_code = country_code_str;
-                        }
+                model_id.clear();
+                country_code.clear();
+                if (mw_position != NULL && std::isspace(static_cast<unsigned char>(mw_position[2]))) {
+                    // Parse from the bounded solid-name buffer itself. Fixed-width
+                    // scanf fields split oversized tokens across later fields.
+                    std::istringstream metadata(mw_position + 2);
+                    std::string version;
+                    std::string parsed_model_id;
+                    std::string parsed_country_code;
+                    if (metadata >> version >> parsed_model_id >> parsed_country_code &&
+                        version == "1.0" && parsed_model_id.size() < 128 && parsed_country_code.size() < 16) {
+                        model_id = parsed_model_id;
+                        country_code = parsed_country_code;
                     }
-                    else {
-                        model_id = "";
-                        country_code = "";
-                    }
-                }
-                else {
-                    model_id = "";  // No MW format found
-                    country_code = "";
                 }
             }
         }
