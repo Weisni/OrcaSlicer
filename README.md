@@ -73,6 +73,22 @@ separate maintainers and release channels.
 
 ## Development progress and open tasks
 
+### QuackSlicer 2.5.19
+
+This maintenance release backports three focused OrcaSlicer safety fixes while
+the official stable baselines remain OrcaSlicer 2.4.2 and Bambu Studio 2.8.2.61.
+See the [release notes](docs/releases/2.5.19.md) for compatibility, validation,
+and the explicit auto-backup compromise.
+
+- [x] Bound ASCII STL solid-name and MakerWorld metadata parsing.
+- [x] Prevent CGAL model repair from racing the auto-backup worker.
+- [x] Keep per-variant configuration migration within source and destination
+  row bounds when switching printers.
+- [x] Complete the capped-load Windows Release build, all 532 runnable CTest
+  cases (five optional Python host tests skipped), and profile validation for
+  all 1,009 printer presets.
+- [ ] Complete cross-platform CI and verify the published release assets.
+
 ### QuackSlicer 2.5.18
 
 This release fixes missing organic bottom support interfaces and interfaces
