@@ -20,6 +20,73 @@ DynamicPrintConfig make_hybrid_printer_config()
     return config;
 }
 
+TEST_CASE("update_values_from_multi_to_multi_2 keeps per-variant rows in bounds", "[Config][VariantExpansion][Regression]")
+{
+    const std::vector<std::string> src_variants{"Direct Drive Standard"};
+    const std::vector<std::string> dst_variants{"Direct Drive Standard", "Direct Drive High Flow",
+                                                "Direct Drive Standard", "Direct Drive High Flow"};
+    const std::set<std::string>    keys{"outer_wall_speed"};
+
+    const auto object_override = [] {
+        DynamicPrintConfig config;
+        config.option<ConfigOptionFloatsNullable>("outer_wall_speed", true)->values = {42.};
+        return config;
+    };
+
+    SECTION("a destination row narrower than the variant list is grown") {
+        DynamicPrintConfig object_config = object_override();
+        DynamicPrintConfig destination;
+        destination.option<ConfigOptionFloatsNullable>("outer_wall_speed", true)->values = {200.};
+
+        REQUIRE(object_config.update_values_from_multi_to_multi_2(src_variants, dst_variants, destination, keys) == 0);
+
+        const auto &out = object_config.option<ConfigOptionFloatsNullable>("outer_wall_speed")->values;
+        REQUIRE(out.size() == dst_variants.size());
+        CHECK_THAT(out[0], Catch::Matchers::WithinAbs(42., 1e-9));
+        CHECK(std::isnan(out[1]));
+        CHECK_THAT(out[2], Catch::Matchers::WithinAbs(42., 1e-9));
+        CHECK(std::isnan(out[3]));
+    }
+
+    SECTION("a correctly sized destination row preserves unmatched preset values") {
+        DynamicPrintConfig object_config = object_override();
+        DynamicPrintConfig destination;
+        destination.option<ConfigOptionFloatsNullable>("outer_wall_speed", true)->values = {200., 500., 210., 510.};
+
+        REQUIRE(object_config.update_values_from_multi_to_multi_2(src_variants, dst_variants, destination, keys) == 0);
+
+        const auto &out = object_config.option<ConfigOptionFloatsNullable>("outer_wall_speed")->values;
+        REQUIRE(out.size() == dst_variants.size());
+        CHECK_THAT(out[0], Catch::Matchers::WithinAbs(42., 1e-9));
+        CHECK_THAT(out[1], Catch::Matchers::WithinAbs(500., 1e-9));
+        CHECK_THAT(out[2], Catch::Matchers::WithinAbs(42., 1e-9));
+        CHECK_THAT(out[3], Catch::Matchers::WithinAbs(510., 1e-9));
+    }
+
+    SECTION("a source row shorter than its variant list is read in bounds") {
+        DynamicPrintConfig object_config = object_override();
+        DynamicPrintConfig destination;
+        destination.option<ConfigOptionFloatsNullable>("outer_wall_speed", true)->values = {200., 500.};
+
+        REQUIRE(object_config.update_values_from_multi_to_multi_2(
+                    {"Direct Drive Standard", "Direct Drive Standard"},
+                    {"Direct Drive Standard", "Direct Drive High Flow"}, destination, keys) == 0);
+
+        const auto &out = object_config.option<ConfigOptionFloatsNullable>("outer_wall_speed")->values;
+        REQUIRE(out.size() == 2);
+        CHECK_THAT(out[0], Catch::Matchers::WithinAbs(42., 1e-9));
+        CHECK_THAT(out[1], Catch::Matchers::WithinAbs(500., 1e-9));
+    }
+
+    SECTION("an empty destination variant list is rejected") {
+        DynamicPrintConfig object_config = object_override();
+        DynamicPrintConfig destination;
+        destination.option<ConfigOptionFloatsNullable>("outer_wall_speed", true)->values = {200.};
+
+        CHECK(object_config.update_values_from_multi_to_multi_2(src_variants, {}, destination, keys) == -1);
+    }
+}
+
 void add_print_variant_columns(DynamicPrintConfig &config)
 {
     config.option<ConfigOptionInts>("print_extruder_id", true)->values = {1, 1, 2, 2};
