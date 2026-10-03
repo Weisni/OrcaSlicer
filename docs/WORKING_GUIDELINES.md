@@ -36,5 +36,12 @@ Consider them before every command, together with the applicable `AGENTS.md`.
   and extrusion-volume intersection with the model. Layer/path counts alone
   do not establish correct placement. Preserve source project snapshots and
   recheck the latest saved project when its settings or instances change.
+- For upstream synchronization, review open pull requests first and prioritize
+  official stable OrcaSlicer and Bambu Studio releases over development-branch
+  snapshots. Present interesting development-branch changes for an explicit
+  decision unless they were already approved for the next update.
+- Keep local Windows builds below full machine saturation. Use at most two
+  parallel MSBuild processes for sync and release validation; rely on GitHub
+  Actions for the other supported platforms and publication artifacts.
 
 Source: user instructions and the root `AGENTS.md`, recorded 2026-09-24.
