@@ -9,6 +9,7 @@ add_executable(${_TEST_NAME}_tests
     test_arrange.cpp
     test_bambu_networking.cpp
     test_calib.cpp
+    test_camera_playback_request.cpp
     test_build_path_classifier.cpp
     test_clipper_offset.cpp
     test_clipper_utils.cpp
@@ -21,6 +22,17 @@ add_executable(${_TEST_NAME}_tests
     test_elephant_foot_compensation.cpp
     test_filament_inventory.cpp
     test_filament_inventory_service.cpp
+    test_ha_material_source.cpp
+    test_ha_material_binding.cpp
+    test_ha_material_refresh.cpp
+    test_ha_material_preset.cpp
+    test_ha_material_profile_payload.cpp
+    test_ha_material_profile.cpp
+    test_ha_inventory_selection.cpp
+    test_ha_inventory_transport.cpp
+    test_ha_credential_policy.cpp
+    test_ha_project_material_sync.cpp
+    test_ha_project_roll_publish.cpp
     test_geometry.cpp
     test_multimaterial_segmentation.cpp
     test_placeholder_parser.cpp

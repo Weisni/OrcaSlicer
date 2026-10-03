@@ -1,0 +1,36 @@
+# Replace every example value with your own HA user, printer and sensor IDs.
+# Merge into existing configuration; never replace unrelated configuration.
+quack_material_demo:
+  mode: pilot
+  database: quack_material_inventory.sqlite3
+  base_url: http://homeassistant.local:8123
+  provider_printer_id: YOUR_PRINTER_SERIAL
+  allowed_sync_users:
+    - YOUR_DEDICATED_HA_USER_ID
+  enabled_slots: [A1, A2, A3, A4, HT1, EXT]
+  printer_state_entity: sensor.your_printer_print_status
+  printer_name_entity: sensor.your_printer_task_name
+  nfc_enabled: true
+
+  # Optional: enables coordinated metadata assignment, not filament loading.
+  # Remove this block unless all enabled slots and the stage sensor are mapped.
+  printer_assignment:
+    stage_entity: sensor.your_printer_current_stage
+    slots:
+      A1: sensor.your_printer_ams_slot_1
+      A2: sensor.your_printer_ams_slot_2
+      A3: sensor.your_printer_ams_slot_3
+      A4: sensor.your_printer_ams_slot_4
+      HT1: sensor.your_printer_ams_ht_slot
+      EXT: sensor.your_printer_external_spool
+
+# Optional dashboard, after copying the YAML file into HA's configuration folder:
+# lovelace:
+#   dashboards:
+#     dashboard-filament:
+#       mode: yaml
+#       title: Filament & Orders
+#       icon: mdi:database
+#       show_in_sidebar: true
+#       filename: quack-material-inventory-dashboard.yaml
+# Add module resource: /quack-material-demo/inventory.js?v=0.8.0

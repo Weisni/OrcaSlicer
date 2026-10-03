@@ -2,6 +2,8 @@
 #include <ctime>
 
 #include "PresetBundle.hpp"
+#include "HaMaterialSource.hpp"
+#include "HaMaterialBinding.hpp"
 #include "PrintConfig.hpp"
 #include "libslic3r.h"
 #include "I18N.hpp"
@@ -47,6 +49,7 @@ static std::vector<std::string> s_project_options {
     "filament_colour",
     "filament_colour_type",
     "filament_multi_colour",
+    "ha_material_bindings",
     "wipe_tower_x",
     "wipe_tower_y",
     "prime_tower_object_positions",
@@ -434,6 +437,7 @@ PresetBundle::PresetBundle()
     this->printers.select_preset(0);
 
     this->project_config.apply_only(FullPrintConfig::defaults(), s_project_options);
+    HaMaterialBinding::write(this->project_config, {});
 }
 
 PresetBundle::PresetBundle(const PresetBundle &rhs)
@@ -3159,6 +3163,7 @@ void PresetBundle::update_num_filaments(unsigned int to_del_flament_id)
 {
     unsigned old_filament_count = this->filament_presets.size();
     assert(to_del_flament_id < old_filament_count);
+    HaMaterialBinding::erase(project_config, to_del_flament_id, old_filament_count);
     filament_presets.erase(filament_presets.begin() + to_del_flament_id);
 
     // update edited_preset
@@ -3227,6 +3232,16 @@ void PresetBundle::get_ams_cobox_infos(AMSComboInfo& combox_info)
         auto  ams_name             = ams.opt_string("tray_name", 0u);
         auto  filament_changed     = !ams.has("filament_changed") || ams.opt_bool("filament_changed");
         auto  filament_multi_color = ams.opt<ConfigOptionStrings>("filament_multi_colour")->values;
+        if (ams.has("ha_material_preset")) {
+            const auto *exact = filaments.find_preset(ams.opt_string("ha_material_preset", 0u));
+            if (!exact || !exact->is_compatible)
+                continue;
+            combox_info.ams_filament_presets.push_back(exact->name);
+            combox_info.ams_filament_colors.push_back(filament_color);
+            combox_info.ams_multi_color_filment.push_back(filament_multi_color);
+            combox_info.ams_names.push_back(ams_name);
+            continue;
+        }
         if (filament_id.empty()) {
             continue;
         }
@@ -3271,6 +3286,17 @@ void PresetBundle::get_ams_cobox_infos(AMSComboInfo& combox_info)
 
 unsigned int PresetBundle::sync_ams_list(std::vector<std::pair<DynamicPrintConfig *,std::string>> &unknowns, bool use_map, std::map<int, AMSMapInfo> &maps, bool enable_append, MergeFilamentInfo &merge_info, bool color_only)
 {
+    // Validate HA's identities and same-material defaults before changing project selections.
+    // Printer material IDs cannot identify an inherited custom filament preset.
+    for (auto &entry : filament_ams_list) {
+        auto &ams = entry.second;
+        if (!ams.has("ha_material_preset")) continue;
+        const auto *exact = HaMaterialSource::resolve_preset(filaments, ams.opt_string("ha_material_preset", 0u), ams.opt_string("filament_type", 0u));
+        if (!exact) {
+            unknowns.emplace_back(&ams, "The HA special preset is incompatible or no compatible standard exists for this material type.");
+            return 0;
+        }
+    }
     BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << "use_map:" << use_map << " enable_append:" << enable_append;
     std::vector<std::string> ams_filament_presets;
     std::vector<std::string> ams_filament_colors;
@@ -3305,6 +3331,14 @@ unsigned int PresetBundle::sync_ams_list(std::vector<std::pair<DynamicPrintConfi
         AMSMapInfo temp = {ams_id, slot_id};
         ams_array_maps.push_back(temp);
         index++;
+        if (ams.has("ha_material_preset")) {
+            const auto *exact = HaMaterialSource::resolve_preset(filaments, ams.opt_string("ha_material_preset", 0u), ams.opt_string("filament_type", 0u));
+            ams_filament_presets.push_back(exact->name);
+            ams_filament_colors.push_back(filament_color);
+            ams_filament_color_types.push_back(filament_color_type);
+            ams_multi_color_filment.push_back(filament_multi_color);
+            continue;
+        }
         if (filament_id.empty()) {
             if (use_map) {
                 for (int j = maps.size() - 1; j >= 0; j--) {
@@ -4478,38 +4512,12 @@ void PresetBundle::load_config_file_config(const std::string &name_or_path, bool
     // drop it from any imported config so it only comes from the connected printer.
     config.erase("enable_filament_dynamic_map");
 
-    if (!load_project_presets) {
-        // "Keep current printer" means keeping the complete active slicing setup:
-        // printer, process, and filament presets. Model/object/volume settings are
-        // loaded separately by the 3MF reader. Only project-scoped data needed by
-        // the imported model (colors, filament mappings, purge data and layout)
-        // belongs here.
-        const std::vector<int> current_nozzle_volume_types =
-            this->project_config.option<ConfigOptionEnumsGeneric>("nozzle_volume_type")->values;
-        const BedType current_bed_type =
-            this->project_config.opt_enum<BedType>("curr_bed_type");
-        if (const auto *project_colors = config.option<ConfigOptionStrings>("filament_colour");
-            project_colors != nullptr && filament_presets.size() < project_colors->size()) {
-            const std::string fallback_filament = filament_presets.empty()
-                ? filaments.first_visible().name
-                : filament_presets.back();
-            filament_presets.resize(project_colors->size(), fallback_filament);
-        }
-        this->project_config.apply_only(config, s_project_options);
-        // Nozzle flow type describes the currently selected/connected printer, not
-        // the imported model. In particular, a Standard-flow project must not
-        // switch an active High Flow nozzle back to Standard.
-        this->project_config.option<ConfigOptionEnumsGeneric>("nozzle_volume_type")->values =
-            current_nozzle_volume_types;
-        // The selected build plate belongs to the active printer setup as well.
-        // Keep it instead of applying the plate type saved for another printer.
-        this->project_config.set_key_value("curr_bed_type",
-                                           new ConfigOptionEnum<BedType>(current_bed_type));
-        BOOST_LOG_TRIVIAL(info) << __FUNCTION__
-                                << ": kept active printer, process and filament presets while loading project data from "
-                                << name_or_path;
-        return;
-    }
+    // Project filaments are imported independently of the printer choice. Keeping
+    // the current printer preserves its hardware/plate and process, not the old
+    // project's material selections; HA synchronization remains a separate action.
+    DynamicPrintConfig retained_printer_settings;
+    if (!load_project_presets)
+        retained_printer_settings.apply_only(this->project_config, {"nozzle_volume_type", "curr_bed_type"});
 
 #if 0
     size_t num_extruders = (printer_technology == ptFFF) ?
@@ -4604,7 +4612,7 @@ void PresetBundle::load_config_file_config(const std::string &name_or_path, bool
     //no need to parse extruder_ams_count
     std::vector<std::string> extruder_ams_count = std::move(config.option<ConfigOptionStrings>("extruder_ams_count", true)->values);
     config.erase("extruder_ams_count");
-    if (this->extruder_ams_counts.empty())
+    if (load_project_presets && this->extruder_ams_counts.empty())
         this->extruder_ams_counts = get_extruder_ams_count(extruder_ams_count);
 
 
@@ -4637,39 +4645,41 @@ void PresetBundle::load_config_file_config(const std::string &name_or_path, bool
     switch (Preset::printer_technology(config)) {
     case ptFFF:
     {
-        //BBS: add different settings logic
-        BOOST_LOG_TRIVIAL(debug) << __FUNCTION__ << boost::format(": load print preset from print_settings_id");
-        std::vector<std::string> print_different_keys_vector;
-        std::string print_different_settings = different_values[0];
-        Slic3r::unescape_strings_cstyle(print_different_settings, print_different_keys_vector);
-        std::set<std::string> print_different_keys_set(print_different_keys_vector.begin(), print_different_keys_vector.end());
-        //if (!has_different_settings_to_system) {
-        //    print_different_keys_set.clear();
-        //}
-        //else
-            print_different_keys_set.insert(ignore_settings_list.begin(), ignore_settings_list.end());
-        if (!print_compatible_printers.empty()) {
-            ConfigOptionStrings* compatible_printers = config.option<ConfigOptionStrings>("compatible_printers", true);
-            compatible_printers->values = print_compatible_printers;
+        if (load_project_presets) {
+            //BBS: add different settings logic
+            BOOST_LOG_TRIVIAL(debug) << __FUNCTION__ << boost::format(": load print preset from print_settings_id");
+            std::vector<std::string> print_different_keys_vector;
+            std::string print_different_settings = different_values[0];
+            Slic3r::unescape_strings_cstyle(print_different_settings, print_different_keys_vector);
+            std::set<std::string> print_different_keys_set(print_different_keys_vector.begin(), print_different_keys_vector.end());
+            //if (!has_different_settings_to_system) {
+            //    print_different_keys_set.clear();
+            //}
+            //else
+                print_different_keys_set.insert(ignore_settings_list.begin(), ignore_settings_list.end());
+            if (!print_compatible_printers.empty()) {
+                ConfigOptionStrings* compatible_printers = config.option<ConfigOptionStrings>("compatible_printers", true);
+                compatible_printers->values = print_compatible_printers;
+            }
+
+            load_preset(this->prints, 0, "print_settings_id", print_different_keys_set, std::string());
+
+            //clear compatible printers
+            clear_compatible_printers(config);
+
+            std::vector<std::string> printer_different_keys_vector;
+            std::string printer_different_settings = different_values[num_filaments + 1];
+            Slic3r::unescape_strings_cstyle(printer_different_settings, printer_different_keys_vector);
+            std::set<std::string> printer_different_keys_set(printer_different_keys_vector.begin(), printer_different_keys_vector.end());
+            //if (!has_different_settings_to_system) {
+            //    printer_different_keys_set.clear();
+            //}
+            //else
+                printer_different_keys_set.insert(ignore_settings_list.begin(), ignore_settings_list.end());
+            //BBS: add config related logs
+            BOOST_LOG_TRIVIAL(debug) << __FUNCTION__ << boost::format(": load printer preset from printer_settings_id");
+            load_preset(this->printers, num_filaments + 1, "printer_settings_id", printer_different_keys_set, std::string());
         }
-
-        load_preset(this->prints, 0, "print_settings_id", print_different_keys_set, std::string());
-
-        //clear compatible printers
-        clear_compatible_printers(config);
-
-        std::vector<std::string> printer_different_keys_vector;
-        std::string printer_different_settings = different_values[num_filaments + 1];
-        Slic3r::unescape_strings_cstyle(printer_different_settings, printer_different_keys_vector);
-        std::set<std::string> printer_different_keys_set(printer_different_keys_vector.begin(), printer_different_keys_vector.end());
-        //if (!has_different_settings_to_system) {
-        //    printer_different_keys_set.clear();
-        //}
-        //else
-            printer_different_keys_set.insert(ignore_settings_list.begin(), ignore_settings_list.end());
-        //BBS: add config related logs
-        BOOST_LOG_TRIVIAL(debug) << __FUNCTION__ << boost::format(": load printer preset from printer_settings_id");
-        load_preset(this->printers, num_filaments + 1, "printer_settings_id", printer_different_keys_set, std::string());
 
         // 3) Now load the filaments. If there are multiple filament presets, split them and load them.
         auto old_filament_profile_names = config.option<ConfigOptionStrings>("filament_settings_id", true);
@@ -4791,6 +4801,8 @@ void PresetBundle::load_config_file_config(const std::string &name_or_path, bool
         }
 
         // 4) Load the project config values (the per extruder wipe matrix etc).
+        // Old/unbound imports must not inherit physical roll identities from the previous project.
+        HaMaterialBinding::write(this->project_config, {});
         this->project_config.apply_only(config, s_project_options);
 
         break;
@@ -4807,8 +4819,34 @@ void PresetBundle::load_config_file_config(const std::string &name_or_path, bool
         break;
     }
 
+    if (!load_project_presets)
+        this->project_config.apply(retained_printer_settings);
 	this->update_compatible(PresetSelectCompatibleType::Never);
+    if (!load_project_presets) {
+        // An embedded material for another printer must not trigger the GUI's
+        // arbitrary first-compatible selection. Use a same-type standard when
+        // its project preset cannot be used with the retained printer.
+        for (std::string &filament_name : filament_presets) {
+            const Preset *project_filament = filaments.find_preset(filament_name);
+            if (project_filament && !project_filament->is_compatible) {
+                const std::string material_type = project_filament->config.opt_string("filament_type", 0u);
+                const Preset *standard = HaMaterialSource::resolve_preset(filaments, {}, material_type);
+                if (!standard)
+                    throw Slic3r::RuntimeError("No compatible Generic preset for project material " + material_type);
+                filament_name = standard->name;
+            }
+        }
+        if (!filament_presets.empty() && filaments.get_selected_preset_name() != filament_presets.front())
+            filaments.select_preset_by_name(filament_presets.front(), true);
+    }
     this->update_multi_material_filament_presets();
+
+    if (!load_project_presets) {
+        BOOST_LOG_TRIVIAL(info) << __FUNCTION__
+                                << ": kept active printer and process while importing project filaments from "
+                                << name_or_path;
+        return;
+    }
 
     //BBS
     //const std::string &physical_printer = config.option<ConfigOptionString>("physical_printer_settings_id", true)->value;
@@ -5494,6 +5532,7 @@ void PresetBundle::update_multi_material_filament_presets(size_t to_delete_filam
                                                                                       this->filament_presets.back());
         num_filaments = this->filament_presets.size();
     }
+    HaMaterialBinding::resize(project_config, num_filaments);
     if (to_delete_filament_id == -1)
         to_delete_filament_id = num_filaments;
 

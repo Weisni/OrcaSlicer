@@ -1,3 +1,4 @@
+#include "HaMaterialPrint.hpp"
 #include "SelectMachine.hpp"
 #include "I18N.hpp"
 
@@ -1129,6 +1130,21 @@ bool SelectMachineDialog::do_ams_mapping(MachineObject *obj_,bool use_ams)
         m_filaments_map = wxGetApp().plater()->get_partplate_list().get_curr_plate()->get_real_filament_maps(project_config);
     }
 
+    if (HaMaterialProvider::enabled()) {
+        try {
+            const auto &config = m_print_type == FROM_NORMAL ? full_config : m_required_data_config;
+            const auto ticket = HaMaterialPrint::preview(config,m_filaments,obj_,false);
+            HaMaterialPrint::apply_mapping(*ticket,m_filaments,m_ams_mapping_result);
+            sync_ams_mapping_result(m_ams_mapping_result);
+            return true;
+        } catch (const std::exception &error) {
+            m_ams_mapping_result = m_filaments;
+            for (auto &item : m_ams_mapping_result) item.tray_id = -1;
+            sync_ams_mapping_result(m_ams_mapping_result);
+            BOOST_LOG_TRIVIAL(warning) << "HA printer mapping unavailable: " << error.what();
+            return false;
+        }
+    }
     int filament_result = 0;
     std::vector<bool> map_opt;  //four values: use_left_ams, use_right_ams, use_left_ext, use_right_ext
     if (nozzle_nums > 1){
@@ -2658,6 +2674,11 @@ void SelectMachineDialog::show_errors(wxString &info)
 
 void SelectMachineDialog::on_ok_btn(wxCommandEvent &event)
 {
+    if (wxGetApp().app_config->get_bool("ha_material_demo_enabled")) {
+        wxMessageBox("Printer dispatch is disabled in HA material demo mode. Use the demo job journal.",
+                     "HA material demo", wxOK | wxICON_INFORMATION, this);
+        return;
+    }
     bool has_slice_warnings = false;
     bool is_printing_block  = false;
 
@@ -2666,6 +2687,17 @@ void SelectMachineDialog::on_ok_btn(wxCommandEvent &event)
     MachineObject* obj_ = dev->get_selected_machine();
     if (!obj_) return;
 
+    if (HaMaterialProvider::enabled()) {
+        try {
+            const auto config = m_print_type == FROM_NORMAL ? wxGetApp().preset_bundle->full_config() : m_required_data_config;
+            const auto ticket = HaMaterialPrint::preview(config,m_filaments,obj_,true);
+            HaMaterialPrint::apply_mapping(*ticket,m_filaments,m_ams_mapping_result);
+            sync_ams_mapping_result(m_ams_mapping_result);
+        } catch (const std::exception &error) {
+            wxMessageBox(from_u8(error.what()),"Home Assistant material source",wxOK | wxICON_ERROR,this);
+            return;
+        }
+    }
     std::vector<ConfirmBeforeSendInfo> confirm_text;
 
     // check more than one using in same external spool
@@ -3519,6 +3551,7 @@ void SelectMachineDialog::on_send_print()
     }
     assert(obj_->get_dev_id() == m_printer_last_select);
 
+    std::shared_ptr<HaMaterialPrint::Ticket> ha_ticket;
     if (m_inventory_job_id.empty()) {
         try {
             std::vector<FilamentInfo> sliced_usages;
@@ -3528,8 +3561,14 @@ void SelectMachineDialog::on_send_print()
             const GCodeProcessorResult *gcode_result = nullptr;
             double estimated_runtime_seconds = 0.0;
 
-            const bool inventory_all_plates = m_print_plate_idx == PLATE_ALL_IDX;
-            const int inventory_plate_idx = inventory_all_plates ?
+            const bool archive_all_plates = m_print_plate_idx == PLATE_ALL_IDX;
+            // PrintJob starts the current plate even when its archive contains
+            // all plates. HA reserves only that physical dispatch, never the
+            // unused plates uploaded alongside it.
+            const bool provider_inventory = HaMaterialProvider::enabled();
+            const bool inventory_all_plates = archive_all_plates && !provider_inventory;
+            const int inventory_plate_idx = (archive_all_plates ||
+                (provider_inventory && m_print_plate_idx == PLATE_CURRENT_IDX)) ?
                 m_plater->get_partplate_list().get_curr_plate_index() :
                 m_print_plate_idx;
             const auto merge_sliced_usages =
@@ -3718,7 +3757,27 @@ void SelectMachineDialog::on_send_print()
                 context.usages.emplace_back(std::move(usage));
             }
 
-            if (context.usages.empty()) {
+            if (HaMaterialProvider::enabled()) {
+                if (usage_config == nullptr || context.usages.empty())
+                    throw std::runtime_error("Slice this project with HA roll bindings before printing");
+                std::vector<HaMaterialBinding::Usage> uses;
+                size_t count = 0;
+                for (const auto &usage : context.usages) {
+                    if (usage.filament_index < 0) throw std::runtime_error("Invalid sliced material index");
+                    count = std::max(count,size_t(usage.filament_index) + 1);
+                    uses.push_back({size_t(usage.filament_index),usage.material_type,usage.estimated_weight_mg});
+                }
+                ha_ticket = HaMaterialPrint::prepare(*usage_config,count,uses,obj_);
+                HaMaterialPrint::apply_mapping(*ha_ticket,m_filaments,m_ams_mapping_result);
+                std::vector<FilamentInventory::AllocationInput> allocations;
+                for (const auto &row : ha_ticket->expected)
+                    allocations.push_back({row.spool_uuid,int(row.project_index),row.estimated_mg});
+                FilamentInventory::PrintJobInput input {
+                    HaInventoryAuthority::key(),context.job_name,context.project_path,context.printer_id
+                };
+                input.estimated_runtime_seconds = context.estimated_runtime_seconds;
+                m_inventory_job_id = wxGetApp().filament_inventory().store().reserve_job(input,allocations).id;
+            } else if (context.usages.empty()) {
                 if (wxMessageBox(
                         _L("QuackSlicer could not determine per-filament usage for this file. Continue printing without inventory tracking?"),
                         _L("Filament inventory"), wxYES_NO | wxNO_DEFAULT | wxICON_WARNING,
@@ -3740,6 +3799,10 @@ void SelectMachineDialog::on_send_print()
                 }
             }
         } catch (const std::exception &error) {
+            if (HaMaterialProvider::enabled()) {
+                wxMessageBox(from_u8(error.what()),"Home Assistant material source",wxOK | wxICON_ERROR,this);
+                return;
+            }
             if (wxMessageBox(
                     wxString::Format(
                         _L("Filament inventory could not be prepared:\n%s\n\nContinue without inventory tracking?"),
@@ -3836,6 +3899,7 @@ void SelectMachineDialog::on_send_print()
     }
 
     m_print_job = std::make_shared<PrintJob>(m_printer_last_select);
+    m_print_job->m_ha_ticket = ha_ticket;
     m_print_job->m_inventory_bambu_baseline = {
         obj_->print_status,
         obj_->job_id_

@@ -1,6 +1,7 @@
 #include "FilamentInventory.hpp"
 
 #include <sqlite3.h>
+#include "nlohmann/json.hpp"
 
 #include <algorithm>
 #include <array>
@@ -546,10 +547,18 @@ private:
     sqlite3_stmt *m_statement {nullptr};
 };
 
+nlohmann::json export_demo_unlocked(sqlite3 *db);
+
 class Transaction
 {
 public:
-    explicit Transaction(sqlite3 *db) : m_db(db) { exec_sql(m_db, "BEGIN IMMEDIATE"); }
+    explicit Transaction(sqlite3 *db, Store::AuthorityHandler authority = {}, std::function<void()> committed = {})
+        : m_db(db), m_authority(std::move(authority)), m_committed(std::move(committed))
+    {
+        exec_sql(m_db, "BEGIN IMMEDIATE");
+        try { if (m_authority) m_before = export_demo_unlocked(m_db).dump(); }
+        catch (...) { sqlite3_exec(m_db, "ROLLBACK", nullptr, nullptr, nullptr); throw; }
+    }
 
     ~Transaction()
     {
@@ -559,13 +568,22 @@ public:
 
     void commit()
     {
+        bool published = false;
+        if (m_authority) {
+            const auto after = export_demo_unlocked(m_db).dump();
+            if (after != m_before) { m_authority(m_before, after); published = true; }
+        }
         exec_sql(m_db, "COMMIT");
         m_active = false;
+        if (published && m_committed) m_committed();
     }
 
 private:
     sqlite3 *m_db {nullptr};
     bool     m_active {true};
+    Store::AuthorityHandler m_authority;
+    std::function<void()> m_committed;
+    std::string m_before;
 };
 
 struct StockEventRecord {
@@ -1536,12 +1554,21 @@ struct Store::Impl
 
     sqlite3           *db {nullptr};
     mutable std::mutex mutex;
+    Store::AuthorityHandler authority;
+    std::function<void()> authority_committed;
 };
 
 Store::Store(const std::string &database_path) : m_impl(std::make_unique<Impl>(database_path)) {}
 Store::~Store() = default;
 Store::Store(Store &&) noexcept = default;
 Store &Store::operator=(Store &&) noexcept = default;
+
+void Store::set_authority_handler(AuthorityHandler handler, std::function<void()> committed)
+{
+    std::lock_guard<std::mutex> lock(m_impl->mutex);
+    m_impl->authority = std::move(handler);
+    m_impl->authority_committed = std::move(committed);
+}
 
 int Store::current_schema_version() const
 {
@@ -1559,6 +1586,7 @@ InventorySettings Store::update_settings(const InventorySettings &settings)
 {
     validate_settings(settings);
     std::lock_guard<std::mutex> lock(m_impl->mutex);
+    Transaction transaction(m_impl->db, m_impl->authority, m_impl->authority_committed);
     Statement statement(m_impl->db, R"SQL(
         UPDATE inventory_settings
         SET currency = ?, electricity_price_per_kwh_micros = ?,
@@ -1576,6 +1604,7 @@ InventorySettings Store::update_settings(const InventorySettings &settings)
     statement.bind(6, settings.repair_reserve_per_hour_micros);
     statement.bind(7, settings.design_per_hour_micros);
     statement.execute();
+    transaction.commit();
     return m_impl->get_settings_unlocked();
 }
 
@@ -1583,7 +1612,7 @@ std::size_t Store::recalculate_customer_order_costs(
     const std::vector<std::string> &order_ids)
 {
     std::lock_guard<std::mutex> lock(m_impl->mutex);
-    Transaction transaction(m_impl->db);
+    Transaction transaction(m_impl->db, m_impl->authority, m_impl->authority_committed);
     const InventorySettings settings = m_impl->get_settings_unlocked();
     const std::set<std::string> unique_order_ids(order_ids.begin(), order_ids.end());
     std::size_t updated_jobs = 0;
@@ -1684,7 +1713,7 @@ Spool Store::create_spool(const SpoolInput &input,
     }
 
     std::lock_guard<std::mutex> lock(m_impl->mutex);
-    Transaction transaction(m_impl->db);
+    Transaction transaction(m_impl->db, m_impl->authority, m_impl->authority_committed);
     Statement statement(m_impl->db, R"SQL(
         INSERT INTO spools (
             id, manufacturer, material_type, name, filament_preset_id, color_hex,
@@ -1735,7 +1764,7 @@ Spool Store::update_spool(const std::string &spool_id, const SpoolInput &input,
         normalize_currency(input.price_currency);
 
     std::lock_guard<std::mutex> lock(m_impl->mutex);
-    Transaction transaction(m_impl->db);
+    Transaction transaction(m_impl->db, m_impl->authority, m_impl->authority_committed);
     const Spool existing = m_impl->get_spool_unlocked(spool_id);
     const std::string normalized_key = trim_copy(weight_operation_key);
     validate_operation_key(normalized_key);
@@ -1824,7 +1853,7 @@ Spool Store::update_spool(const std::string &spool_id, const SpoolInput &input,
 void Store::archive_spool(const std::string &spool_id)
 {
     std::lock_guard<std::mutex> lock(m_impl->mutex);
-    Transaction transaction(m_impl->db);
+    Transaction transaction(m_impl->db, m_impl->authority, m_impl->authority_committed);
     (void) m_impl->get_spool_unlocked(spool_id);
     if (m_impl->active_reservations(spool_id) != 0)
         throw Error(ErrorCode::conflict, "A spool with active print reservations cannot be archived");
@@ -1921,7 +1950,7 @@ void Store::bind_identifier(const std::string &spool_id, IdentifierKind kind, co
 {
     const std::string normalized = normalize_identifier(kind, value);
     std::lock_guard<std::mutex> lock(m_impl->mutex);
-    Transaction transaction(m_impl->db);
+    Transaction transaction(m_impl->db, m_impl->authority, m_impl->authority_committed);
     (void) m_impl->get_spool_unlocked(spool_id);
 
     Statement existing(m_impl->db, "SELECT spool_id FROM spool_identifiers WHERE kind = ? AND value = ?");
@@ -1946,10 +1975,12 @@ void Store::unbind_identifier(IdentifierKind kind, const std::string &value)
 {
     const std::string normalized = normalize_identifier(kind, value);
     std::lock_guard<std::mutex> lock(m_impl->mutex);
+    Transaction transaction(m_impl->db, m_impl->authority, m_impl->authority_committed);
     Statement statement(m_impl->db, "DELETE FROM spool_identifiers WHERE kind = ? AND value = ?");
     statement.bind(1, to_string(kind));
     statement.bind(2, normalized);
     statement.execute();
+    transaction.commit();
 }
 
 void Store::replace_physical_identifiers(
@@ -1966,7 +1997,7 @@ void Store::replace_physical_identifiers(
     }
 
     std::lock_guard<std::mutex> lock(m_impl->mutex);
-    Transaction transaction(m_impl->db);
+    Transaction transaction(m_impl->db, m_impl->authority, m_impl->authority_committed);
     (void) m_impl->get_spool_unlocked(spool_id);
 
     for (const auto &[kind, value] : normalized_identifiers) {
@@ -2006,7 +2037,7 @@ void Store::set_remaining(const std::string &spool_id, Milligrams remaining_mg,
     validate_operation_key(normalized_key);
 
     std::lock_guard<std::mutex> lock(m_impl->mutex);
-    Transaction transaction(m_impl->db);
+    Transaction transaction(m_impl->db, m_impl->authority, m_impl->authority_committed);
     if (const auto existing = m_impl->stock_event_for_key(normalized_key)) {
         const bool is_manual_event =
             existing->job_id.empty() && existing->allocation_id.empty() &&
@@ -2030,7 +2061,7 @@ void Store::adjust_stock(const std::string &spool_id, Milligrams delta_mg,
     const std::string normalized_key = trim_copy(operation_key);
     validate_operation_key(normalized_key);
     std::lock_guard<std::mutex> lock(m_impl->mutex);
-    Transaction transaction(m_impl->db);
+    Transaction transaction(m_impl->db, m_impl->authority, m_impl->authority_committed);
     m_impl->add_stock_event(spool_id, {}, {}, delta_mg >= 0 ? "refill" : "adjustment",
                             delta_mg, normalized_key, note);
     transaction.commit();
@@ -2087,6 +2118,7 @@ Customer Store::create_customer(const CustomerInput &input)
     validate_customer_input(input);
     const std::string id = make_uuid();
     std::lock_guard<std::mutex> lock(m_impl->mutex);
+    Transaction transaction(m_impl->db, m_impl->authority, m_impl->authority_committed);
     Statement statement(m_impl->db, R"SQL(
         INSERT INTO customers (id, name, contact_name, email, phone, notes)
         VALUES (?, ?, ?, ?, ?, ?)
@@ -2098,6 +2130,7 @@ Customer Store::create_customer(const CustomerInput &input)
     statement.bind(5, trim_copy(input.phone));
     statement.bind(6, input.notes);
     statement.execute();
+    transaction.commit();
     return m_impl->get_customer_unlocked(id);
 }
 
@@ -2105,6 +2138,7 @@ Customer Store::update_customer(const std::string &customer_id, const CustomerIn
 {
     validate_customer_input(input);
     std::lock_guard<std::mutex> lock(m_impl->mutex);
+    Transaction transaction(m_impl->db, m_impl->authority, m_impl->authority_committed);
     (void) m_impl->get_customer_unlocked(customer_id);
     Statement statement(m_impl->db, R"SQL(
         UPDATE customers
@@ -2119,12 +2153,14 @@ Customer Store::update_customer(const std::string &customer_id, const CustomerIn
     statement.bind(5, input.notes);
     statement.bind(6, customer_id);
     statement.execute();
+    transaction.commit();
     return m_impl->get_customer_unlocked(customer_id);
 }
 
 void Store::archive_customer(const std::string &customer_id)
 {
     std::lock_guard<std::mutex> lock(m_impl->mutex);
+    Transaction transaction(m_impl->db, m_impl->authority, m_impl->authority_committed);
     (void) m_impl->get_customer_unlocked(customer_id);
     Statement statement(m_impl->db, R"SQL(
         UPDATE customers
@@ -2133,6 +2169,7 @@ void Store::archive_customer(const std::string &customer_id)
     )SQL");
     statement.bind(1, customer_id);
     statement.execute();
+    transaction.commit();
 }
 
 Customer Store::get_customer(const std::string &customer_id) const
@@ -2166,6 +2203,7 @@ CustomerOrder Store::create_customer_order(const CustomerOrderInput &input)
     const std::string id = make_uuid();
     const std::string currency = normalize_currency(input.currency);
     std::lock_guard<std::mutex> lock(m_impl->mutex);
+    Transaction transaction(m_impl->db, m_impl->authority, m_impl->authority_committed);
     const Customer customer = m_impl->get_customer_unlocked(trim_copy(input.customer_id));
     if (customer.archived)
         throw Error(ErrorCode::conflict, "An archived customer cannot receive a new order");
@@ -2202,6 +2240,7 @@ CustomerOrder Store::create_customer_order(const CustomerOrderInput &input)
     statement.bind(18, input.bill_design ? 1 : 0);
     statement.bind(19, input.bill_other ? 1 : 0);
     statement.execute();
+    transaction.commit();
     return m_impl->get_customer_order_unlocked(id);
 }
 
@@ -2212,7 +2251,7 @@ CustomerOrder Store::update_customer_order(
     const std::string customer_id = trim_copy(input.customer_id);
     const std::string currency    = normalize_currency(input.currency);
     std::lock_guard<std::mutex> lock(m_impl->mutex);
-    Transaction transaction(m_impl->db);
+    Transaction transaction(m_impl->db, m_impl->authority, m_impl->authority_committed);
     const CustomerOrder existing = m_impl->get_customer_order_unlocked(order_id);
     if (existing.archived)
         throw Error(ErrorCode::conflict, "Restore the archived customer order before editing it");
@@ -2275,7 +2314,7 @@ CustomerOrder Store::update_customer_order(
 void Store::delete_customer_order(const std::string &order_id)
 {
     std::lock_guard<std::mutex> lock(m_impl->mutex);
-    Transaction transaction(m_impl->db);
+    Transaction transaction(m_impl->db, m_impl->authority, m_impl->authority_committed);
     if (m_impl->get_customer_order_unlocked(order_id).archived)
         throw Error(ErrorCode::conflict, "Restore the archived customer order before deleting it");
     Statement jobs(m_impl->db, "SELECT 1 FROM print_jobs WHERE customer_order_id = ? LIMIT 1");
@@ -2291,7 +2330,7 @@ void Store::delete_customer_order(const std::string &order_id)
 void Store::archive_customer_order(const std::string &order_id)
 {
     std::lock_guard<std::mutex> lock(m_impl->mutex);
-    Transaction transaction(m_impl->db);
+    Transaction transaction(m_impl->db, m_impl->authority, m_impl->authority_committed);
     const CustomerOrder order = m_impl->get_customer_order_unlocked(order_id);
     if (order.archived) {
         transaction.commit();
@@ -2324,7 +2363,7 @@ void Store::archive_customer_order(const std::string &order_id)
 void Store::restore_customer_order(const std::string &order_id)
 {
     std::lock_guard<std::mutex> lock(m_impl->mutex);
-    Transaction transaction(m_impl->db);
+    Transaction transaction(m_impl->db, m_impl->authority, m_impl->authority_committed);
     if (!m_impl->get_customer_order_unlocked(order_id).archived) {
         transaction.commit();
         return;
@@ -2343,7 +2382,7 @@ void Store::set_customer_order_status(
     const std::string &order_id, CustomerOrderStatus status)
 {
     std::lock_guard<std::mutex> lock(m_impl->mutex);
-    Transaction transaction(m_impl->db);
+    Transaction transaction(m_impl->db, m_impl->authority, m_impl->authority_committed);
     const CustomerOrder order = m_impl->get_customer_order_unlocked(order_id);
     if (order.status == status) {
         transaction.commit();
@@ -2466,7 +2505,7 @@ PrintJob Store::reserve_job(const PrintJobInput &job, const std::vector<Allocati
     }
 
     std::lock_guard<std::mutex> lock(m_impl->mutex);
-    Transaction transaction(m_impl->db);
+    Transaction transaction(m_impl->db, m_impl->authority, m_impl->authority_committed);
     std::optional<PrintJob> existing = m_impl->find_job_by_key(normalized_job_key);
     const std::string existing_id = existing ? existing->id : std::string();
     const InventorySettings settings = m_impl->get_settings_unlocked();
@@ -2702,7 +2741,7 @@ PrintJob Store::update_print_job(
     }
 
     std::lock_guard<std::mutex> lock(m_impl->mutex);
-    Transaction transaction(m_impl->db);
+    Transaction transaction(m_impl->db, m_impl->authority, m_impl->authority_committed);
     const PrintJob existing = m_impl->get_job_unlocked(job_id);
     const bool allocations_changed =
         !Impl::allocations_match(existing.allocations, input.allocations);
@@ -2951,7 +2990,7 @@ void Store::bind_job_identifier(const std::string &job_id, const std::string &pr
         throw Error(ErrorCode::validation, "Print-job identifier fields must not be empty");
 
     std::lock_guard<std::mutex> lock(m_impl->mutex);
-    Transaction transaction(m_impl->db);
+    Transaction transaction(m_impl->db, m_impl->authority, m_impl->authority_committed);
     (void) m_impl->get_job_unlocked(job_id);
     Statement existing(m_impl->db, R"SQL(
         SELECT job_id FROM job_identifiers WHERE provider = ? AND kind = ? AND value = ?
@@ -2995,7 +3034,7 @@ std::optional<PrintJob> Store::find_job(const std::string &provider, const std::
 void Store::mark_printing(const std::string &job_id)
 {
     std::lock_guard<std::mutex> lock(m_impl->mutex);
-    Transaction transaction(m_impl->db);
+    Transaction transaction(m_impl->db, m_impl->authority, m_impl->authority_committed);
     const PrintJob job = m_impl->get_job_unlocked(job_id);
     if (job.state == JobState::printing && !job.started_at.empty()) {
         transaction.commit();
@@ -3025,7 +3064,7 @@ void Store::mark_printing(const std::string &job_id)
 void Store::mark_needs_review(const std::string &job_id)
 {
     std::lock_guard<std::mutex> lock(m_impl->mutex);
-    Transaction transaction(m_impl->db);
+    Transaction transaction(m_impl->db, m_impl->authority, m_impl->authority_committed);
     const PrintJob job = m_impl->get_job_unlocked(job_id);
     if (job.state == JobState::needs_review) {
         transaction.commit();
@@ -3078,7 +3117,7 @@ void Store::commit_job(const std::string &job_id,
     }
 
     std::lock_guard<std::mutex> lock(m_impl->mutex);
-    Transaction transaction(m_impl->db);
+    Transaction transaction(m_impl->db, m_impl->authority, m_impl->authority_committed);
     PrintJob job = m_impl->get_job_unlocked(job_id);
 
     std::set<int> known_indices;
@@ -3168,7 +3207,7 @@ void Store::commit_job(const std::string &job_id,
 void Store::discard_job(const std::string &job_id)
 {
     std::lock_guard<std::mutex> lock(m_impl->mutex);
-    Transaction transaction(m_impl->db);
+    Transaction transaction(m_impl->db, m_impl->authority, m_impl->authority_committed);
     const PrintJob job = m_impl->get_job_unlocked(job_id);
     if (job.state == JobState::discarded) {
         transaction.commit();
@@ -3557,3 +3596,144 @@ CostSummary Store::customer_cost_summary(const std::string &customer_id) const
 }
 
 } // namespace Slic3r::FilamentInventory
+
+namespace Slic3r::FilamentInventory {
+namespace {
+const std::vector<std::string> ha_demo_tables = {"inventory_settings","spools","spool_identifiers","customers","customer_orders","print_jobs","allocations","job_identifiers","stock_events","print_job_manual_overrides"};
+constexpr size_t ha_authority_max_bytes = 64 * 1024 * 1024;
+constexpr size_t ha_authority_max_rows = 250000;
+using SqlHandle = std::unique_ptr<sqlite3_stmt, decltype(&sqlite3_finalize)>;
+SqlHandle demo_query(sqlite3 *db, const std::string &sql) {
+    sqlite3_stmt *raw=nullptr;
+    if (sqlite3_prepare_v2(db,sql.c_str(),-1,&raw,nullptr)!=SQLITE_OK)
+        throw Error(ErrorCode::database,sqlite3_errmsg(db));
+    return SqlHandle(raw,sqlite3_finalize);
+}
+}
+namespace {
+nlohmann::json export_demo_unlocked(sqlite3 *db) {
+    nlohmann::json result={{"schema_version",Store::schema_version},{"tables",nlohmann::json::object()}};
+    for (const auto &table:ha_demo_tables) {
+        auto query=demo_query(db,"SELECT * FROM "+table+" ORDER BY rowid");
+        auto rows=nlohmann::json::array(); int rc;
+        while ((rc=sqlite3_step(query.get()))==SQLITE_ROW) {
+            nlohmann::json row=nlohmann::json::object();
+            for (int i=0;i<sqlite3_column_count(query.get());++i) {
+                const char *name=sqlite3_column_name(query.get(),i);
+                switch(sqlite3_column_type(query.get(),i)) {
+                case SQLITE_NULL: row[name]=nullptr; break;
+                case SQLITE_INTEGER: row[name]=sqlite3_column_int64(query.get(),i); break;
+                case SQLITE_FLOAT: row[name]=sqlite3_column_double(query.get(),i); break;
+                case SQLITE_TEXT: row[name]=reinterpret_cast<const char *>(sqlite3_column_text(query.get(),i)); break;
+                default: throw Error(ErrorCode::validation,"Unsupported demo mirror value");
+                }
+            }
+            rows.push_back(std::move(row));
+        }
+        if (rc!=SQLITE_DONE) throw Error(ErrorCode::database,sqlite3_errmsg(db));
+        result["tables"][table]=std::move(rows);
+    }
+    return result;
+}
+}
+std::string Store::export_ha_demo_bundle() const {
+    std::lock_guard<std::mutex> lock(m_impl->mutex);
+    Transaction transaction(m_impl->db);
+    const auto result=export_demo_unlocked(m_impl->db);
+    transaction.commit(); return result.dump();
+}
+std::string Store::ha_demo_sync_state() const {
+    std::lock_guard<std::mutex> lock(m_impl->mutex);
+    auto exists=demo_query(m_impl->db,"SELECT 1 FROM sqlite_master WHERE type='table' AND name='ha_demo_sync_state'");
+    if(sqlite3_step(exists.get())!=SQLITE_ROW) return "null";
+    auto query=demo_query(m_impl->db,"SELECT payload FROM ha_demo_sync_state WHERE id=1");
+    if(sqlite3_step(query.get())!=SQLITE_ROW) return "null";
+    return reinterpret_cast<const char *>(sqlite3_column_text(query.get(),0));
+}
+void Store::save_ha_demo_sync_state(const std::string &sync_state) {
+    auto state=nlohmann::json::parse(sync_state);
+    if(!state.is_object() || sync_state.size()>1024*1024) throw Error(ErrorCode::validation,"Invalid HA sync acknowledgement");
+    std::lock_guard<std::mutex> lock(m_impl->mutex);
+    Transaction transaction(m_impl->db);
+    exec_sql(m_impl->db,"CREATE TABLE IF NOT EXISTS ha_demo_sync_state(id INTEGER PRIMARY KEY CHECK(id=1),payload TEXT NOT NULL)");
+    auto query=demo_query(m_impl->db,"INSERT OR REPLACE INTO ha_demo_sync_state VALUES (1,?)");
+    sqlite3_bind_text(query.get(),1,sync_state.c_str(),-1,SQLITE_TRANSIENT);
+    if(sqlite3_step(query.get())!=SQLITE_DONE) throw Error(ErrorCode::database,"Cannot persist HA acknowledgement");
+    transaction.commit();
+}
+void Store::import_authoritative_ha_bundle(const std::string &payload, const std::string &sync_state) {
+    import_ha_bundle_impl(payload, sync_state, true);
+}
+void Store::import_ha_demo_bundle(const std::string &payload, const std::string &sync_state) {
+    import_ha_bundle_impl(payload, sync_state, false);
+}
+void Store::import_ha_bundle_impl(const std::string &payload, const std::string &sync_state, bool authoritative) {
+    const size_t maximum_bytes = authoritative ? ha_authority_max_bytes : 1024 * 1024;
+    if(payload.size()>maximum_bytes || sync_state.size()>ha_authority_max_bytes+1024*1024)
+        throw Error(ErrorCode::validation,authoritative?"HA inventory exceeds the supported 64 MiB budget":"Demo mirror exceeds 1 MiB");
+    const auto root=nlohmann::json::parse(payload);
+    if(root.at("schema_version")!=schema_version || root.at("tables").size()!=ha_demo_tables.size())
+        throw Error(ErrorCode::validation,"Demo mirror schema mismatch");
+    std::lock_guard<std::mutex> lock(m_impl->mutex);
+    Transaction transaction(m_impl->db);
+    // Deferred FK checks allow the entire graph to be replaced atomically.
+    auto selected_state=sync_state.empty()?nlohmann::json():nlohmann::json::parse(sync_state);
+    if(authoritative && (!selected_state.is_object() || !selected_state.value("explicit_sync",false)))
+        throw Error(ErrorCode::validation,"An authoritative import requires its reviewed local baseline");
+    if(selected_state.is_object() && selected_state.value("explicit_sync",false)) {
+        if(!selected_state.contains("_expected_local") || selected_state.at("_expected_local")!=export_demo_unlocked(m_impl->db))
+            throw Error(ErrorCode::conflict,"Local inventory changed during HA review; all local edits and job history were retained");
+        selected_state.erase("_expected_local");
+    }
+    exec_sql(m_impl->db,"PRAGMA defer_foreign_keys=ON");
+    for(auto i=ha_demo_tables.rbegin();i!=ha_demo_tables.rend();++i)
+        exec_sql(m_impl->db,("DELETE FROM "+*i).c_str());
+    size_t total_rows = 0;
+    for(const auto &table:ha_demo_tables) {
+        const auto &rows=root.at("tables").at(table);
+        if(!rows.is_array() || rows.size()>(authoritative?ha_authority_max_rows:size_t(2000)))
+            throw Error(ErrorCode::validation,"Invalid HA mirror rows");
+        total_rows += rows.size();
+        if(authoritative && total_rows>ha_authority_max_rows)
+            throw Error(ErrorCode::validation,"HA inventory exceeds the supported row budget");
+        std::set<std::string> columns;
+        auto info=demo_query(m_impl->db,"PRAGMA table_info("+table+")");
+        while(sqlite3_step(info.get())==SQLITE_ROW)
+            columns.emplace(reinterpret_cast<const char *>(sqlite3_column_text(info.get(),1)));
+        for(const auto &row:rows) {
+            if(!row.is_object() || row.empty()) throw Error(ErrorCode::validation,"Invalid demo row");
+            if(authoritative && row.dump().size()>256*1024) throw Error(ErrorCode::validation,"HA inventory row exceeds the supported size");
+            std::string names,parameters;
+            for(auto i=row.begin();i!=row.end();++i) {
+                if(!columns.count(i.key())) throw Error(ErrorCode::validation,"Unknown demo column");
+                if(!names.empty()){names+=",";parameters+=",";}
+                names+=i.key(); parameters+="?";
+            }
+            auto query=demo_query(m_impl->db,"INSERT INTO "+table+" ("+names+") VALUES ("+parameters+")");
+            int index=1;
+            for(auto i=row.begin();i!=row.end();++i,++index) {
+                int rc=SQLITE_MISUSE;
+                if(i->is_null()) rc=sqlite3_bind_null(query.get(),index);
+                else if(i->is_string()) {const auto value=i->get<std::string>();rc=sqlite3_bind_text(query.get(),index,value.c_str(),-1,SQLITE_TRANSIENT);}
+                else if(i->is_number_integer()) rc=sqlite3_bind_int64(query.get(),index,i->get<std::int64_t>());
+                else if(i->is_number_float()) rc=sqlite3_bind_double(query.get(),index,i->get<double>());
+                if(rc!=SQLITE_OK) throw Error(ErrorCode::validation,"Invalid demo column value");
+            }
+            if(sqlite3_step(query.get())!=SQLITE_DONE) throw Error(ErrorCode::validation,sqlite3_errmsg(m_impl->db));
+        }
+    }
+    auto check=demo_query(m_impl->db,"PRAGMA foreign_key_check");
+    if(sqlite3_step(check.get())!=SQLITE_DONE) throw Error(ErrorCode::validation,"Invalid demo graph references");
+    auto stock=demo_query(m_impl->db,"SELECT s.id FROM spools s WHERE COALESCE((SELECT SUM(delta_mg) FROM stock_events e WHERE e.spool_id=s.id),0)<COALESCE((SELECT SUM(a.estimated_weight_mg) FROM allocations a JOIN print_jobs j ON j.id=a.job_id WHERE a.spool_id=s.id AND j.state IN ('reserved','printing','needs_review')),0)");
+    if(sqlite3_step(stock.get())!=SQLITE_DONE) throw Error(ErrorCode::conflict,"Demo reservations exceed stock");
+    if(!sync_state.empty()) {
+        auto state=selected_state;
+        if(!state.value("explicit_sync",false)) state["bundle"]=export_demo_unlocked(m_impl->db);
+        exec_sql(m_impl->db,"CREATE TABLE IF NOT EXISTS ha_demo_sync_state(id INTEGER PRIMARY KEY CHECK(id=1),payload TEXT NOT NULL)");
+        auto query=demo_query(m_impl->db,"INSERT OR REPLACE INTO ha_demo_sync_state VALUES (1,?)");
+        const auto data=state.dump(); sqlite3_bind_text(query.get(),1,data.c_str(),-1,SQLITE_TRANSIENT);
+        if(sqlite3_step(query.get())!=SQLITE_DONE) throw Error(ErrorCode::database,"Cannot persist demo synchronization state");
+    }
+    transaction.commit();
+}
+}

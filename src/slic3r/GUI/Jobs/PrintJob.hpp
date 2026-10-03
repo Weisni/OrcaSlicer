@@ -13,6 +13,7 @@ namespace Slic3r {
 namespace GUI {
 
 class Plater;
+namespace HaMaterialPrint { struct Ticket; }
 
 #define PRINT_JOB_SENDING_TIMEOUT   25
 
@@ -77,6 +78,10 @@ public:
     std::string m_print_type;
     std::string m_dst_path;
     std::string m_inventory_job_id;
+    std::shared_ptr<HaMaterialPrint::Ticket> m_ha_ticket;
+    std::string m_ha_external_job_id;
+    bool m_ha_prepared = false;
+    bool m_ha_outcome_recorded = false;
     InventoryBambuBaseline m_inventory_bambu_baseline;
 
     bool m_is_calibration_task = false;

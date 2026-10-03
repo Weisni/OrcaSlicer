@@ -10,8 +10,10 @@
 
 #include <boost/filesystem.hpp>
 #include <sqlite3.h>
+#include "nlohmann/json.hpp"
 
 #include "libslic3r/FilamentInventory.hpp"
+#include "libslic3r/HaInventorySelection.hpp"
 #include "libslic3r/Format/bbs_3mf.hpp"
 
 namespace fs = boost::filesystem;
@@ -2337,4 +2339,178 @@ TEST_CASE("stock arithmetic rejects values outside the milligram range", "[Filam
         ErrorCode::validation);
     CHECK(inventory.store->get_spool(spool.id).current_weight_mg ==
           std::numeric_limits<Milligrams>::max());
+}
+
+TEST_CASE("HA demo mirror retains generated UUIDs and roundtrips jobs and consumption atomically", "[HaMaterialMirror]")
+{
+    TemporaryInventory source, destination;
+    auto input=spool_input("Elegoo Rapid PETG",1000000);
+    input.material_type="PETG"; input.filament_preset_id="Elegoo Rapid PETG @BBL P2S - HA Demo";
+    const auto spool=source.store->create_spool(input);
+    PrintJobInput job; job.idempotency_key="mirror-job"; job.job_name="Bracket";
+    AllocationInput allocation; allocation.spool_id=spool.id; allocation.filament_index=0; allocation.estimated_weight_mg=20000;
+    const auto print=source.store->reserve_job(job,{allocation}); source.store->commit_job(print.id);
+    const auto payload=source.store->export_ha_demo_bundle();
+    destination.store->import_ha_demo_bundle(payload);
+    REQUIRE(destination.store->get_spool(spool.id).current_weight_mg==980000);
+    REQUIRE(destination.store->get_spool(spool.id).filament_preset_id==input.filament_preset_id);
+    REQUIRE(destination.store->find_spool(IdentifierKind::quack_ndef_uuid,spool.id)->id==spool.id);
+    REQUIRE(destination.store->get_job(print.id).state==JobState::completed);
+    destination.store->import_ha_demo_bundle(payload);
+    REQUIRE(destination.store->get_spool(spool.id).current_weight_mg==980000);
+    auto broken=nlohmann::json::parse(payload);
+    broken["tables"]["spools"][0]["diameter_mm"]=-1;
+    REQUIRE_THROWS(destination.store->import_ha_demo_bundle(broken.dump()));
+    REQUIRE(destination.store->get_spool(spool.id).current_weight_mg==980000);
+}
+
+TEST_CASE("HA mirror commits its synchronization baseline with inventory", "[HaMaterialMirror]")
+{
+    TemporaryInventory source,destination;
+    const auto roll=source.store->create_spool(spool_input("Atomic mirror"));
+    destination.store->import_ha_demo_bundle(source.store->export_ha_demo_bundle(),"{\"endpoint\":\"demo\",\"revision\":12}");
+    Store reopened(destination.path.string());
+    const auto state=nlohmann::json::parse(reopened.ha_demo_sync_state());
+    REQUIRE(state["revision"]==12);
+    REQUIRE(state["bundle"]==nlohmann::json::parse(reopened.export_ha_demo_bundle()));
+    REQUIRE(reopened.get_spool(roll.id).current_weight_mg==1000000);
+    auto broken=nlohmann::json::parse(source.store->export_ha_demo_bundle());
+    broken["tables"]["spools"][0]["diameter_mm"]=-1;
+    REQUIRE_THROWS(reopened.import_ha_demo_bundle(broken.dump(),"{\"revision\":13}"));
+    REQUIRE(nlohmann::json::parse(reopened.ha_demo_sync_state())["revision"]==12);
+}
+
+TEST_CASE("Selected HA downloads preserve native history and unselected UUIDs atomically", "[HaInventorySelection]")
+{
+    using namespace Slic3r::HaInventorySelection;
+    TemporaryInventory inventory;
+    const auto selected=inventory.store->create_spool(spool_input("Selected"));
+    const auto pending=inventory.store->create_spool(spool_input("Pending local edit"));
+    auto local=Json::parse(inventory.store->export_ha_demo_bundle()),remote=local;
+    remote["tables"]["spools"][0]["filament_preset_id"]="Special PLA";
+    remote["tables"]["stock_events"][0]["delta_mg"]=800000;
+    const std::vector<Selection> selections={{selected.id,{"filament_preset_id"},true}};
+    auto merged=download_bundle(local,remote,selections,"selected-import","2026-10-02T12:00:00Z");
+    auto state=acknowledge(Json::object(),merged,selections);
+    auto request_state=state; request_state["_expected_local"]=local;
+    inventory.store->import_ha_demo_bundle(merged.dump(),request_state.dump());
+    CHECK(inventory.store->get_spool(selected.id).filament_preset_id=="Special PLA");
+    CHECK(inventory.store->get_spool(selected.id).current_weight_mg==800000);
+    CHECK(inventory.store->get_spool(pending.id).name=="Pending local edit");
+    CHECK(inventory.store->get_spool(pending.id).current_weight_mg==1000000);
+    CHECK(inventory.store->find_spool(IdentifierKind::quack_ndef_uuid,pending.id)->id==pending.id);
+    auto actual=Json::parse(inventory.store->export_ha_demo_bundle());
+    CHECK(actual["tables"]["stock_events"].size()==3);
+    CHECK(actual["tables"]["stock_events"][0]==local["tables"]["stock_events"][0]);
+    CHECK(Json::parse(inventory.store->ha_demo_sync_state())==state);
+    merged["tables"]["spools"][0]["diameter_mm"]=-1;
+    request_state["_expected_local"]=actual;
+    request_state["revision"]=99;
+    CHECK_THROWS(inventory.store->import_ha_demo_bundle(merged.dump(),request_state.dump()));
+    CHECK(Json::parse(inventory.store->export_ha_demo_bundle())==actual);
+    CHECK(Json::parse(inventory.store->ha_demo_sync_state())==state);
+    inventory.store->save_ha_demo_sync_state("{\"explicit_sync\":true,\"revision\":100}");
+    CHECK(Json::parse(inventory.store->export_ha_demo_bundle())==actual);
+    inventory.store->adjust_stock(pending.id,-1000,"concurrent-local-update");
+    const auto concurrent=Json::parse(inventory.store->export_ha_demo_bundle());
+    request_state["_expected_local"]=actual;
+    CHECK_THROWS(inventory.store->import_ha_demo_bundle(actual.dump(),request_state.dump()));
+    CHECK(Json::parse(inventory.store->export_ha_demo_bundle())==concurrent);
+    CHECK(inventory.store->get_spool(pending.id).current_weight_mg==999000);
+}
+
+TEST_CASE("Authority rejection rolls native inventory transactions back before visibility", "[FilamentInventory][HaInventoryAuthority]")
+{
+    TemporaryInventory inventory;
+    const auto before = inventory.store->export_ha_demo_bundle();
+    bool called = false;
+    inventory.store->set_authority_handler([&](const std::string &old, const std::string &proposed) {
+        called = true;
+        CHECK(old == before);
+        CHECK(nlohmann::json::parse(proposed)["tables"]["spools"].size() == 1);
+        throw std::runtime_error("HA rejected the operation");
+    });
+    CHECK_THROWS(inventory.store->create_spool(spool_input("Central roll")));
+    CHECK(called);
+    CHECK(inventory.store->export_ha_demo_bundle() == before);
+}
+
+TEST_CASE("Authority gates simple record and settings writes as well as stock", "[FilamentInventory][HaInventoryAuthority]")
+{
+    TemporaryInventory inventory;
+    const auto roll = inventory.store->create_spool(spool_input("Existing"));
+    const auto customer = inventory.store->create_customer(customer_input("Existing customer"));
+    const auto before = inventory.store->export_ha_demo_bundle();
+    inventory.store->set_authority_handler([](const std::string &, const std::string &) { throw std::runtime_error("Unavailable authority"); });
+    CHECK_THROWS(inventory.store->set_remaining(roll.id, 500000, "remote-stock"));
+    CHECK_THROWS(inventory.store->create_customer(customer_input("New customer")));
+    CHECK_THROWS(inventory.store->update_customer(customer.id, customer_input("Edited customer")));
+    CHECK_THROWS(inventory.store->archive_customer(customer.id));
+    auto settings = inventory.store->get_settings();
+    settings.electricity_price_per_kwh_micros += 1;
+    CHECK_THROWS(inventory.store->update_settings(settings));
+    CHECK(inventory.store->export_ha_demo_bundle() == before);
+}
+
+TEST_CASE("Authority acknowledgement precedes local commit and cache import bypasses publication", "[FilamentInventory][HaInventoryAuthority]")
+{
+    TemporaryInventory inventory;
+    int prepared = 0, committed = 0;
+    inventory.store->set_authority_handler([&](const std::string &, const std::string &) {
+        ++prepared; CHECK(committed == 0);
+    }, [&] { ++committed; });
+    const auto roll = inventory.store->create_spool(spool_input("Accepted"));
+    CHECK(prepared == 1);
+    CHECK(committed == 1);
+    const auto snapshot = inventory.store->export_ha_demo_bundle();
+    inventory.store->set_authority_handler([](const std::string &, const std::string &) { throw std::runtime_error("Must not publish imports"); });
+    CHECK_NOTHROW(inventory.store->import_ha_demo_bundle(snapshot));
+    CHECK_NOTHROW(inventory.store->save_ha_demo_sync_state("{\"revision\":1}"));
+    CHECK(inventory.store->get_spool(roll.id).current_weight_mg == 1000000);
+}
+
+TEST_CASE("Authority failure during job settlement retains reservation and original stock", "[FilamentInventory][HaInventoryAuthority]")
+{
+    TemporaryInventory inventory;
+    const auto roll = inventory.store->create_spool(spool_input("Tracked"));
+    const auto job = inventory.store->reserve_job(job_input("central-job"), {{roll.id, 0, 5000}});
+    const auto before = inventory.store->export_ha_demo_bundle();
+    inventory.store->set_authority_handler([](const std::string &, const std::string &) { throw std::runtime_error("Unknown remote result"); });
+    CHECK_THROWS(inventory.store->commit_job(job.id));
+    CHECK(inventory.store->export_ha_demo_bundle() == before);
+    CHECK(inventory.store->get_job(job.id).state == JobState::reserved);
+}
+
+TEST_CASE("Authoritative imports retain large ledgers and roll back incomplete replacements", "[FilamentInventory][HaInventoryAuthority]")
+{
+    TemporaryInventory inventory;
+    const auto roll = inventory.store->create_spool(spool_input("Authoritative roll"));
+    auto baseline = nlohmann::json::parse(inventory.store->export_ha_demo_bundle());
+    auto large = baseline;
+    auto event = baseline["tables"]["stock_events"][0];
+    event["event_type"] = "adjustment";
+    event["delta_mg"] = 0;
+    event["note"] = std::string(600, 'x');
+    for (int i = 0; i < 2200; ++i) {
+        event["id"] = "history-" + std::to_string(i);
+        event["operation_key"] = "history-" + std::to_string(i);
+        large["tables"]["stock_events"].push_back(event);
+    }
+    REQUIRE(large.dump().size() > 1024 * 1024);
+    const auto acknowledgement = [&](const nlohmann::json &expected, int revision) {
+        return nlohmann::json{{"explicit_sync", true}, {"revision", revision}, {"_expected_local", expected}}.dump();
+    };
+    CHECK_THROWS(inventory.store->import_ha_demo_bundle(large.dump()));
+    REQUIRE_NOTHROW(inventory.store->import_authoritative_ha_bundle(large.dump(), acknowledgement(baseline, 17)));
+    const auto imported = nlohmann::json::parse(inventory.store->export_ha_demo_bundle());
+    CHECK(imported == large);
+    CHECK(inventory.store->get_spool(roll.id).current_weight_mg == 1000000);
+    CHECK(nlohmann::json::parse(inventory.store->ha_demo_sync_state())["revision"] == 17);
+    auto broken = large;
+    broken["tables"]["stock_events"].back()["spool_id"] = "missing";
+    CHECK_THROWS(inventory.store->import_authoritative_ha_bundle(broken.dump(), acknowledgement(imported, 18)));
+    CHECK(nlohmann::json::parse(inventory.store->export_ha_demo_bundle()) == imported);
+    CHECK(nlohmann::json::parse(inventory.store->ha_demo_sync_state())["revision"] == 17);
+    CHECK_THROWS(inventory.store->import_authoritative_ha_bundle(baseline.dump(), acknowledgement(baseline, 18)));
+    CHECK(nlohmann::json::parse(inventory.store->export_ha_demo_bundle()) == imported);
 }

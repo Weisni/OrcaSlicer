@@ -214,6 +214,8 @@ public:
     void set_extruder_nozzle_count(int extruder_id, int nozzle_count);
     void enable_nozzle_count_edit(bool enable);
     void update_dynamic_filament_list();
+    void configure_ha_material_demo();
+    bool sync_ha_material_demo(bool report_error = true, const std::string &selected_roll = {}, int selected_index = -1);
 
     PlaterPresetComboBox *  printer_combox();
     ObjectList*             obj_list();

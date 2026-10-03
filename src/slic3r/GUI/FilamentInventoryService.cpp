@@ -119,6 +119,12 @@ FilamentInventory::Store &FilamentInventoryService::store()
     return *m_store;
 }
 
+void FilamentInventoryService::set_authority_refresher(std::function<void()> refresh)
+{
+    std::lock_guard<std::mutex> lock(m_queue_mutex);
+    m_authority_refresher = std::move(refresh);
+}
+
 void FilamentInventoryService::mark_bambu_dispatch_accepted(
     const std::string &inventory_job_id, const std::string &printer_id,
     BambuStatusSnapshot baseline, BambuStatusSnapshot current)
@@ -450,6 +456,7 @@ void FilamentInventoryService::worker_loop()
 {
     while (true) {
         Task task;
+        std::function<void()> refresh_authority;
         {
             std::unique_lock<std::mutex> lock(m_queue_mutex);
             m_queue_condition.wait(lock, [this] { return m_stopping || !m_tasks.empty(); });
@@ -458,11 +465,13 @@ void FilamentInventoryService::worker_loop()
                 return;
             }
             task = std::move(m_tasks.front());
+            refresh_authority = m_authority_refresher;
             m_tasks.pop_front();
             m_task_active = true;
         }
 
         try {
+            if (refresh_authority) refresh_authority();
             task(store());
         } catch (const std::exception &error) {
             BOOST_LOG_TRIVIAL(error)

@@ -58,6 +58,7 @@ private:
 
     void add_spool();
     void edit_spool();
+    void synchronize_ha_inventory(bool profile_only);
     void set_remaining();
     void archive_spool();
     void manage_identifiers();
@@ -104,6 +105,9 @@ private:
     wxDataViewListCtrl *m_order_list {nullptr};
     wxButton           *m_add_button {nullptr};
     wxButton           *m_edit_button {nullptr};
+    wxButton           *m_ha_inventory_button {nullptr};
+    wxButton           *m_ha_profile_button {nullptr};
+    wxStaticText       *m_ha_status {nullptr};
     wxButton           *m_remaining_button {nullptr};
     wxButton           *m_archive_button {nullptr};
     wxButton           *m_identifiers_button {nullptr};
@@ -142,6 +146,7 @@ private:
     wxTimer             m_refresh_timer;
     wxTimer             m_order_search_timer;
     std::uint64_t       m_seen_service_revision {0};
+    std::string         m_ha_sync_error;
 };
 
 } // namespace Slic3r::GUI

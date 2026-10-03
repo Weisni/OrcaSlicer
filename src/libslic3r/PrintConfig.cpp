@@ -2864,6 +2864,10 @@ void PrintConfigDef::init_fff_params()
     def->set_default_value(new ConfigOptionStrings { "" });
 
 
+    // Physical HA roll identity belongs to the project, never to a material preset.
+    def = this->add("ha_material_bindings", coStrings);
+    def->set_default_value(new ConfigOptionStrings{});
+
     def = this->add("filament_multi_colour", coStrings);
     def->set_default_value(new ConfigOptionStrings{""});
 

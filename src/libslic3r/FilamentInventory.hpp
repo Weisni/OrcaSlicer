@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <stdexcept>
@@ -392,12 +393,24 @@ public:
 
     int current_schema_version() const;
 
+    // Called with the native transaction still uncommitted. Throwing rejects
+    // the write and rolls it back. Confirmed cache imports bypass this gateway.
+    using AuthorityHandler = std::function<void(const std::string &, const std::string &)>;
+    void set_authority_handler(AuthorityHandler before_commit, std::function<void()> after_commit = {});
+
     InventorySettings get_settings() const;
     InventorySettings update_settings(const InventorySettings &settings);
     // Replaces the saved runtime-cost snapshots of the selected customer
     // orders with the current global settings. Material usage is unchanged.
     std::size_t recalculate_customer_order_costs(
         const std::vector<std::string> &order_ids);
+
+    // Isolated demo synchronization; full schema-checked transactional mirror.
+    std::string export_ha_demo_bundle() const;
+    void import_ha_demo_bundle(const std::string &payload, const std::string &sync_state = {});
+    void import_authoritative_ha_bundle(const std::string &payload, const std::string &sync_state);
+    std::string ha_demo_sync_state() const;
+    void save_ha_demo_sync_state(const std::string &sync_state);
 
     Spool create_spool(const SpoolInput &input,
                        const std::vector<SpoolIdentifierInput> &identifiers = {});
@@ -471,6 +484,7 @@ public:
         const std::string &order_id) const;
 
 private:
+    void import_ha_bundle_impl(const std::string &payload, const std::string &sync_state, bool authoritative);
     struct Impl;
     std::unique_ptr<Impl> m_impl;
 };

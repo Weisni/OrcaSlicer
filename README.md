@@ -1,4 +1,5 @@
 <div align="center">
+
   <img src="QuackSlicer/QuackSlicer_Wordmark.png" alt="QuackSlicer" width="520">
   <h1>QuackSlicer</h1>
   <p>An independent fork of <a href="https://github.com/OrcaSlicer/OrcaSlicer">OrcaSlicer</a></p>
@@ -72,6 +73,30 @@ Only download binaries from a release page you trust. The two projects have
 separate maintainers and release channels.
 
 ## Development progress and open tasks
+
+### Home Assistant material workflow
+
+The optional Home Assistant material source supplies real roll UUIDs, current
+stock, colors and filament profiles through the existing filament dropdown.
+Mounted rolls appear by slot; other usable rolls appear under Inventory.
+Local profile overrides retain the physical roll identity. Explicit
+synchronization transfers selected profile/color changes and can import all
+occupied HA slots while preserving existing project material indices.
+
+HA remains the writable inventory authority. Changes use row/field conflict
+checks, durable retry receipts, and paged snapshots; interrupted reads preserve
+the previous cache. Printing retains the native printer connection and checks
+the selected rolls and their live slot mapping before dispatch.
+
+See [setup, compatibility and recovery](docs/HOME_ASSISTANT_MATERIALS.md) and the
+[Home Assistant component](tools/ha-material-demo/README.md).
+
+- [x] Implement UUID-bound selection, explicit complete-profile synchronization,
+  and HA-backed inventory/job bookkeeping.
+- [x] Add regressions for large history imports, conflicts, retry receipts,
+  profile compatibility and printer mapping.
+- [ ] Complete cross-platform CI and verify the release assets for this revision.
+- [ ] Complete physical iPhone NFC writing, cold-start scans and two-phone testing.
 
 ### QuackSlicer 2.5.18
 

@@ -32,6 +32,7 @@ public:
     FilamentInventoryService &operator=(const FilamentInventoryService &) = delete;
 
     FilamentInventory::Store &store();
+    void set_authority_refresher(std::function<void()> refresh);
     std::uint64_t revision() const noexcept
     {
         return m_revision.load(std::memory_order_acquire);
@@ -63,6 +64,7 @@ private:
     std::condition_variable m_queue_condition;
     std::condition_variable m_idle_condition;
     std::deque<Task>        m_tasks;
+    std::function<void()>   m_authority_refresher;
     struct PendingBambuJob {
         std::string         inventory_job_id;
         BambuStatusSnapshot baseline;

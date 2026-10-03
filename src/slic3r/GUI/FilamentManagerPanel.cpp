@@ -42,6 +42,9 @@
 #include "CustomerInvoiceDialog.hpp"
 #include "FilamentAllocationDialog.hpp"
 #include "FilamentInventoryService.hpp"
+#include "HaInventoryDemo.hpp"
+#include "HaInventoryExplicit.hpp"
+#include "HaInventoryAuthority.hpp"
 #include "FilamentSpoolEditor.hpp"
 #include "Widgets/Button.hpp"
 #include "Widgets/StateColor.hpp"
@@ -67,7 +70,9 @@ bool parse_number(wxString text, double &value)
 {
     text.Trim(true).Trim(false);
     text.Replace(",", ".");
-    return !text.empty() && text.ToDouble(&value) && std::isfinite(value);
+    wxString normalized = text;
+    normalized.Replace(",", ".");
+    return !normalized.empty() && normalized.ToCDouble(&value) && std::isfinite(value);
 }
 
 bool grams_to_milligrams(double grams, Milligrams &result)
@@ -436,7 +441,26 @@ public:
 
         auto *advanced_box = new wxStaticBoxSizer(wxVERTICAL, this, _L("Advanced"));
         auto *advanced_grid = make_grid();
-        add_text_row(advanced_grid, _L("Filament preset ID"), m_preset_id);
+        add_text_row(advanced_grid, _L("Exact material preset name"), m_preset_id);
+        auto *choose_preset = new wxButton(this, wxID_ANY, "Choose installed material preset");
+        advanced_grid->Add(choose_preset); advanced_grid->AddSpacer(1);
+        choose_preset->Bind(wxEVT_BUTTON, [this](wxCommandEvent &) {
+            wxArrayString choices;
+            for(const auto &preset:wxGetApp().preset_bundle->filaments)
+                if(preset.is_visible && preset.is_compatible &&
+                   preset.config.opt_string("filament_type", 0u) == std::string(m_material->GetValue().ToUTF8().data()))
+                    choices.Add(from_u8(preset.name));
+            if (choices.empty()) {
+                wxMessageBox("No installed compatible profile matches this material type. Enter the material type first, or install its profile.",
+                    "Material profile", wxOK | wxICON_INFORMATION, this);
+                return;
+            }
+            wxSingleChoiceDialog picker(this,"Choose the exact installed filament/material preset", "Material profile", choices);
+            if(picker.ShowModal()==wxID_OK) m_preset_id->SetValue(picker.GetStringSelection());
+        });
+        auto *identity_help = new wxStaticText(this,wxID_ANY,spool ? "Roll UUID: "+from_u8(spool->id) : "Roll UUID: generated automatically on Save. Publish the new roll through Synchronize HA inventory to create its label.");
+        identity_help->Wrap(FromDIP(300));
+        advanced_grid->Add(identity_help,0,wxEXPAND); advanced_grid->AddSpacer(1);
         add_text_row(
             advanced_grid, _L("Material price (EUR/kg)"), m_material_price, "20.00");
         advanced_box->Add(advanced_grid, 1, wxEXPAND | wxALL, FromDIP(10));
@@ -1733,7 +1757,13 @@ FilamentManagerPanel::FilamentManagerPanel(wxWindow *parent, wxWindowID id,
         spool_buttons->Add(button, 0, wxRIGHT, FromDIP(8));
     spool_buttons->Add(m_archive_button, 0, wxRIGHT, FromDIP(8));
     spool_buttons->Add(refresh_spools_button);
+    m_ha_inventory_button = new wxButton(spools_page, wxID_ANY, _L("Synchronize HA inventory"));
+    m_ha_profile_button = new wxButton(spools_page, wxID_ANY, _L("Publish profile association"));
+    spool_buttons->Add(m_ha_inventory_button, 0, wxLEFT, FromDIP(8));
+    spool_buttons->Add(m_ha_profile_button, 0, wxLEFT, FromDIP(8));
     spools_sizer->Add(spool_buttons, 0, wxEXPAND | wxALL, FromDIP(10));
+    m_ha_status = new wxStaticText(spools_page, wxID_ANY, wxEmptyString);
+    spools_sizer->Add(m_ha_status, 0, wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(10));
 
     m_spool_list = new wxDataViewListCtrl(spools_page, wxID_ANY, wxDefaultPosition, wxDefaultSize,
                                           wxDV_ROW_LINES | wxBORDER_NONE);
@@ -2033,6 +2063,8 @@ FilamentManagerPanel::FilamentManagerPanel(wxWindow *parent, wxWindowID id,
     });
     m_copy_nfc_button->Bind(wxEVT_BUTTON, [this](wxCommandEvent &) { copy_nfc_link(); });
     refresh_spools_button->Bind(wxEVT_BUTTON, [this](wxCommandEvent &) { refresh(); });
+    m_ha_inventory_button->Bind(wxEVT_BUTTON, [this](wxCommandEvent &) { synchronize_ha_inventory(false); });
+    m_ha_profile_button->Bind(wxEVT_BUTTON, [this](wxCommandEvent &) { synchronize_ha_inventory(true); });
     refresh_jobs_button->Bind(wxEVT_BUTTON, [this](wxCommandEvent &) { refresh(); });
     refresh_history_button->Bind(wxEVT_BUTTON, [this](wxCommandEvent &) { refresh(); });
     refresh_job_history_button->Bind(wxEVT_BUTTON, [this](wxCommandEvent &) { refresh(); });
@@ -2135,7 +2167,7 @@ FilamentManagerPanel::FilamentManagerPanel(wxWindow *parent, wxWindowID id,
             wxGetApp().filament_inventory().revision() != m_seen_service_revision)
             refresh();
     }, m_refresh_timer.GetId());
-    m_refresh_timer.Start(1'000);
+    m_refresh_timer.Start(5'000);
 
     m_refresh_buttons = {
         refresh_spools_button, refresh_jobs_button, refresh_history_button,
@@ -2153,6 +2185,7 @@ bool FilamentManagerPanel::initialize_store()
     m_store_initialization_attempted = true;
     try {
         m_store = &wxGetApp().filament_inventory().store();
+        HaInventoryAuthority::attach();
         return true;
     } catch (const std::exception &error) {
         m_store_error = error.what();
@@ -2178,6 +2211,7 @@ void FilamentManagerPanel::refresh()
     if (!initialize_store())
         return;
     try {
+        HaInventoryAuthority::refresh_current();
         refresh_spools();
         refresh_jobs();
         refresh_history();
@@ -2584,6 +2618,11 @@ int FilamentManagerPanel::selected_order_row() const
 
 void FilamentManagerPanel::update_button_state()
 {
+    const wxString provider_status = _L("Edits are saved directly in Home Assistant. Rejected edits leave the previous state unchanged.");
+    if (HaInventoryAuthority::enabled())
+        m_ha_status->SetLabel(provider_status);
+    else if (m_ha_status->GetLabel().empty() || m_ha_status->GetLabel() == provider_status)
+        m_ha_status->SetLabel(_L("HA transfers are manual. Local edits remain pending until explicitly published."));
     const bool store_ready = m_store != nullptr;
     const bool spool_selected = selected_spool_row() >= 0 &&
                                 static_cast<size_t>(selected_spool_row()) < m_spools.size();
@@ -2619,6 +2658,8 @@ void FilamentManagerPanel::update_button_state()
         _L("Select an order to view its details and available actions"));
     m_selected_order_label->SetToolTip(m_selected_order_label->GetLabel());
     m_add_button->Enable(store_ready);
+    m_ha_inventory_button->Enable(store_ready && ha_inventory_demo_enabled() && !HaInventoryAuthority::enabled());
+    m_ha_profile_button->Enable(store_ready && ha_inventory_demo_enabled() && !HaInventoryAuthority::enabled() && selected_spool_row() >= 0);
     for (wxWindow *button : m_refresh_buttons)
         button->Enable(store_ready);
     for (wxButton *button : {m_edit_button, m_remaining_button, m_archive_button,
@@ -2715,6 +2756,26 @@ void FilamentManagerPanel::edit_spool()
         } catch (const std::exception &exception) {
             show_error(exception);
         }
+    }
+}
+
+void FilamentManagerPanel::synchronize_ha_inventory(bool profile_only)
+{
+    if (!initialize_store()) return;
+    std::string id;
+    if (profile_only) {
+        const int row = selected_spool_row();
+        if (row < 0 || row >= static_cast<int>(m_spools.size())) return;
+        id = m_spools.at(row).id;
+    }
+    try {
+        const bool applied = synchronize_ha_inventory_explicit(this, *m_store, id);
+        m_ha_status->SetLabel(applied ? _L("Selected HA transfer completed. Other local edits remain pending.") :
+            _L("No data transferred. Local edits remain available for manual review."));
+        refresh();
+    } catch (const std::exception &error) {
+        m_ha_status->SetLabel(_L("HA transfer incomplete. Local edits and any pending request are retained."));
+        show_error(error);
     }
 }
 

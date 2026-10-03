@@ -1,0 +1,51 @@
+title: Filament & Orders
+views:
+  - title: Rolls
+    path: rolls
+    icon: mdi:package-variant
+    panel: true
+    cards:
+      - type: custom:quack-inventory-card
+        view: rolls
+  - title: Scan & Slots
+    path: slots
+    icon: mdi:qrcode-scan
+    panel: true
+    cards:
+      - type: custom:quack-inventory-card
+        view: slots
+  - title: Customers
+    path: customers
+    icon: mdi:account-group
+    panel: true
+    cards:
+      - type: custom:quack-inventory-card
+        view: customers
+  - title: Orders
+    path: orders
+    icon: mdi:clipboard-list
+    panel: true
+    cards:
+      - type: custom:quack-inventory-card
+        view: orders
+  - title: Prints
+    path: prints
+    icon: mdi:printer-3d
+    panel: true
+    cards:
+      - type: custom:quack-inventory-card
+        view: prints
+  - title: Stock history
+    path: history
+    icon: mdi:history
+    panel: true
+    cards:
+      - type: custom:quack-inventory-card
+        view: history
+  - title: Synchronization
+    path: sync
+    icon: mdi:sync
+    panel: true
+    cards:
+      - type: custom:quack-inventory-card
+        view: sync
