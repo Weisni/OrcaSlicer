@@ -175,6 +175,7 @@ void MediaPlayCtrl::SetMachineObject(MachineObject* obj)
     }
     Enable(obj && obj->is_info_ready() && obj->m_push_count > 0);
     if (machine == m_machine) {
+        try_play_after_print();
         if (m_last_state == MEDIASTATE_IDLE && IsEnabled())
             Play();
         else if (m_last_state == MEDIASTATE_LOADING && m_tutk_state == "disable"
@@ -457,6 +458,7 @@ void MediaPlayCtrl::Stop(wxString const &msg, wxString const &msg2)
 void MediaPlayCtrl::TogglePlay()
 {
     BOOST_LOG_TRIVIAL(info) << "MediaPlayCtrl::TogglePlay";
+    m_print_playback.cancel();
     if (m_last_state != MEDIASTATE_IDLE) {
         m_next_retry = wxDateTime();
         Stop();
@@ -589,6 +591,28 @@ void MediaPlayCtrl::jump_to_play()
     if (m_last_state != MEDIASTATE_IDLE)
         return;
     TogglePlay();
+}
+
+void MediaPlayCtrl::request_play_after_print(const std::string& printer_id)
+{
+    m_print_playback.request(printer_id);
+}
+
+void MediaPlayCtrl::try_play_after_print()
+{
+    if (!m_print_playback.consume_if_ready(
+            {m_machine, IsShownOnScreen(), IsEnabled(), m_camera_exists, m_device_busy}))
+        return;
+    if (m_last_state != MEDIASTATE_IDLE)
+        return;
+
+    // Arm the existing player/retry path once. A later manual Stop must keep
+    // the camera stopped, even though printer status continues to refresh.
+    m_failed_retry = 0;
+    m_user_triggered = false;
+    m_last_user_play = wxDateTime::Now();
+    if (!m_next_retry.IsValid())
+        m_next_retry = m_last_user_play;
 }
 
 void MediaPlayCtrl::onStateChanged(wxMediaEvent &event)

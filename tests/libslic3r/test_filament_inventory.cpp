@@ -10,8 +10,10 @@
 
 #include <boost/filesystem.hpp>
 #include <sqlite3.h>
+#include "nlohmann/json.hpp"
 
 #include "libslic3r/FilamentInventory.hpp"
+#include "libslic3r/HaInventorySelection.hpp"
 #include "libslic3r/Format/bbs_3mf.hpp"
 
 namespace fs = boost::filesystem;
@@ -2337,4 +2339,488 @@ TEST_CASE("stock arithmetic rejects values outside the milligram range", "[Filam
         ErrorCode::validation);
     CHECK(inventory.store->get_spool(spool.id).current_weight_mg ==
           std::numeric_limits<Milligrams>::max());
+}
+
+TEST_CASE("HA demo mirror retains generated UUIDs and roundtrips jobs and consumption atomically", "[HaMaterialMirror]")
+{
+    TemporaryInventory source, destination;
+    auto input=spool_input("Elegoo Rapid PETG",1000000);
+    input.material_type="PETG"; input.filament_preset_id="Example PETG @BBL P2S";
+    const auto spool=source.store->create_spool(input);
+    PrintJobInput job; job.idempotency_key="mirror-job"; job.job_name="Bracket";
+    AllocationInput allocation; allocation.spool_id=spool.id; allocation.filament_index=0; allocation.estimated_weight_mg=20000;
+    const auto print=source.store->reserve_job(job,{allocation}); source.store->commit_job(print.id);
+    const auto payload=source.store->export_ha_demo_bundle();
+    destination.store->import_ha_demo_bundle(payload);
+    REQUIRE(destination.store->get_spool(spool.id).current_weight_mg==980000);
+    REQUIRE(destination.store->get_spool(spool.id).filament_preset_id==input.filament_preset_id);
+    REQUIRE(destination.store->find_spool(IdentifierKind::quack_ndef_uuid,spool.id)->id==spool.id);
+    REQUIRE(destination.store->get_job(print.id).state==JobState::completed);
+    destination.store->import_ha_demo_bundle(payload);
+    REQUIRE(destination.store->get_spool(spool.id).current_weight_mg==980000);
+    auto broken=nlohmann::json::parse(payload);
+    broken["tables"]["spools"][0]["diameter_mm"]=-1;
+    REQUIRE_THROWS(destination.store->import_ha_demo_bundle(broken.dump()));
+    REQUIRE(destination.store->get_spool(spool.id).current_weight_mg==980000);
+}
+
+TEST_CASE("HA mirror commits its synchronization baseline with inventory", "[HaMaterialMirror]")
+{
+    TemporaryInventory source,destination;
+    const auto roll=source.store->create_spool(spool_input("Atomic mirror"));
+    destination.store->import_ha_demo_bundle(source.store->export_ha_demo_bundle(),"{\"endpoint\":\"demo\",\"revision\":12}");
+    Store reopened(destination.path.string());
+    const auto state=nlohmann::json::parse(reopened.ha_demo_sync_state());
+    REQUIRE(state["revision"]==12);
+    REQUIRE(state["bundle"]==nlohmann::json::parse(reopened.export_ha_demo_bundle()));
+    REQUIRE(reopened.get_spool(roll.id).current_weight_mg==1000000);
+    auto broken=nlohmann::json::parse(source.store->export_ha_demo_bundle());
+    broken["tables"]["spools"][0]["diameter_mm"]=-1;
+    REQUIRE_THROWS(reopened.import_ha_demo_bundle(broken.dump(),"{\"revision\":13}"));
+    REQUIRE(nlohmann::json::parse(reopened.ha_demo_sync_state())["revision"]==12);
+}
+
+TEST_CASE("Selected HA downloads preserve native history and unselected UUIDs atomically", "[HaInventorySelection]")
+{
+    using namespace Slic3r::HaInventorySelection;
+    TemporaryInventory inventory;
+    const auto selected=inventory.store->create_spool(spool_input("Selected"));
+    const auto pending=inventory.store->create_spool(spool_input("Pending local edit"));
+    auto local=Json::parse(inventory.store->export_ha_demo_bundle()),remote=local;
+    remote["tables"]["spools"][0]["filament_preset_id"]="Special PLA";
+    remote["tables"]["stock_events"][0]["delta_mg"]=800000;
+    const std::vector<Selection> selections={{selected.id,{"filament_preset_id"},true}};
+    auto merged=download_bundle(local,remote,selections,"selected-import","2026-10-02T12:00:00Z");
+    auto state=acknowledge(Json::object(),merged,selections);
+    auto request_state=state; request_state["_expected_local"]=local;
+    inventory.store->import_ha_demo_bundle(merged.dump(),request_state.dump());
+    CHECK(inventory.store->get_spool(selected.id).filament_preset_id=="Special PLA");
+    CHECK(inventory.store->get_spool(selected.id).current_weight_mg==800000);
+    CHECK(inventory.store->get_spool(pending.id).name=="Pending local edit");
+    CHECK(inventory.store->get_spool(pending.id).current_weight_mg==1000000);
+    CHECK(inventory.store->find_spool(IdentifierKind::quack_ndef_uuid,pending.id)->id==pending.id);
+    auto actual=Json::parse(inventory.store->export_ha_demo_bundle());
+    CHECK(actual["tables"]["stock_events"].size()==3);
+    CHECK(actual["tables"]["stock_events"][0]==local["tables"]["stock_events"][0]);
+    CHECK(Json::parse(inventory.store->ha_demo_sync_state())==state);
+    merged["tables"]["spools"][0]["diameter_mm"]=-1;
+    request_state["_expected_local"]=actual;
+    request_state["revision"]=99;
+    CHECK_THROWS(inventory.store->import_ha_demo_bundle(merged.dump(),request_state.dump()));
+    CHECK(Json::parse(inventory.store->export_ha_demo_bundle())==actual);
+    CHECK(Json::parse(inventory.store->ha_demo_sync_state())==state);
+    inventory.store->save_ha_demo_sync_state("{\"explicit_sync\":true,\"revision\":100}");
+    CHECK(Json::parse(inventory.store->export_ha_demo_bundle())==actual);
+    inventory.store->adjust_stock(pending.id,-1000,"concurrent-local-update");
+    const auto concurrent=Json::parse(inventory.store->export_ha_demo_bundle());
+    request_state["_expected_local"]=actual;
+    CHECK_THROWS(inventory.store->import_ha_demo_bundle(actual.dump(),request_state.dump()));
+    CHECK(Json::parse(inventory.store->export_ha_demo_bundle())==concurrent);
+    CHECK(inventory.store->get_spool(pending.id).current_weight_mg==999000);
+}
+
+TEST_CASE("Authority rejection rolls native inventory transactions back before visibility", "[FilamentInventory][HaInventoryAuthority]")
+{
+    TemporaryInventory inventory;
+    const auto before = inventory.store->export_ha_demo_bundle();
+    bool called = false;
+    inventory.store->set_authority_handler([&](const std::string &old, const std::string &proposed) {
+        called = true;
+        CHECK(old == before);
+        CHECK(nlohmann::json::parse(proposed)["tables"]["spools"].size() == 1);
+        throw std::runtime_error("HA rejected the operation");
+    });
+    CHECK_THROWS(inventory.store->create_spool(spool_input("Central roll")));
+    CHECK(called);
+    CHECK(inventory.store->export_ha_demo_bundle() == before);
+}
+
+TEST_CASE("Authority gates simple record and settings writes as well as stock", "[FilamentInventory][HaInventoryAuthority]")
+{
+    TemporaryInventory inventory;
+    const auto roll = inventory.store->create_spool(spool_input("Existing"));
+    const auto customer = inventory.store->create_customer(customer_input("Existing customer"));
+    const auto before = inventory.store->export_ha_demo_bundle();
+    inventory.store->set_authority_handler([](const std::string &, const std::string &) { throw std::runtime_error("Unavailable authority"); });
+    CHECK_THROWS(inventory.store->set_remaining(roll.id, 500000, "remote-stock"));
+    CHECK_THROWS(inventory.store->create_customer(customer_input("New customer")));
+    CHECK_THROWS(inventory.store->update_customer(customer.id, customer_input("Edited customer")));
+    CHECK_THROWS(inventory.store->archive_customer(customer.id));
+    auto settings = inventory.store->get_settings();
+    settings.electricity_price_per_kwh_micros += 1;
+    CHECK_THROWS(inventory.store->update_settings(settings));
+    CHECK(inventory.store->export_ha_demo_bundle() == before);
+}
+
+TEST_CASE("Authority acknowledgement precedes local commit and cache import bypasses publication", "[FilamentInventory][HaInventoryAuthority]")
+{
+    TemporaryInventory inventory;
+    int prepared = 0, committed = 0;
+    inventory.store->set_authority_handler([&](const std::string &, const std::string &) {
+        ++prepared; CHECK(committed == 0);
+    }, [&] { ++committed; });
+    const auto roll = inventory.store->create_spool(spool_input("Accepted"));
+    CHECK(prepared == 1);
+    CHECK(committed == 1);
+    const auto snapshot = inventory.store->export_ha_demo_bundle();
+    inventory.store->set_authority_handler([](const std::string &, const std::string &) { throw std::runtime_error("Must not publish imports"); });
+    CHECK_NOTHROW(inventory.store->import_ha_demo_bundle(snapshot));
+    CHECK_NOTHROW(inventory.store->save_ha_demo_sync_state("{\"revision\":1}"));
+    CHECK(inventory.store->get_spool(roll.id).current_weight_mg == 1000000);
+}
+
+TEST_CASE("Authority failure during job settlement retains reservation and original stock", "[FilamentInventory][HaInventoryAuthority]")
+{
+    TemporaryInventory inventory;
+    const auto roll = inventory.store->create_spool(spool_input("Tracked"));
+    const auto job = inventory.store->reserve_job(job_input("central-job"), {{roll.id, 0, 5000}});
+    const auto before = inventory.store->export_ha_demo_bundle();
+    inventory.store->set_authority_handler([](const std::string &, const std::string &) { throw std::runtime_error("Unknown remote result"); });
+    CHECK_THROWS(inventory.store->commit_job(job.id));
+    CHECK(inventory.store->export_ha_demo_bundle() == before);
+    CHECK(inventory.store->get_job(job.id).state == JobState::reserved);
+}
+
+TEST_CASE("Authoritative imports retain large ledgers and roll back incomplete replacements", "[FilamentInventory][HaInventoryAuthority]")
+{
+    TemporaryInventory inventory;
+    const auto roll = inventory.store->create_spool(spool_input("Authoritative roll"));
+    auto baseline = nlohmann::json::parse(inventory.store->export_ha_demo_bundle());
+    auto large = baseline;
+    auto event = baseline["tables"]["stock_events"][0];
+    event["event_type"] = "adjustment";
+    event["delta_mg"] = 0;
+    event["note"] = std::string(600, 'x');
+    for (int i = 0; i < 2200; ++i) {
+        event["id"] = "history-" + std::to_string(i);
+        event["operation_key"] = "history-" + std::to_string(i);
+        large["tables"]["stock_events"].push_back(event);
+    }
+    REQUIRE(large.dump().size() > 1024 * 1024);
+    const auto acknowledgement = [&](const nlohmann::json &expected, int revision) {
+        return nlohmann::json{{"explicit_sync", true}, {"revision", revision}, {"_expected_local", expected}}.dump();
+    };
+    CHECK_THROWS(inventory.store->import_ha_demo_bundle(large.dump()));
+    REQUIRE_NOTHROW(inventory.store->import_authoritative_ha_bundle(large.dump(), acknowledgement(baseline, 17)));
+    const auto imported = nlohmann::json::parse(inventory.store->export_ha_demo_bundle());
+    CHECK(imported == large);
+    CHECK(inventory.store->get_spool(roll.id).current_weight_mg == 1000000);
+    CHECK(nlohmann::json::parse(inventory.store->ha_demo_sync_state())["revision"] == 17);
+    auto broken = large;
+    broken["tables"]["stock_events"].back()["spool_id"] = "missing";
+    CHECK_THROWS(inventory.store->import_authoritative_ha_bundle(broken.dump(), acknowledgement(imported, 18)));
+    CHECK(nlohmann::json::parse(inventory.store->export_ha_demo_bundle()) == imported);
+    CHECK(nlohmann::json::parse(inventory.store->ha_demo_sync_state())["revision"] == 17);
+    CHECK_THROWS(inventory.store->import_authoritative_ha_bundle(baseline.dump(), acknowledgement(baseline, 18)));
+    CHECK(nlohmann::json::parse(inventory.store->export_ha_demo_bundle()) == imported);
+}
+
+TEST_CASE("Authoritative imports preserve ordered print costs and complete ledger history",
+          "[FilamentInventory][HaInventoryAuthority][Billing][Regression]")
+{
+    using Json = nlohmann::json;
+    TemporaryInventory authority;
+    TemporaryInventory cache;
+    InventorySettings settings = authority.store->get_settings();
+    settings.currency = "EUR";
+    settings.electricity_price_per_kwh_micros = 500'000;
+    settings.default_machine_power_watts = 200;
+    settings.machine_wear_per_hour_micros = 2'000'000;
+    settings.maintenance_per_hour_micros = 500'000;
+    settings.repair_reserve_per_hour_micros = 250'000;
+    settings.design_per_hour_micros = 40'000'000;
+    authority.store->update_settings(settings);
+
+    SpoolInput blue_input = spool_input("Blue PLA");
+    blue_input.filament_preset_id = "Blue PLA profile";
+    blue_input.color_hex = "#1122AA";
+    blue_input.material_price_per_kg_micros = 20'000'000;
+    SpoolInput gold_input = spool_input("Gold PLA");
+    gold_input.filament_preset_id = "Gold PLA profile";
+    gold_input.color_hex = "#DDAA22";
+    gold_input.material_price_per_kg_micros = 30'000'000;
+    const Spool blue = authority.store->create_spool(blue_input);
+    const Spool gold = authority.store->create_spool(gold_input);
+    const Customer customer = authority.store->create_customer(customer_input("Order customer"));
+
+    CustomerOrderInput first_order_input = order_input(customer.id, "Two-print project");
+    first_order_input.quoted_price_micros = 50'000'000;
+    first_order_input.invoice_amount_micros = 35'000'000;
+    first_order_input.design_time_seconds = 1'800;
+    first_order_input.design_hourly_rate_micros = settings.design_per_hour_micros;
+    first_order_input.other_cost_micros = 3'000'000;
+    first_order_input.discount_basis_points = 1'000;
+    first_order_input.bill_electricity = false;
+    first_order_input.bill_maintenance = false;
+    const CustomerOrder first_order = authority.store->create_customer_order(first_order_input);
+    CustomerOrderInput second_order_input = order_input(customer.id, "Separate project");
+    second_order_input.order_number = "Q-2026-002";
+    second_order_input.quoted_price_micros = 6'000'000;
+    second_order_input.invoice_amount_micros = 7'000'000;
+    const CustomerOrder second_order = authority.store->create_customer_order(second_order_input);
+
+    PrintJobInput first_input = job_input("authority:first", "First plate");
+    first_input.customer_order_id = first_order.id;
+    first_input.estimated_runtime_seconds = 3'600;
+    const PrintJob first = authority.store->reserve_job(
+        first_input, {{blue.id, 0, 100'000}, {gold.id, 2, 50'000}});
+    PrintJobInput second_input = job_input("authority:second", "Second plate");
+    second_input.customer_order_id = first_order.id;
+    second_input.estimated_runtime_seconds = 7'200;
+    const PrintJob second = authority.store->reserve_job(second_input, {{blue.id, 1, 200'000}});
+    PrintJobInput separate_input = job_input("authority:separate", "Another order's print");
+    separate_input.customer_order_id = second_order.id;
+    separate_input.estimated_runtime_seconds = 3'600;
+    const PrintJob separate = authority.store->reserve_job(separate_input, {{gold.id, 0, 100'000}});
+    PrintJobInput personal_input = job_input("authority:personal", "Unassigned personal print");
+    personal_input.estimated_runtime_seconds = 36'000;
+    const PrintJob personal = authority.store->reserve_job(personal_input, {{blue.id, 0, 50'000}});
+
+    // Keep an explicit manual-job override and printer correlation in the graph,
+    // as well as multi-material allocations and immutable stock events.
+    auto edited_first = update_input(first);
+    edited_first.job_name = "First plate, reviewed";
+    authority.store->update_print_job(first.id, edited_first);
+    authority.store->bind_job_identifier(first.id, "bambu:printer-1", "task_id", "first-task");
+    authority.store->bind_job_identifier(second.id, "bambu:printer-1", "task_id", "second-task");
+    authority.store->commit_job(first.id, {{0, 80'000}, {2, 40'000}});
+    authority.store->commit_job(second.id, {{1, 180'000}});
+    authority.store->commit_job(separate.id, {{0, 100'000}});
+    authority.store->commit_job(personal.id, {{0, 50'000}});
+    authority.store->adjust_stock(blue.id, -1'000, "authority:weighed-correction", "Measured correction");
+    authority.store->set_customer_order_status(first_order.id, CustomerOrderStatus::active);
+    authority.store->set_customer_order_status(first_order.id, CustomerOrderStatus::completed);
+
+    // A later settings edit must not reprice historical job snapshots on import.
+    settings.electricity_price_per_kwh_micros = 900'000;
+    settings.machine_wear_per_hour_micros = 9'000'000;
+    settings.design_per_hour_micros = 90'000'000;
+    authority.store->update_settings(settings);
+    const Json projected = Json::parse(authority.store->export_ha_demo_bundle());
+    REQUIRE(projected.at("tables").at("print_jobs").size() == 4);
+    REQUIRE(projected.at("tables").at("allocations").size() == 5);
+    REQUIRE(projected.at("tables").at("stock_events").size() == 8);
+    REQUIRE(projected.at("tables").at("print_job_manual_overrides").size() == 1);
+    const auto original_invoice = authority.store->customer_order_invoice_lines(first_order.id);
+
+    // Cache refreshes are reads, never another reservation or settlement write.
+    cache.store->set_authority_handler([](const std::string &, const std::string &) {
+        throw std::runtime_error("An authoritative import must not publish a local transaction");
+    });
+    for (int refresh = 0; refresh < 2; ++refresh) {
+        CAPTURE(refresh);
+        const Json expected_local = Json::parse(cache.store->export_ha_demo_bundle());
+        const Json sync_state = {{"explicit_sync", true}, {"endpoint", "https://ha.example.test/materials"},
+                                 {"revision", 27}, {"_expected_local", expected_local}};
+        REQUIRE_NOTHROW(cache.store->import_authoritative_ha_bundle(projected.dump(), sync_state.dump()));
+
+        // Compare every projected table, including identifiers, manual overrides,
+        // timestamps and all stock history; a repeat cannot add or replace rows.
+        CHECK(Json::parse(cache.store->export_ha_demo_bundle()) == projected);
+        CHECK(cache.store->list_jobs().size() == 4);
+        const auto linked = cache.store->list_customer_order_jobs(first_order.id);
+        REQUIRE(linked.size() == 2);
+        CHECK(std::count_if(linked.begin(), linked.end(), [&](const PrintJob &job) { return job.id == first.id; }) == 1);
+        CHECK(std::count_if(linked.begin(), linked.end(), [&](const PrintJob &job) { return job.id == second.id; }) == 1);
+        const auto separate_jobs = cache.store->list_customer_order_jobs(second_order.id);
+        REQUIRE(separate_jobs.size() == 1);
+        CHECK(separate_jobs.front().id == separate.id);
+        CHECK_FALSE(cache.store->get_job(personal.id).customer_order_id);
+        CHECK(cache.store->get_job(first.id).customer_order_id == first_order.id);
+        CHECK(cache.store->get_job(second.id).customer_order_id == first_order.id);
+        CHECK(cache.store->get_job(first.id).electricity_price_per_kwh_micros == 500'000);
+        CHECK(cache.store->get_job(first.id).machine_wear_per_hour_micros == 2'000'000);
+        CHECK(cache.store->get_settings().electricity_price_per_kwh_micros == 900'000);
+        CHECK(cache.store->get_settings().machine_wear_per_hour_micros == 9'000'000);
+        const auto correlated = cache.store->find_job("bambu:printer-1", "task_id", "first-task");
+        REQUIRE(correlated);
+        CHECK(correlated->id == first.id);
+        CHECK(cache.store->get_spool(blue.id).current_weight_mg == 689'000);
+        CHECK(cache.store->get_spool(gold.id).current_weight_mg == 860'000);
+        CHECK(cache.store->get_spool(blue.id).reserved_weight_mg == 0);
+        CHECK(cache.store->get_spool(gold.id).reserved_weight_mg == 0);
+
+        const CustomerOrder restored_order = cache.store->get_customer_order(first_order.id);
+        CHECK(restored_order.customer_id == customer.id);
+        CHECK(restored_order.status == CustomerOrderStatus::completed);
+        CHECK(restored_order.design_hourly_rate_micros == 40'000'000);
+        CHECK(restored_order.discount_basis_points == 1'000);
+        CHECK_FALSE(restored_order.bill_electricity);
+        CHECK_FALSE(restored_order.bill_maintenance);
+        const CostSummary project_cost = cache.store->customer_order_cost_summary(first_order.id);
+        CHECK(project_cost.estimated_material_cost_micros == 7'500'000);
+        CHECK(project_cost.actual_material_cost_micros == 6'400'000);
+        CHECK(project_cost.material_cost_micros == 6'400'000);
+        CHECK(project_cost.electricity_cost_micros == 300'000);
+        CHECK(project_cost.machine_wear_cost_micros == 6'000'000);
+        CHECK(project_cost.maintenance_cost_micros == 1'500'000);
+        CHECK(project_cost.repair_reserve_cost_micros == 750'000);
+        CHECK(project_cost.design_cost_micros == 20'000'000);
+        CHECK(project_cost.other_cost_micros == 3'000'000);
+        CHECK(project_cost.total_cost_micros == 37'950'000);
+        CHECK(project_cost.billable_subtotal_micros == 36'150'000);
+        CHECK(project_cost.discount_micros == 3'615'000);
+        CHECK(project_cost.calculated_invoice_micros == 32'535'000);
+        CHECK(project_cost.quoted_price_micros == 50'000'000);
+        CHECK(project_cost.invoice_amount_micros == 35'000'000);
+
+        const auto lines = cache.store->customer_order_invoice_lines(first_order.id);
+        REQUIRE(lines.size() == original_invoice.size());
+        MoneyMicros invoice_sum = 0;
+        MoneyMicros material_sum = 0;
+        size_t material_lines = 0;
+        for (size_t i = 0; i < lines.size(); ++i) {
+            CHECK(lines[i].category == original_invoice[i].category);
+            CHECK(lines[i].description == original_invoice[i].description);
+            CHECK(lines[i].detail == original_invoice[i].detail);
+            CHECK(lines[i].color_hex == original_invoice[i].color_hex);
+            CHECK(lines[i].included == original_invoice[i].included);
+            CHECK(lines[i].internal_amount_micros == original_invoice[i].internal_amount_micros);
+            CHECK(lines[i].invoice_amount_micros == original_invoice[i].invoice_amount_micros);
+            invoice_sum += lines[i].invoice_amount_micros;
+            if (lines[i].category == InvoiceCostCategory::material) {
+                ++material_lines;
+                material_sum += lines[i].internal_amount_micros;
+            }
+            if (lines[i].category == InvoiceCostCategory::electricity ||
+                lines[i].category == InvoiceCostCategory::maintenance) {
+                CHECK_FALSE(lines[i].included);
+                CHECK(lines[i].internal_amount_micros > 0);
+                CHECK(lines[i].invoice_amount_micros == 0);
+            }
+        }
+        CHECK(material_lines == 2);
+        CHECK(material_sum == 6'400'000);
+        CHECK(invoice_sum == 32'535'000);
+
+        CHECK(cache.store->customer_order_cost_summary(second_order.id).total_cost_micros == 5'850'000);
+        CHECK(cache.store->job_cost_summary(personal.id).total_cost_micros == 29'500'000);
+        const CostSummary customer_cost = cache.store->customer_cost_summary(customer.id);
+        CHECK(customer_cost.material_cost_micros == 9'400'000);
+        CHECK(customer_cost.total_cost_micros == 43'800'000);
+        CHECK(customer_cost.billable_subtotal_micros == 42'000'000);
+        CHECK(customer_cost.discount_micros == 3'615'000);
+        CHECK(customer_cost.calculated_invoice_micros == 38'385'000);
+        CHECK(customer_cost.quoted_price_micros == 56'000'000);
+        CHECK(customer_cost.invoice_amount_micros == 42'000'000);
+    }
+}
+
+TEST_CASE("Print job edits reject a stale reviewed job before changing order totals",
+          "[FilamentInventory][HaInventoryAuthority][JobEdit][Regression]")
+{
+    const bool lifecycle_change = GENERATE(false, true);
+    TemporaryInventory inventory;
+    const auto spool = inventory.store->create_spool(spool_input("Reviewed roll"));
+    const auto customer = inventory.store->create_customer(customer_input("Reviewed customer"));
+    const auto order = inventory.store->create_customer_order(order_input(customer.id, "Reviewed order"));
+    const auto reserved = inventory.store->reserve_job(job_input("reviewed-job"), {{spool.id, 0, 25'000}});
+    auto reviewed = inventory.store->get_job(reserved.id);
+    if (lifecycle_change) {
+        inventory.store->mark_printing(reserved.id);
+    } else {
+        auto remote_edit = update_input(reviewed);
+        remote_edit.job_name = "Corrected elsewhere";
+        inventory.store->update_print_job(reserved.id, remote_edit);
+    }
+    // Content, not timestamp granularity, identifies the reviewed baseline.
+    reviewed.updated_at = inventory.store->get_job(reserved.id).updated_at;
+    const auto baseline = inventory.store->export_ha_demo_bundle();
+    auto stale_input = update_input(reviewed);
+    stale_input.customer_order_id = order.id;
+    check_error_code([&] { inventory.store->update_print_job(reserved.id, stale_input, &reviewed); },
+                     ErrorCode::conflict);
+    CHECK(inventory.store->export_ha_demo_bundle() == baseline);
+    CHECK_FALSE(inventory.store->get_job(reserved.id).customer_order_id);
+    CHECK(inventory.store->list_customer_order_jobs(order.id).empty());
+}
+
+TEST_CASE("Authoritative historical reassignment moves billing without consuming stock again",
+          "[FilamentInventory][HaInventoryAuthority][JobEdit][Billing][Regression]")
+{
+    using Json = nlohmann::json;
+    TemporaryInventory inventory;
+    auto settings = inventory.store->get_settings();
+    settings.electricity_price_per_kwh_micros = 500'000;
+    settings.default_machine_power_watts = 200;
+    settings.machine_wear_per_hour_micros = 2'000'000;
+    settings.maintenance_per_hour_micros = 500'000;
+    settings.repair_reserve_per_hour_micros = 250'000;
+    inventory.store->update_settings(settings);
+    auto spool_data = spool_input("Historical roll");
+    spool_data.material_price_per_kg_micros = 20'000'000;
+    const auto spool = inventory.store->create_spool(spool_data);
+    const auto customer = inventory.store->create_customer(customer_input("Billing customer"));
+    const auto first_order = inventory.store->create_customer_order(order_input(customer.id, "First order"));
+    const auto second_order = inventory.store->create_customer_order(order_input(customer.id, "Correct order"));
+    auto input = job_input("historical-assignment");
+    input.customer_order_id = first_order.id;
+    input.estimated_runtime_seconds = 7'200;
+    const auto reserved = inventory.store->reserve_job(input, {{spool.id, 0, 100'000}});
+    inventory.store->commit_job(reserved.id, {{0, 80'000}});
+    // HA observed one hour rather than the two-hour slice estimate. Reassigning
+    // the order must preserve these authoritative operational costs verbatim.
+    const auto local = Json::parse(inventory.store->export_ha_demo_bundle());
+    auto observed = local;
+    auto &observed_job = observed.at("tables").at("print_jobs").front();
+    observed_job["actual_runtime_seconds"] = 3'600;
+    observed_job["electricity_cost_micros"] = 100'000;
+    observed_job["machine_wear_cost_micros"] = 2'000'000;
+    observed_job["maintenance_cost_micros"] = 500'000;
+    observed_job["repair_reserve_cost_micros"] = 250'000;
+    inventory.store->import_authoritative_ha_bundle(observed.dump(),
+        Json{{"explicit_sync", true}, {"revision", 15}, {"_expected_local", local}}.dump());
+    auto reviewed = inventory.store->get_job(reserved.id);
+    const auto original = Json::parse(inventory.store->export_ha_demo_bundle());
+    auto correction = update_input(reviewed);
+    correction.customer_order_id = second_order.id;
+
+    inventory.store->set_authority_handler([](const std::string &, const std::string &) {
+        throw std::runtime_error("HA rejected the reassignment");
+    });
+    CHECK_THROWS(inventory.store->update_print_job(reserved.id, correction, &reviewed));
+    CHECK(Json::parse(inventory.store->export_ha_demo_bundle()) == original);
+    CHECK(inventory.store->get_job(reserved.id).customer_order_id == first_order.id);
+    CHECK(inventory.store->customer_order_cost_summary(first_order.id).material_cost_micros == 1'600'000);
+    CHECK(inventory.store->customer_order_cost_summary(second_order.id).material_cost_micros == 0);
+
+    int accepted = 0;
+    inventory.store->set_authority_handler([&](const std::string &before, const std::string &after) {
+        const auto old_graph = Json::parse(before);
+        const auto new_graph = Json::parse(after);
+        CHECK(new_graph.at("tables").at("stock_events") == old_graph.at("tables").at("stock_events"));
+        CHECK(new_graph.at("tables").at("allocations") == old_graph.at("tables").at("allocations"));
+        for (const auto *field : {"actual_runtime_seconds", "electricity_cost_micros",
+                                 "machine_wear_cost_micros", "maintenance_cost_micros",
+                                 "repair_reserve_cost_micros"}) {
+            CAPTURE(field);
+            CHECK(new_graph.at("tables").at("print_jobs").front().at(field) ==
+                  old_graph.at("tables").at("print_jobs").front().at(field));
+        }
+        ++accepted;
+    });
+    REQUIRE_NOTHROW(inventory.store->update_print_job(reserved.id, correction, &reviewed));
+    CHECK(accepted == 1);
+    CHECK(inventory.store->get_job(reserved.id).state == JobState::completed);
+    CHECK(inventory.store->get_job(reserved.id).customer_order_id == second_order.id);
+    CHECK(inventory.store->customer_order_cost_summary(first_order.id).material_cost_micros == 0);
+    CHECK(inventory.store->customer_order_cost_summary(second_order.id).material_cost_micros == 1'600'000);
+    CHECK(inventory.store->customer_cost_summary(customer.id).material_cost_micros == 1'600'000);
+    CHECK(inventory.store->customer_cost_summary(customer.id).total_cost_micros == 4'450'000);
+    CHECK(inventory.store->get_spool(spool.id).current_weight_mg == 920'000);
+    CHECK(inventory.store->get_spool(spool.id).reserved_weight_mg == 0);
+    const auto corrected = Json::parse(inventory.store->export_ha_demo_bundle());
+    CHECK(corrected.at("tables").at("stock_events") == original.at("tables").at("stock_events"));
+    CHECK(corrected.at("tables").at("allocations") == original.at("tables").at("allocations"));
+
+    reviewed = inventory.store->get_job(reserved.id);
+    correction = update_input(reviewed);
+    correction.customer_order_id.reset();
+    REQUIRE_NOTHROW(inventory.store->update_print_job(reserved.id, correction, &reviewed));
+    CHECK(accepted == 2);
+    CHECK_FALSE(inventory.store->get_job(reserved.id).customer_order_id);
+    CHECK(inventory.store->customer_cost_summary(customer.id).material_cost_micros == 0);
+    CHECK(inventory.store->get_spool(spool.id).current_weight_mg == 920'000);
+    CHECK(Json::parse(inventory.store->export_ha_demo_bundle()).at("tables").at("stock_events") ==
+          original.at("tables").at("stock_events"));
 }

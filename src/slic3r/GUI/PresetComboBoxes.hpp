@@ -214,6 +214,8 @@ public:
 private:
     // BBS
     wxColor m_color;
+    std::map<int, std::string> m_ha_roll_items;
+    void add_ha_rolls(const std::string &selected);
 };
 
 

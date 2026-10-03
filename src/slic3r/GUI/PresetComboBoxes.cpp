@@ -44,6 +44,7 @@
 #include "MsgDialog.hpp"
 #include "ParamsDialog.hpp"
 #include "FilamentPickerDialog.hpp"
+#include "HaMaterialProvider.hpp"
 #include "wxExtensions.hpp"
 
 #include "DeviceCore/DevManager.h"
@@ -509,6 +510,7 @@ int PresetComboBox::selected_connected_printer() const
 
 bool PresetComboBox::add_ams_filaments(std::string selected, bool alias_name)
 {
+    if (HaMaterialProvider::enabled()) return false;
     bool selected_in_ams      = false;
     bool is_bbl_vendor_preset = m_preset_bundle->is_bbl_vendor();
     if (is_bbl_vendor_preset && !m_preset_bundle->filament_ams_list.empty()) {
@@ -828,6 +830,14 @@ PlaterPresetComboBox::PlaterPresetComboBox(wxWindow *parent, Preset::Type preset
     PresetComboBox(parent, preset_type, wxSize(25 * wxGetApp().em_unit(), 30 * wxGetApp().em_unit() / 10))
 {
     GetDropDown().SetUseContentWidth(true,true);
+    const auto refresh_ha = [this]() {
+        if (m_type == Preset::TYPE_FILAMENT && HaMaterialProvider::enabled() && !is_drop_down()) {
+            HaMaterialProvider::refresh_if_due();
+            update();
+        }
+    };
+    Bind(wxEVT_LEFT_DOWN, [refresh_ha](wxMouseEvent &event) { refresh_ha(); event.Skip(); });
+    Bind(wxEVT_KEY_DOWN, [refresh_ha](wxKeyEvent &event) { refresh_ha(); event.Skip(); });
 
     if (m_type == Preset::TYPE_FILAMENT)
     {
@@ -957,6 +967,15 @@ static void run_wizard(ConfigWizard::StartPage sp)
 void PlaterPresetComboBox::OnSelect(wxCommandEvent &evt)
 {
     auto selected_item = evt.GetSelection();
+    const auto roll = m_ha_roll_items.find(selected_item);
+    if (m_type == Preset::TYPE_FILAMENT && HaMaterialProvider::enabled() && roll != m_ha_roll_items.end()) {
+        // The UUID is the selection identity, even when names and colors match.
+        const auto uuid = roll->second;
+        evt.StopPropagation();
+        wxGetApp().sidebar().sync_ha_material_demo(true, uuid, m_filament_idx);
+        update();
+        return;
+    }
 
     auto marker = reinterpret_cast<Marker>(this->GetClientData(selected_item));
     if (marker >= LABEL_ITEM_DISABLED && marker < LABEL_ITEM_MAX) {
@@ -1006,7 +1025,8 @@ bool PlaterPresetComboBox::switch_to_tab()
     const Preset* selected_filament_preset = nullptr;
     if (m_type == Preset::TYPE_FILAMENT)
     {
-        const std::string& selected_preset = GetString(GetSelection()).ToUTF8().data();
+        const std::string selected_preset = HaMaterialProvider::enabled() && m_filament_idx >= 0 ?
+            m_preset_bundle->filament_presets.at(m_filament_idx) : std::string(GetString(GetSelection()).ToUTF8().data());
         if (!boost::algorithm::starts_with(selected_preset, Preset::suffix_modified()))
         {
             const std::string& preset_name = wxGetApp().preset_bundle->filaments.get_preset_name_by_alias(selected_preset);
@@ -1124,6 +1144,63 @@ wxString PlaterPresetComboBox::get_preset_name(const Preset& preset)
 
 // Only the compatible presets are shown.
 // If an incompatible preset is selected, it is shown as well.
+void PlaterPresetComboBox::add_ha_rolls(const std::string &selected)
+{
+    if (m_type != Preset::TYPE_FILAMENT || !HaMaterialProvider::enabled()) return;
+    const auto data = HaMaterialProvider::snapshot();
+    set_label_marker(Append(_L("Home Assistant - mounted rolls"), wxNullBitmap, DD_ITEM_STYLE_SPLIT_ITEM));
+    if (data.is_null()) {
+        set_label_marker(Append(_L("Connect or refresh Home Assistant"), wxNullBitmap, DD_ITEM_STYLE_DISABLED), LABEL_ITEM_DISABLED);
+        return;
+    }
+    try {
+        const auto rows = HaMaterialCatalog::available(data);
+        const auto bindings = HaMaterialBinding::read(m_preset_bundle->project_config, m_preset_bundle->filament_presets.size());
+        const auto binding = m_filament_idx >= 0 && size_t(m_filament_idx) < bindings.size() ? bindings[m_filament_idx] : HaMaterialBinding::Binding{};
+        const auto add = [&](const HaMaterialCatalog::Roll &row, bool inventory) {
+            const auto &a = row.assignment;
+            const auto *preset = HaMaterialProvider::resolve(*m_preset_bundle, a);
+            const bool has_remote_profile = !a.material_profile.is_null();
+            const bool selectable = preset || has_remote_profile;
+            const auto profile_name = preset ? preset->name : has_remote_profile ?
+                HaMaterialProfile::managed_name(a.material_profile) : std::string();
+            const wxString slot = a.slot.empty() ? _L("Not mounted") : from_u8(a.slot);
+            const auto roll_name = a.manufacturer.empty() || boost::icontains(a.product, a.manufacturer) ?
+                a.product : a.manufacturer + " " + a.product;
+            const wxString label = (inventory ? wxString() : slot + " - ") + from_u8(roll_name) +
+                " | " + from_u8(a.material_type) + wxString::Format(" | %.1f g", row.remaining_mg / 1000.0) +
+                (inventory ? " | " + slot : wxString()) + " | " + from_u8(a.spool_uuid.substr(0, 8));
+            const auto icon = create_scaled_bitmap("filament_green", this, 24, false, a.color);
+            const int style = selectable ? 0 : DD_ITEM_STYLE_DISABLED;
+            const int index = inventory ? Append(label, icon, _L("Inventory"), nullptr, style) : Append(label, icon, style);
+            if (!selectable) set_label_marker(index, LABEL_ITEM_DISABLED);
+            else {
+                m_ha_roll_items.emplace(index, a.spool_uuid);
+                SetItemAlias(index, from_u8(profile_name));
+                if (!inventory && binding.spool_uuid == a.spool_uuid && binding.source == HaMaterialProvider::endpoint() &&
+                    binding.printer_id == data.at("printer_id") && profile_name == selected)
+                    validate_selection(true);
+            }
+            SetItemTooltip(index, from_u8(a.manufacturer + " / " + a.product + "\n" + a.color + "\n" + a.spool_uuid + "\n") +
+                (preset ? from_u8(profile_name) : has_remote_profile ?
+                    from_u8(profile_name) + "\n" + _L("Download and check compatibility when selected") :
+                    _L("No compatible material profile for this printer/nozzle")));
+        };
+        for (const auto &slot : data.at("slots")) {
+            const auto name = slot.at("id").get<std::string>();
+            const auto row = std::find_if(rows.begin(), rows.end(), [&](const auto &r) { return r.assignment.slot == name; });
+            if (row != rows.end()) add(*row, false);
+            else set_label_marker(Append(from_u8(name) + " - " + _L("Empty"), wxNullBitmap, DD_ITEM_STYLE_DISABLED), LABEL_ITEM_DISABLED);
+        }
+        for (const auto &row : rows) add(row, true);
+        if (!HaMaterialProvider::last_error().empty())
+            set_label_marker(Append(_L("HA unavailable - refresh before selecting"), wxNullBitmap, DD_ITEM_STYLE_DISABLED), LABEL_ITEM_DISABLED);
+    } catch (const std::exception &e) {
+        const auto item = Append(_L("Refresh Home Assistant"), wxNullBitmap, DD_ITEM_STYLE_DISABLED);
+        SetItemTooltip(item, from_u8(e.what())); set_label_marker(item, LABEL_ITEM_DISABLED);
+    }
+}
+
 void PlaterPresetComboBox::update()
 {
     if (m_type == Preset::TYPE_FILAMENT &&
@@ -1134,6 +1211,7 @@ void PlaterPresetComboBox::update()
     // Otherwise fill in the list from scratch.
     this->Freeze();
     this->Clear();
+    m_ha_roll_items.clear();
     invalidate_selection();
 
     const Preset* selected_filament_preset = nullptr;
@@ -1339,6 +1417,7 @@ void PlaterPresetComboBox::update()
         auto     alias_it      = preset_aliases.find(selected_full);
         wxString selected_alias = alias_it != preset_aliases.end() ? from_u8(alias_it->second) : selected_full;
         selected_in_ams = add_ams_filaments(into_u8(selected_alias), true);
+        add_ha_rolls(selected_filament_preset ? selected_filament_preset->name : std::string());
     }
 
     std::vector<wxString> filament_orders = {"Bambu PLA Basic", "Bambu PLA Matte", "Bambu PETG HF",    "Bambu ABS",      "Bambu PLA Silk", "Bambu PLA-CF",
@@ -1505,6 +1584,36 @@ void PlaterPresetComboBox::update()
         }
     }
     Thaw();
+    if (m_type == Preset::TYPE_FILAMENT && HaMaterialProvider::enabled()) {
+        try {
+            const auto bindings = HaMaterialBinding::read(m_preset_bundle->project_config, m_preset_bundle->filament_presets.size());
+            const auto &binding = bindings.at(m_filament_idx);
+            if (!binding.spool_uuid.empty()) {
+                const auto data = HaMaterialProvider::snapshot();
+                if (!data.is_null()) {
+                    const auto rolls = HaMaterialCatalog::available(data);
+                    const auto found = std::find_if(rolls.begin(), rolls.end(), [&](const auto &r) { return r.assignment.spool_uuid == binding.spool_uuid; });
+                    if (found != rolls.end()) {
+                        const auto &roll = found->assignment;
+                        const auto slot = roll.slot.empty() ? _L("Inventory") : from_u8(roll.slot);
+                        // Keep the effective project profile visible, including local
+                        // overrides, instead of replacing it with only the physical roll.
+                        const auto project_profile = from_u8(selected_filament_preset->label(true));
+                        auto compact_profile = project_profile.BeforeFirst('@').Trim();
+                        if (compact_profile.IsEmpty()) compact_profile = project_profile;
+                        SetTextLabel(compact_profile + " | " + slot + " - " + from_u8(roll.product));
+                        tooltip = from_u8(roll.product + "\n" + binding.spool_uuid + "\n") +
+                            _L("Project profile: ") + project_profile +
+                            "\n" + _L("Profile edits stay in this project until explicitly synchronized.");
+                        ShowBadge(!roll.slot.empty());
+                    } else {
+                        tooltip = _L("The selected physical roll is no longer available. Select a roll before printing.");
+                        ShowBadge(false);
+                    }
+                }
+            }
+        } catch (const std::exception &) { ShowBadge(false); }
+    }
 
     if (!tooltip.IsEmpty()) {
 #ifdef __WXMSW__

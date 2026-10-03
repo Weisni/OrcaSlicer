@@ -63,4 +63,8 @@ add_subdirectory(fff_print)
 add_subdirectory(sla_print)
 add_subdirectory(filament_group)
 
+# Test artifacts run on fresh CI hosts whose installed tool paths may differ.
+add_test(NAME windows_version_resource
+    COMMAND cmake -P ${CMAKE_CURRENT_SOURCE_DIR}/test_windows_version_resource.cmake)
+
 

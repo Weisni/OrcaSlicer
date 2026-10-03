@@ -1,0 +1,12 @@
+const fs = require('node:fs');
+const vm = require('node:vm');
+const assert = require('node:assert/strict');
+const {webcrypto} = require('node:crypto');
+const source = fs.readFileSync('demo/custom_components/quack_material_demo/card.js', 'utf8');
+const context = {HTMLElement: class {}, customElements: {get: () => false, define: () => {}}, window: {}, crypto: {getRandomValues: webcrypto.getRandomValues.bind(webcrypto)}};
+vm.createContext(context);
+vm.runInContext(source + '\nthis.makeKey = newRequestKey;', context);
+const keys = new Set(Array.from({length: 100}, () => context.makeKey()));
+assert.equal(keys.size, 100);
+for (const key of keys) assert.match(key, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+console.log('HTTP-context UUID fallback: 100 valid distinct request keys');

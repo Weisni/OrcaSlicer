@@ -9,6 +9,7 @@
 #define MediaPlayCtrl_h
 
 #include "wxMediaCtrl2.h"
+#include "CameraPlaybackRequest.hpp"
 
 #include <wx/panel.h>
 
@@ -44,6 +45,8 @@ public:
 
     void jump_to_play();
 
+    void request_play_after_print(const std::string& printer_id);
+
 protected:
     void onStateChanged(wxMediaEvent & event);
 
@@ -57,6 +60,8 @@ protected:
 
 private:
     void load();
+
+    void try_play_after_print();
 
     void on_show_hide(wxShowEvent & evt);
 
@@ -104,6 +109,7 @@ private:
     std::set<int> m_last_failed_codes;
     wxDateTime    m_last_user_play;
     wxDateTime    m_next_retry;
+    CameraPlaybackRequest m_print_playback;
 
     ::Button *m_button_play;
     ::Label * m_label_stat;

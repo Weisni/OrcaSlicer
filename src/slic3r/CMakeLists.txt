@@ -87,6 +87,7 @@ set(SLIC3R_GUI_SOURCES
     GUI/Camera.hpp
     GUI/CameraPopup.cpp
     GUI/CameraPopup.hpp
+    GUI/CameraPlaybackRequest.hpp
     GUI/CameraUtils.cpp
     GUI/CameraUtils.hpp
     GUI/CloneDialog.cpp

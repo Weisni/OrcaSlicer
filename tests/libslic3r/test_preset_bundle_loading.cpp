@@ -588,7 +588,7 @@ TEST_CASE("Plugin capability override keys are scoped per preset type", "[Preset
         }
 }
 
-TEST_CASE("Keeping the current printer preserves all active project profiles", "[Preset][ProjectPrinter]")
+TEST_CASE("Keeping the current printer preserves printer and process while importing project filaments", "[Preset][ProjectPrinter]")
 {
     PresetBundle bundle;
 
@@ -621,13 +621,12 @@ TEST_CASE("Keeping the current printer preserves all active project profiles", "
 
     CHECK(bundle.printers.get_selected_preset_name() == "Current Printer");
     CHECK(bundle.prints.get_selected_preset_name() == "Current Process");
-    CHECK(bundle.filaments.get_selected_preset_name() == "Current Filament");
-    CHECK(bundle.filament_presets ==
-          std::vector<std::string>{"Current Filament", "Current Filament"});
+    REQUIRE(bundle.filament_presets.size() == 2);
+    CHECK(bundle.filaments.get_selected_preset_name() == bundle.filament_presets.front());
+    CHECK(bundle.filament_presets.front() != "Current Filament");
 
     CHECK(bundle.printers.find_preset("Project Printer") == nullptr);
     CHECK(bundle.prints.find_preset("Project Process") == nullptr);
-    CHECK(bundle.filaments.find_preset("Project Filament") == nullptr);
 
     CHECK(bundle.project_config.option<ConfigOptionStrings>("filament_colour")->values ==
           std::vector<std::string>{"#112233", "#445566"});
@@ -636,5 +635,70 @@ TEST_CASE("Keeping the current printer preserves all active project profiles", "
     CHECK(bundle.project_config.option<ConfigOptionEnumsGeneric>("nozzle_volume_type")->values ==
           std::vector<int>{static_cast<int>(NozzleVolumeType::nvtHighFlow)});
     CHECK(bundle.project_config.opt_enum<BedType>("curr_bed_type") == btPTE);
+}
+
+TEST_CASE("Loading a smaller project replaces the complete active filament list", "[Preset][ProjectPrinter][Regression]")
+{
+    PresetBundle bundle;
+    bundle.filaments.load_preset({}, "Current Filament", bundle.filaments.default_preset().config, true);
+    bundle.filament_presets = {"Current Filament", "Current Filament", "Current Filament", "Current Filament"};
+    bundle.project_config.set_key_value("filament_colour",
+                                      new ConfigOptionStrings({"#111111", "#222222", "#333333", "#444444"}));
+    bundle.project_config.set_key_value("filament_colour_type", new ConfigOptionStrings({"1", "1", "0", "1"}));
+    bundle.project_config.set_key_value("filament_multi_colour",
+                                      new ConfigOptionStrings({"", "", "#333333;#ABCDEF", ""}));
+    // Octopus_wand+a1+mini.3mf has two colors. Importing it must replace the
+    // previous four project selections; physical inventory is independent.
+    DynamicPrintConfig project;
+    project.apply(FullPrintConfig::defaults());
+    project.set_key_value("filament_colour", new ConfigOptionStrings({"#A3D8E1", "#BCBCBC"}));
+    project.set_key_value("filament_colour_type", new ConfigOptionStrings({"1", "1"}));
+    project.set_key_value("filament_multi_colour", new ConfigOptionStrings({"", ""}));
+    project.set_key_value("filament_settings_id", new ConfigOptionStrings({"Project PLA", "Project PETG"}));
+    project.set_key_value("filament_type", new ConfigOptionStrings({"PLA", "PETG"}));
+    project.set_key_value("nozzle_temperature", new ConfigOptionInts({210, 245}));
+    bundle.load_config_model("TwoFilamentProject.3mf", std::move(project), Semver(), false);
+
+    REQUIRE(bundle.filament_presets.size() == 2);
+    CHECK(bundle.filament_presets.front() != "Current Filament");
+    CHECK(bundle.filament_presets.back() != "Current Filament");
+    CHECK(bundle.project_config.option<ConfigOptionStrings>("filament_colour")->values ==
+          std::vector<std::string>{"#A3D8E1", "#BCBCBC"});
+    CHECK(bundle.project_config.option<ConfigOptionStrings>("filament_colour_type")->values ==
+          std::vector<std::string>{"1", "1"});
+    CHECK(bundle.project_config.option<ConfigOptionStrings>("filament_multi_colour")->values ==
+          std::vector<std::string>{"", ""});
+    CHECK(bundle.full_config().option<ConfigOptionStrings>("filament_type")->values ==
+          std::vector<std::string>{"PLA", "PETG"});
+    CHECK(bundle.full_config().option<ConfigOptionInts>("nozzle_temperature")->values ==
+          std::vector<int>{210, 245});
+    CHECK(bundle.full_config().option<ConfigOptionStrings>("filament_colour")->size() == 2);
+}
+
+TEST_CASE("Project filaments incompatible with the retained printer use the same type Generic preset", "[Preset][ProjectPrinter][Regression]")
+{
+    PresetBundle bundle;
+    DynamicPrintConfig generic(bundle.filaments.default_preset().config);
+    generic.set_key_value("filament_type", new ConfigOptionStrings({"PLA"}));
+    bundle.filaments.load_preset({}, "Generic PLA", generic, false).is_system = true;
+
+    DynamicPrintConfig foreign(generic);
+    foreign.set_key_value("compatible_printers_condition", new ConfigOptionString("false"));
+    bundle.filaments.load_preset({}, "Foreign PLA", foreign, true);
+    bundle.filament_presets = {"Foreign PLA"};
+
+    DynamicPrintConfig project;
+    project.apply(FullPrintConfig::defaults());
+    project.set_key_value("filament_settings_id", new ConfigOptionStrings({"Foreign PLA"}));
+    project.set_key_value("filament_type", new ConfigOptionStrings({"PLA"}));
+    project.set_key_value("compatible_machine_expression_group", new ConfigOptionStrings({"", "false", ""}));
+    project.set_key_value("inherits_group", new ConfigOptionStrings({"", "Foreign PLA", ""}));
+    project.set_key_value("filament_colour", new ConfigOptionStrings({"#A3D8E1"}));
+    bundle.load_config_model("ForeignPrinterProject.3mf", std::move(project), Semver(), false);
+
+    CHECK(bundle.filament_presets == std::vector<std::string>{"Generic PLA"});
+    CHECK(bundle.filaments.get_selected_preset_name() == "Generic PLA");
+    CHECK(bundle.full_config().option<ConfigOptionStrings>("filament_type")->values == std::vector<std::string>{"PLA"});
+    CHECK(bundle.project_config.option<ConfigOptionStrings>("filament_colour")->values == std::vector<std::string>{"#A3D8E1"});
 }
 
