@@ -8,6 +8,7 @@ from urllib.parse import parse_qs, urlsplit
 from custom_components.quack_material_demo.store import Store, Conflict
 from custom_components.quack_material_demo.read_api import materials, native_page, profile
 from custom_components.quack_material_demo.recovery import export_recovery
+from custom_components.quack_material_demo.accounting import accounting
 
 BASE = '/api/quack_material_demo/'
 CARD = Path(__file__).parent / 'custom_components/quack_material_demo/card.js'
@@ -48,7 +49,7 @@ def make_server(database, port=8765, settings=None):
             if not self.trusted_host():
                 return self.send(403, {'error': 'Loopback host required'})
             parsed=urlsplit(self.path)
-            if parsed.path in (BASE+'materials',BASE+'native_snapshot',BASE+'profile',BASE+'recovery'):
+            if parsed.path in (BASE+'materials',BASE+'native_snapshot',BASE+'profile',BASE+'recovery',BASE+'accounting'):
                 try:
                     values=parse_qs(parsed.query,keep_blank_values=True)
                     if any(len(value)!=1 for value in values.values()):raise ValueError('Duplicate query parameter')
@@ -56,7 +57,7 @@ def make_server(database, port=8765, settings=None):
                     if parsed.path==BASE+'recovery':
                         if query:raise ValueError('Invalid recovery query')
                         return self.send(200,export_recovery(store))
-                    handler={BASE+'materials':materials,BASE+'native_snapshot':native_page,BASE+'profile':profile}[parsed.path]
+                    handler={BASE+'materials':materials,BASE+'native_snapshot':native_page,BASE+'profile':profile,BASE+'accounting':accounting}[parsed.path]
                     return self.send(200,handler(store,query))
                 except Conflict as error:
                     return self.send(409,{'error':str(error)})

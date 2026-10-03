@@ -15,6 +15,7 @@ async def async_setup(hass, config):
     from .access import may_read, may_write
     from .read_api import materials, native_page, profile
     from .recovery import export_recovery
+    from .accounting import accounting
     from .receipts import compact_legacy_receipts
     settings = config.get('quack_material_demo') or {}
     if not isinstance(settings, dict):
@@ -175,6 +176,21 @@ async def async_setup(hass, config):
             except (ValueError, KeyError, TypeError):
                 return self.json({'error': 'Invalid material profile query'}, status_code=400)
 
+    class AccountingView(HomeAssistantView):
+        url = '/api/quack_material_demo/accounting'
+        name = 'api:quack_material_demo:accounting'
+        requires_auth = True
+
+        async def get(self, request):
+            if not may_read(request.get('hass_user'), allowed):
+                return self.json({'error': 'Inventory access denied'}, status_code=403)
+            try:
+                return self.json(await hass.async_add_executor_job(accounting, store, dict(getattr(request, 'query', {}))))
+            except Conflict as error:
+                return self.json({'error': str(error)}, status_code=409)
+            except (ValueError, KeyError, TypeError):
+                return self.json({'error': 'Invalid accounting query'}, status_code=400)
+
     class RecoveryView(HomeAssistantView):
         url = '/api/quack_material_demo/recovery'
         name = 'api:quack_material_demo:recovery'
@@ -223,6 +239,7 @@ async def async_setup(hass, config):
     hass.http.register_view(NativeSnapshotView())
     hass.http.register_view(ProfileView())
     hass.http.register_view(RecoveryView())
+    hass.http.register_view(AccountingView())
     await hass.http.async_register_static_paths([
         StaticPathConfig('/quack-material-demo/card.js', str(Path(__file__).with_name('card.js')), False),
         StaticPathConfig('/quack-material-demo/inventory.js', str(Path(__file__).with_name('inventory.js')), False),

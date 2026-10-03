@@ -8,31 +8,11 @@
 #include <wx/string.h>
 
 #include "libslic3r/FilamentInventory.hpp"
+#include "FilamentReservationPlan.hpp"
 
 class wxWindow;
 
 namespace Slic3r::GUI {
-
-struct FilamentInventoryUsage {
-    int         filament_index {0};
-    std::string display_name;
-    std::string manufacturer;
-    std::string material_type;
-    std::string filament_preset_id;
-    std::string color_hex;
-    double      diameter_mm {0.0};
-    double      density_g_cm3 {0.0};
-    FilamentInventory::Milligrams estimated_weight_mg {0};
-    std::string suggested_bambu_tag_uid;
-};
-
-struct FilamentReservationContext {
-    std::string job_name;
-    std::string project_path;
-    std::string printer_id;
-    std::int64_t estimated_runtime_seconds {0};
-    std::vector<FilamentInventoryUsage> usages;
-};
 
 enum class FilamentReservationDecision {
     reserved,

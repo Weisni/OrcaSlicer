@@ -3769,15 +3769,17 @@ void SelectMachineDialog::on_send_print()
                 }
                 ha_ticket = HaMaterialPrint::prepare(*usage_config,count,uses,obj_);
                 HaMaterialPrint::apply_mapping(*ha_ticket,m_filaments,m_ams_mapping_result);
-                std::vector<FilamentInventory::AllocationInput> allocations;
+                context.fixed_allocations.emplace();
                 for (const auto &row : ha_ticket->expected)
-                    allocations.push_back({row.spool_uuid,int(row.project_index),row.estimated_mg});
-                FilamentInventory::PrintJobInput input {
-                    HaInventoryAuthority::key(),context.job_name,context.project_path,context.printer_id
+                    context.fixed_allocations->push_back({row.spool_uuid,int(row.project_index),row.estimated_mg});
+                context.refresh_inventory = [source = ha_ticket->source, printer = ha_ticket->printer_id] {
+                    if (!HaMaterialProvider::enabled() || HaMaterialProvider::endpoint() != source ||
+                        HaMaterialProvider::physical_device_id() != printer)
+                        throw std::runtime_error("The Home Assistant inventory source changed; reopen the print dialog");
+                    HaInventoryAuthority::refresh_current();
                 };
-                input.estimated_runtime_seconds = context.estimated_runtime_seconds;
-                m_inventory_job_id = wxGetApp().filament_inventory().store().reserve_job(input,allocations).id;
-            } else if (context.usages.empty()) {
+            }
+            if (context.usages.empty()) {
                 if (wxMessageBox(
                         _L("QuackSlicer could not determine per-filament usage for this file. Continue printing without inventory tracking?"),
                         _L("Filament inventory"), wxYES_NO | wxNO_DEFAULT | wxICON_WARNING,

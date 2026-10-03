@@ -22,6 +22,7 @@ add_executable(${_TEST_NAME}_tests
     test_elephant_foot_compensation.cpp
     test_filament_inventory.cpp
     test_filament_inventory_service.cpp
+    test_filament_reservation_plan.cpp
     test_ha_material_source.cpp
     test_ha_material_binding.cpp
     test_ha_material_refresh.cpp

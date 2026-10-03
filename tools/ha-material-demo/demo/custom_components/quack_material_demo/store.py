@@ -336,6 +336,9 @@ class Store(Lifecycle, NativeBridge, Pilot, ExplicitSync, Provider):
             raise ValueError('Request must be an object')
         if action == 'customer': return self.manage_record('customer',data)
         if action == 'order': return self.manage_record('order',data) if self.settings.get('mode')=='pilot' else self.order_action(data)
+        if action in ('job_order','create_invoice'):
+            from .accounting import job_order, create_invoice
+            return (job_order if action=='job_order' else create_invoice)(self,data)
         if action == 'reconcile_observed': return self.reconcile_observed(data)
         if action == 'reconcile_provider': return self.reconcile_provider(data)
         if action == 'label':

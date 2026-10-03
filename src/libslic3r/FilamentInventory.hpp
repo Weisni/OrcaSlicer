@@ -458,8 +458,11 @@ public:
         bool include_archived = false) const;
 
     PrintJob reserve_job(const PrintJobInput &job, const std::vector<AllocationInput> &allocations);
+    // An editor may pin the reviewed snapshot. Compare it inside the same
+    // transaction as the update so refreshes and lifecycle events cannot race it.
     PrintJob update_print_job(
-        const std::string &job_id, const PrintJobUpdateInput &input);
+        const std::string &job_id, const PrintJobUpdateInput &input,
+        const PrintJob *expected_job = nullptr);
     PrintJob get_job(const std::string &job_id) const;
     std::vector<PrintJob> list_jobs(bool include_closed = true, std::size_t limit = 0) const;
     std::vector<PrintJob> list_open_jobs() const;

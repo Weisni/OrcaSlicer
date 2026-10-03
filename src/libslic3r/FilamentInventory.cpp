@@ -95,6 +95,35 @@ std::string to_string(CustomerOrderStatus value)
 
 namespace {
 
+bool matches_reviewed_job(const PrintJob &current, const PrintJob &reviewed)
+{
+    const auto job_fields = [](const PrintJob &job) {
+        return std::tie(job.id, job.idempotency_key, job.job_name, job.project_path,
+                        job.printer_id, job.customer_order_id, job.state, job.cost_currency,
+                        job.electricity_price_per_kwh_micros, job.machine_power_watts,
+                        job.estimated_runtime_seconds, job.electricity_cost_micros,
+                        job.machine_wear_per_hour_micros, job.maintenance_per_hour_micros,
+                        job.repair_reserve_per_hour_micros, job.machine_wear_cost_micros,
+                        job.maintenance_cost_micros, job.repair_reserve_cost_micros,
+                        job.created_at, job.updated_at, job.started_at, job.completed_at,
+                        job.actual_runtime_seconds);
+    };
+    const auto allocation_fields = [](const Allocation &allocation) {
+        return std::tie(allocation.id, allocation.job_id, allocation.spool_id,
+                        allocation.spool_name, allocation.manufacturer, allocation.material_type,
+                        allocation.filament_preset_id, allocation.color_hex, allocation.filament_index,
+                        allocation.estimated_weight_mg, allocation.actual_weight_mg,
+                        allocation.material_price_per_kg_micros, allocation.cost_currency,
+                        allocation.estimated_material_cost_micros, allocation.actual_material_cost_micros);
+    };
+    return job_fields(current) == job_fields(reviewed) &&
+           current.allocations.size() == reviewed.allocations.size() &&
+           std::equal(current.allocations.begin(), current.allocations.end(), reviewed.allocations.begin(),
+               [&](const Allocation &left, const Allocation &right) {
+                   return allocation_fields(left) == allocation_fields(right);
+               });
+}
+
 WarningMode warning_mode_from_string(const std::string &value)
 {
     if (value == "none")    return WarningMode::none;
@@ -2686,7 +2715,8 @@ PrintJob Store::reserve_job(const PrintJobInput &job, const std::vector<Allocati
 }
 
 PrintJob Store::update_print_job(
-    const std::string &job_id, const PrintJobUpdateInput &input)
+    const std::string &job_id, const PrintJobUpdateInput &input,
+    const PrintJob *expected_job)
 {
     if (trim_copy(job_id).empty())
         throw Error(ErrorCode::validation, "Print job ID must not be empty");
@@ -2743,6 +2773,9 @@ PrintJob Store::update_print_job(
     std::lock_guard<std::mutex> lock(m_impl->mutex);
     Transaction transaction(m_impl->db, m_impl->authority, m_impl->authority_committed);
     const PrintJob existing = m_impl->get_job_unlocked(job_id);
+    if (expected_job != nullptr && !matches_reviewed_job(existing, *expected_job))
+        throw Error(ErrorCode::conflict,
+                    "This print job changed after it was opened. Reopen the editor and review the current job.");
     const bool allocations_changed =
         !Impl::allocations_match(existing.allocations, input.allocations);
     const bool print_parameters_changed =
@@ -2816,19 +2849,20 @@ PrintJob Store::update_print_job(
         }
     }
 
-    const MoneyMicros power_cost = electricity_cost(
-        existing.electricity_price_per_kwh_micros,
-        input.machine_power_watts,
-        input.estimated_runtime_seconds);
-    const MoneyMicros wear_cost = hourly_cost(
+    // Descriptive edits and order reassignment must retain HA's observed-runtime
+    // costs. Only a changed, still-reserved print estimate requires repricing.
+    const MoneyMicros power_cost = print_parameters_changed ? electricity_cost(
+        existing.electricity_price_per_kwh_micros, input.machine_power_watts,
+        input.estimated_runtime_seconds) : existing.electricity_cost_micros;
+    const MoneyMicros wear_cost = print_parameters_changed ? hourly_cost(
         existing.machine_wear_per_hour_micros, input.estimated_runtime_seconds,
-        "Machine wear cost");
-    const MoneyMicros maintenance_cost = hourly_cost(
+        "Machine wear cost") : existing.machine_wear_cost_micros;
+    const MoneyMicros maintenance_cost = print_parameters_changed ? hourly_cost(
         existing.maintenance_per_hour_micros, input.estimated_runtime_seconds,
-        "Maintenance cost");
-    const MoneyMicros repair_cost = hourly_cost(
+        "Maintenance cost") : existing.maintenance_cost_micros;
+    const MoneyMicros repair_cost = print_parameters_changed ? hourly_cost(
         existing.repair_reserve_per_hour_micros, input.estimated_runtime_seconds,
-        "Repair reserve cost");
+        "Repair reserve cost") : existing.repair_reserve_cost_micros;
     Statement update(m_impl->db, R"SQL(
         UPDATE print_jobs
         SET job_name = ?, project_path = ?, printer_id = ?,

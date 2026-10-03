@@ -2968,11 +2968,20 @@ void FilamentManagerPanel::edit_selected_job(bool history)
     if (row < 0 ||
         static_cast<std::size_t>(row) >= jobs.size())
         return;
+    const std::string job_id = jobs[static_cast<std::size_t>(row)].id;
 
     try {
+        const bool authoritative = HaInventoryAuthority::enabled();
+        const std::string source = authoritative ? HaInventoryAuthority::endpoint() : std::string();
+        const auto refresh_authority = [authoritative, source] {
+            if (HaInventoryAuthority::enabled() != authoritative ||
+                (authoritative && HaInventoryAuthority::endpoint() != source))
+                throw std::runtime_error("The inventory source changed; reopen the print-job editor.");
+            HaInventoryAuthority::refresh_current();
+        };
+        refresh_authority();
         const PrintJob job =
-            m_store->get_job(
-                jobs[static_cast<std::size_t>(row)].id);
+            m_store->get_job(job_id);
         PrintJobEditorDialog dialog(this, *m_store, job);
         while (dialog.ShowModal() == wxID_OK) {
             PrintJobUpdateInput input;
@@ -3009,11 +3018,16 @@ void FilamentManagerPanel::edit_selected_job(bool history)
             }
 
             try {
-                m_store->update_print_job(job.id, input);
+                refresh_authority();
+                m_store->update_print_job(job.id, input, &job);
                 refresh();
                 return;
             } catch (const std::exception &exception) {
                 show_error(exception);
+                if (authoritative) {
+                    refresh();
+                    return;
+                }
             }
         }
         refresh();
@@ -3140,8 +3154,10 @@ void FilamentManagerPanel::show_invoice()
     const int row = selected_order_row();
     if (row < 0 || static_cast<std::size_t>(row) >= m_customer_orders.size())
         return;
-    const CustomerOrder &order = m_customer_orders[static_cast<std::size_t>(row)];
+    const std::string order_id = m_customer_orders[static_cast<std::size_t>(row)].id;
     try {
+        HaInventoryAuthority::refresh_current();
+        const CustomerOrder order = m_store->get_customer_order(order_id);
         show_customer_invoice_dialog(
             this, *m_store, order, m_store->get_customer(order.customer_id));
     } catch (const std::exception &error) {

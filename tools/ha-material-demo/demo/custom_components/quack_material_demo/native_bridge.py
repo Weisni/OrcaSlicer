@@ -82,7 +82,7 @@ class NativeBridge:
                     if a['job_id']!=j['id']: continue
                     slot=db.execute('SELECT id,revision FROM slots WHERE spool_uuid=?',(a['spool_id'],)).fetchone()
                     allocations.append(dict(slot=slot['id'] if slot else 'unassigned',spool_uuid=a['spool_id'],weight_mg=a['estimated_weight_mg'],
-                        binding_revision=slot['revision'] if slot else 0,material_preset=a.get('filament_preset_id',''),color=a.get('color_hex','#FFFFFF')))
+                        binding_revision=slot['revision'] if slot else 0,material_preset=a.get('filament_preset_id',''),color=a.get('color_hex','#FFFFFF'),**({'filament_index':a['filament_index']} if 'filament_index' in a else {})))
                     if a.get('actual_weight_mg') is not None: consumption[a['spool_id']]=consumption.get(a['spool_id'],0)+weight(a['actual_weight_mg'])
                 state=j['state']; settlement=None
                 if state in ('completed','discarded'):
@@ -191,11 +191,27 @@ class NativeBridge:
                     pass  # Unknown timestamps must not manufacture a duration.
             native['updated_at']=j['updated_at']
             allocations=[a for a in t['allocations'] if a['job_id']==j['uuid']]
+            matched=set()
             for index,a in enumerate(a for a in j['allocations'] if a['weight_mg']>0):
-                n=allocations[index] if index<len(allocations) else None
+                # Native rows may be reordered by a legacy full snapshot. Match
+                # the immutable project index and roll, never array position.
+                if 'filament_index' in a:
+                    candidates=[n for n in allocations if n['filament_index']==a['filament_index'] and n['spool_id']==a['spool_uuid']]
+                else:
+                    # Pre-index canonical imports need a conservative migration
+                    # fallback. Keep their original compatible row where possible.
+                    candidates=[n for n in allocations if n['id'] not in matched and n['spool_id']==a['spool_uuid']
+                                and n['estimated_weight_mg']==a['weight_mg']]
+                    if index<len(allocations) and allocations[index] in candidates:candidates=[allocations[index]]
+                if allocations and len(candidates)!=1:
+                    from .store import Conflict
+                    raise Conflict('Historical allocation identity is ambiguous; reconcile before projection')
+                n=candidates[0] if candidates else None
+                if n is not None:matched.add(n['id'])
                 new_allocation=n is None
                 if n is None:
-                    n=dict(id=uid(j['uuid']+':'+str(index)),job_id=j['uuid'],filament_index=index)
+                    filament_index=a.get('filament_index',index)
+                    n=dict(id=uid(j['uuid']+':'+str(filament_index)),job_id=j['uuid'],filament_index=filament_index)
                     s=next(s for s in spools if s['uuid']==a['spool_uuid'])
                     n.update(spool_id=s['uuid'],spool_name=s['product'],manufacturer=s['manufacturer'],material_type=s['material_type'],
                         filament_preset_id=a['material_preset'],color_hex=a['color'],estimated_weight_mg=a['weight_mg'],

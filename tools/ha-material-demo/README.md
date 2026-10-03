@@ -21,7 +21,7 @@ Quack's ordinary native connection.
    actions remain separate. The example contains placeholders, not credentials.
 3. Run HA's configuration check, restart Core and check integration diagnostics.
    Preserve the prior component/configuration and database backup for rollback.
-4. Add `/quack-material-demo/inventory.js?v=0.8.0` as a JavaScript module in
+4. Add `/quack-material-demo/inventory.js?v=0.9.0` as a JavaScript module in
    dashboard Resources. Copy `demo/quack-material-inventory-dashboard.yaml` to
    the HA configuration folder and register it as a YAML dashboard if desired.
 5. Connect Quack through its HA connection dialog using
@@ -56,6 +56,36 @@ Use [RECOVERY.md](demo/RECOVERY.md) to export and verify a complete ledger,
 profile and pending-request backup. Run its commands from this package folder,
 where `demo/` and `tools/` are siblings. Recovery data contains private business
 and material information and must stay outside source control.
+
+## Orders, costs and invoices
+
+The original customer/order chooser remains part of Quack's print-start flow.
+HA-preflighted physical roll UUIDs remain fixed while selecting an order or
+creating a customer/order. Cancelling does not reserve or dispatch a print.
+
+After printing, use Quack's print-history editor or HA **Prints > Change order**
+to assign, move or unassign a job. Both use HA as the writable authority. An
+outdated edit is rejected rather than overwriting a more recent change.
+Assignments never book material consumption again or alter the recorded
+quantities, runtime or cost-rate snapshots. Reopen a closed target order and
+restore archived orders before moving jobs. Personal/unassigned prints stay
+outside customer invoices until explicitly assigned.
+
+HA **Costs & invoices**, or an order's **Costs / invoice** action, shows the
+same material, electricity, wear, maintenance, repair, design, other-cost,
+waiver and discount calculations as Quack. Deliberate compatible-currency roll
+price corrections affect current cost previews in both clients; historical
+material identity and stored accounting rows are retained. Mixed currencies
+are reported instead of silently combined. Estimated consumption and open-job
+costs remain provisional.
+
+**Create invoice** requires explicit issuer, recipient, number, dates and tax
+treatment. HA stores an immutable snapshot with a unique invoice number and
+safe retry identity; later order corrections do not rewrite it. Reopen saved
+invoices to download HTML/text or use **Print / Save as PDF** in a supporting
+browser. This does not mark an order paid or replace its separately recorded
+invoice amount. The recovery bundle includes invoice snapshots and issuer
+defaults. Quack's existing native PDF exporter remains available.
 
 ## Development checks
 

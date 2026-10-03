@@ -45,7 +45,16 @@ class QuackInventoryCard extends HTMLElement {
   error(e) { return e?.body?.message || e?.body?.error || e?.message || 'Request failed'; }
   async refresh() {
     if (this.loading) return; this.loading=true;
-    try { this.data=await this.api('inventory'); if (!this.editing) this.render(); }
+    try {
+      this.data=await this.api('inventory');
+      if (this.view==='costs') {
+        this.accounting=null;
+        const accounting=await this.api('accounting');
+        if (accounting.revision!==this.data.revision) throw Error('Inventory changed while reading costs. Refresh to read the current totals.');
+        this.accounting=accounting;
+      }
+      if (!this.editing) this.render();
+    }
     catch(e) { this.message=this.error(e); if (!this.editing) this.render(); }
     finally { this.loading=false; }
   }
@@ -57,7 +66,64 @@ class QuackInventoryCard extends HTMLElement {
   }
   roll(id) { return this.data.spools.find(s=>s.uuid===id); }
   grams(v) { return ((v||0)/1000).toLocaleString(undefined,{maximumFractionDigits:3}); }
-  money(v) { return v==null ? '—' : (v/1e6).toLocaleString(undefined,{style:'currency',currency:'EUR'}); }
+  money(v, currency='EUR') { return v==null ? '—' : (v/1e6).toLocaleString(undefined,{style:'currency',currency}); }
+  costAmount(row,field) { return row.summary?escapeHtml(this.money(row.summary[field],row.summary.currency)):`<span class="warn">${escapeHtml(row.error||'Cost unavailable')}</span>`; }
+  costTable(summary) {
+    const labels={material_cost_micros:'Material',electricity_cost_micros:'Electricity',machine_wear_cost_micros:'Machine wear',maintenance_cost_micros:'Maintenance',repair_reserve_cost_micros:'Repair reserve',design_cost_micros:'Design',other_cost_micros:'Other costs',total_cost_micros:'Internal costs',billable_subtotal_micros:'Billable subtotal',discount_micros:'Discount',calculated_invoice_micros:'Calculated invoice (net)',quoted_price_micros:'Quoted amount',invoice_amount_micros:'Recorded invoice amount'};
+    return this.table(['Cost category','Amount'],Object.entries(labels).map(([key,label])=>`<tr><td>${label}</td><td>${escapeHtml(this.money(summary[key],summary.currency))}</td></tr>`));
+  }
+  invoiceLines(lines, currency) {
+    const e=escapeHtml;
+    return this.table(['Description','Internal costs','Invoice'],lines.map(line=>{
+      const swatch=/^#[0-9a-f]{6}$/i.test(line.color_hex)?`<span class="swatch" style="background:${line.color_hex}"></span>`:'';
+      return `<tr><td>${swatch}${e(line.description)}<small>${e(line.detail)}${line.included?'':' · Not billed'}</small></td><td>${e(this.money(line.internal_amount_micros,currency))}</td><td>${e(this.money(line.invoice_amount_micros,currency))}</td></tr>`;
+    }));
+  }
+  invoiceDocument(invoice) {
+    const e=escapeHtml,d=invoice.details,t=invoice.totals,m=value=>e(this.money(value,invoice.currency));
+    return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Invoice ${e(d.invoice_number)}</title><style>
+      body{font:14px system-ui;color:#132f3e;background:white;max-width:960px;margin:32px auto;padding:24px}h1{border-bottom:4px solid #23798c;padding-bottom:12px}h2{font-size:18px}header,.parties{display:flex;justify-content:space-between;gap:32px}.parties>section{flex:1}.address{white-space:pre-wrap}table{width:100%;border-collapse:collapse;margin:24px 0}td,th{text-align:left;padding:10px;border-bottom:1px solid #cdd9dd;vertical-align:top}th{background:#eff4f6}td:not(:first-child),th:not(:first-child){text-align:right;white-space:nowrap}small{display:block;color:#526774;margin-top:5px}.swatch{display:inline-block;width:12px;height:12px;border:1px solid #777;border-radius:50%;margin-right:6px}.totals{margin-left:auto;max-width:440px}.totals p{display:flex;justify-content:space-between;gap:20px}.gross{border-top:2px solid #23798c;padding-top:14px;font-size:20px}footer{border-top:1px solid #cdd9dd;margin-top:30px;padding-top:14px;font-size:11px;overflow-wrap:anywhere}@media print{body{margin:0;padding:0;max-width:none}tr{break-inside:avoid}thead{display:table-header-group}.totals,.parties{break-inside:avoid}@page{size:A4;margin:16mm}}
+      </style></head><body><header><h1>Invoice</h1><p><b>${e(d.invoice_number)}</b><br>Invoice date: ${e(d.invoice_date)}<br>Service date: ${e(d.service_date)}<br>Due date: ${e(d.due_date)}</p></header><div class="parties"><section><h2>Issuer</h2><b>${e(d.seller_name)}</b><p class="address">${e(d.seller_address)}</p><p>${e(d.seller_contact)}<br>${e(d.tax_identifier)}</p></section><section><h2>Bill to</h2><b>${e(d.customer_name)}</b><p class="address">${e(d.customer_address)}</p></section></div><p>Order: ${e(invoice.order_title||invoice.order_uuid)}</p>${this.invoiceLines(invoice.lines,invoice.currency)}<div class="totals"><p>Internal costs <span>${m(t.internal_cost_micros)}</span></p><p>Net amount <b>${m(t.net_micros)}</b></p><p>VAT ${d.small_business?'':e(d.vat_basis_points/100)+'%'} <span>${m(t.tax_micros)}</span></p><p class="gross">Total <b>${m(t.gross_micros)}</b></p></div><p>${d.small_business?'No VAT is charged under the selected small-business treatment.':''}</p><footer>Saved invoice ${e(invoice.id)} · ${e(invoice.created_at)}<br>Created from the recorded print allocations and cost settings in Home Assistant. Later order corrections do not alter this saved document.</footer></body></html>`;
+  }
+  invoiceText(invoice) {
+    const d=invoice.details,t=invoice.totals,m=value=>this.money(value,invoice.currency);
+    return [`Invoice ${d.invoice_number}`,d.seller_name,d.seller_address,d.seller_contact,d.tax_identifier,'',`Bill to: ${d.customer_name}`,d.customer_address,`Invoice date: ${d.invoice_date}`,`Service date: ${d.service_date}`,`Due date: ${d.due_date}`,`Order: ${invoice.order_title||invoice.order_uuid}`,'',...invoice.lines.map(line=>`${line.description}\t${line.detail}${line.included?'':' (Not billed)'}\t${m(line.internal_amount_micros)}\t${m(line.invoice_amount_micros)}`),'',`Internal costs: ${m(t.internal_cost_micros)}`,`Net: ${m(t.net_micros)}`,`VAT: ${m(t.tax_micros)}`,`Total: ${m(t.gross_micros)}`,d.small_business?'No VAT charged (selected small-business treatment).':'',`Saved invoice: ${invoice.id} · ${invoice.created_at}`].join('\n');
+  }
+  downloadFile(name, content, mime) {
+    const url=URL.createObjectURL(new Blob([content],{type:mime}));
+    const link=document.createElement('a');link.href=url;link.download=name;link.click();
+    setTimeout(()=>URL.revokeObjectURL(url),30000);
+  }
+  sheet(title,body) {
+    this.editing=true;
+    const previous=this.shadowRoot.querySelector('.editor');if(previous)previous.remove();
+    const box=document.createElement('div');box.className='editor';
+    box.setAttribute('role','dialog');box.setAttribute('aria-modal','true');box.setAttribute('aria-label',title);
+    box.innerHTML=`<div class="sheet wide"><h2>${escapeHtml(title)}</h2>${body}<p class="sheet-error" role="alert"></p><button data-close>Close</button></div>`;
+    box.querySelector('[data-close]').onclick=()=>{this.editing=false;box.remove();this.render();void this.refresh();};
+    this.shadowRoot.append(box);box.querySelector('[data-close]').focus({preventScroll:true});return box;
+  }
+  showSavedInvoice(invoice) {
+    const name='invoice-'+String(invoice.details.invoice_number).replace(/[^a-z0-9_-]/gi,'_');
+    const box=this.sheet('Saved invoice '+invoice.details.invoice_number,`<p>This is the saved snapshot in HA. Print uses your browser's Print / Save as PDF dialog.</p><div>${this.button('Print / Save as PDF','print-document')}${this.button('Download HTML','download-html')}${this.button('Download text','download-text')}</div><p class="form-error" role="alert"></p><iframe title="Invoice preview" sandbox="allow-same-origin allow-modals" style="width:100%;height:60vh;background:white;border:1px solid #718296"></iframe>`);
+    const frame=box.querySelector('iframe');frame.srcdoc=this.invoiceDocument(invoice);
+    box.querySelector('[data-action=print-document]').onclick=()=>{try{frame.contentWindow.focus();frame.contentWindow.print();}catch(error){box.querySelector('.form-error').textContent='Printing is unavailable here. Download HTML and use your browser to print it.';}};
+    box.querySelector('[data-action=download-html]').onclick=()=>this.downloadFile(name+'.html',this.invoiceDocument(invoice),'text/html;charset=utf-8');
+    box.querySelector('[data-action=download-text]').onclick=()=>this.downloadFile(name+'.txt',this.invoiceText(invoice),'text/plain;charset=utf-8');
+  }
+  async showAccounting(scope,id) {
+    const result=await this.api('accounting?'+scope+'_uuid='+encodeURIComponent(id)),e=escapeHtml;
+    let body=this.costTable(result.summary);
+    body+='<p class="note">Costs use recorded quantities and runtime rates. A deliberate roll-price correction updates current costs in both apps; saved invoices retain their values. Completed estimated consumption is still an estimate; open prints may contribute provisional costs. Recorded invoice amounts are displayed separately from the calculated net amount.</p>';
+    if(scope==='order') {
+      body+=`<h3>Included prints</h3>`+this.table(['Print','State / consumption quality','Internal costs'],(result.jobs||[]).map(row=>`<tr><td>${e(row.job?.job_name||row.name||row.uuid)}<small>${e(row.uuid)}</small></td><td>${e(row.job?.state||row.state)}<small>${e(row.consumption_quality)}</small></td><td>${this.costAmount(row,'total_cost_micros')}</td></tr>`));
+      body+=`<h3>Invoice lines</h3>${this.invoiceLines(result.invoice_lines||[],result.summary.currency)}${this.button('Create invoice','create-invoice',id,!this.data.can_edit)}`;
+      body+=`<h3>Saved invoices</h3>`+this.table(['Invoice','Created','Actions'],(result.invoices||[]).map(item=>`<tr><td>${e(item.details?.invoice_number||item.invoice_number)}</td><td>${e(item.created_at)}</td><td>${this.button('Open','open-invoice',item.id)}</td></tr>`));
+    }
+    const record=result.order||result.job||result.customer||result;
+    const box=this.sheet('Costs · '+(record.title||record.job_name||record.name||id),body);
+    box.querySelectorAll('[data-action]').forEach(button=>button.onclick=()=>this.handle(button.dataset.action,button.dataset.id));
+  }
   button(label, action, id='', disabled=false) { return `<button data-action="${escapeHtml(action)}" data-id="${escapeHtml(id)}" ${disabled?'disabled':''}>${escapeHtml(label)}</button>`; }
   nfcText(en, de) { return (this._hass?.locale?.language || this._hass?.language || '').startsWith('de') ? de : en; }
   consumeNfc(scan) {
@@ -90,7 +156,7 @@ class QuackInventoryCard extends HTMLElement {
     const scan=this.shadowRoot.querySelector('#scan'),slot=this.shadowRoot.querySelector('#slot');
     if (scan) this.scanText=scan.value;if (slot) this.slotChoice=slot.value;
     const d=this.data, e=escapeHtml, locked=d && !d.can_edit;
-    const views={rolls:'Rolls',slots:'Scan & slots',customers:'Customers',orders:'Orders',prints:'Prints',history:'Stock history',sync:'Synchronization'};
+    const views={rolls:'Rolls',slots:'Scan & slots',customers:'Customers',orders:'Orders',prints:'Prints',costs:'Costs & invoices',history:'Stock history',sync:'Synchronization'};
     let content='<p>Connecting to inventory…</p>';
     if (d) {
       if (this.view==='rolls') {
@@ -106,11 +172,20 @@ class QuackInventoryCard extends HTMLElement {
           const r=this.roll(s.spool_uuid); return `<tr><td>${e(s.id)}</td><td>${e(r?.product||'Unassigned')}<small>${e(r?materialProfileLabel(r):'')}</small></td><td>${e(r?.bambu_material||'No substitute configured')} ${e(r?.color||'')}</td><td>${this.button('Clear','clear',s.id,locked||!r)}</td></tr>`;
         }));
       } else if (this.view==='customers') {
-        content=this.button('New customer','new-customer','',locked)+this.table(['Customer','Contact','Status','Actions'],this.filtered(d.customers).map(c=>`<tr><td>${e(c.name)}<small>${e(c.id)}</small></td><td>${e(c.contact_name)}<br>${e(c.email)}<br>${e(c.phone)}</td><td>${c.archived?'Archived':'Active'}</td><td>${this.button('Edit','edit-customer',c.id,locked)}${this.button(c.archived?'Restore':'Archive','archive-customer',c.id,locked)}</td></tr>`));
+        content=this.button('New customer','new-customer','',locked)+this.table(['Customer','Contact','Status','Actions'],this.filtered(d.customers).map(c=>`<tr><td>${e(c.name)}<small>${e(c.id)}</small></td><td>${e(c.contact_name)}<br>${e(c.email)}<br>${e(c.phone)}</td><td>${c.archived?'Archived':'Active'}</td><td>${this.button('Costs','cost-customer',c.id)}${this.button('Edit','edit-customer',c.id,locked)}${this.button(c.archived?'Restore':'Archive','archive-customer',c.id,locked)}</td></tr>`));
       } else if (this.view==='orders') {
-        content=this.button('New order','new-order','',locked)+this.table(['Order','Customer','Status / quote','Actions'],this.filtered(d.orders).map(o=>`<tr><td>${e(o.order_number)} · ${e(o.title)}<small>${e(o.id)}</small></td><td>${e(d.customers.find(c=>c.id===o.customer_id)?.name||'Unknown customer')}</td><td>${e(o.status)} ${o.archived?'· Archived':''}<br>${this.money(o.quoted_price_micros)}</td><td>${this.button('Edit','edit-order',o.id,locked)}${this.button(o.archived?'Restore':'Archive','archive-order',o.id,locked)}</td></tr>`));
+        content=this.button('New order','new-order','',locked)+this.table(['Order','Customer','Status / quote','Actions'],this.filtered(d.orders).map(o=>`<tr><td>${e(o.order_number)} · ${e(o.title)}<small>${e(o.id)}</small></td><td>${e(d.customers.find(c=>c.id===o.customer_id)?.name||'Unknown customer')}</td><td>${e(o.status)} ${o.archived?'· Archived':''}<br>${this.money(o.quoted_price_micros,o.currency)}</td><td>${this.button('Costs / invoice','cost-order',o.id)}${this.button('Edit','edit-order',o.id,locked)}${this.button(o.archived?'Restore':'Archive','archive-order',o.id,locked)}</td></tr>`));
       } else if (this.view==='prints') {
-        content='<p>Print attempts remain recorded while Quack is closed. Successful correlated prints book the sliced estimate once. Failed prints need explicitly entered consumption; an uncertain send stays reserved until its outcome is known.</p>'+this.table(['Print attempt','State / source','Consumption','Order / actions'],this.filtered(d.jobs).slice(0,100).map(j=>`<tr><td>${e(j.name)}<small>${e(j.uuid)}<br>${e(j.created_at)}</small></td><td>${e(j.state)}<br>${e(j.source)}${j.observed_outcome?'<small>Printer: '+e(j.observed_outcome)+'</small>':''}</td><td>${j.settlement?this.grams(Object.values(j.settlement.consumption).reduce((a,b)=>a+b,0))+' g · '+e(j.settlement.quality):'Unknown / pending'}</td><td>${e(d.orders.find(o=>o.id===j.customer_order_uuid)?.title||'—')}${j.can_reconcile_provider?this.button('Reconcile consumption','reconcile-provider',j.uuid,locked):j.state==='needs_review'&&j.source==='printer_observation'?this.button('Reconcile','reconcile',j.uuid,locked):''}</td></tr>`));
+        content='<p>Print attempts remain recorded while Quack is closed. Successful correlated prints book the sliced estimate once. Failed prints need explicitly entered consumption; an uncertain send stays reserved until its outcome is known. Change order also works after completion and never books consumption again.</p>'+this.table(['Print attempt','State / source','Consumption','Order / actions'],this.filtered(d.jobs).map(j=>`<tr><td>${e(j.name)}<small>${e(j.uuid)}<br>${e(j.created_at)}</small></td><td>${e(j.state)}<br>${e(j.source)}${j.observed_outcome?'<small>Printer: '+e(j.observed_outcome)+'</small>':''}</td><td>${j.settlement?this.grams(Object.values(j.settlement.consumption).reduce((a,b)=>a+b,0))+' g · '+e(j.settlement.quality):'Unknown / pending'}</td><td>${e(d.orders.find(o=>o.id===j.customer_order_uuid)?.title||'Unassigned')}<div>${this.button('Change order','assign-order',j.uuid,locked)}${this.button('Costs','cost-job',j.uuid)}</div>${j.can_reconcile_provider?this.button('Reconcile consumption','reconcile-provider',j.uuid,locked):j.state==='needs_review'&&j.source==='printer_observation'?this.button('Reconcile','reconcile',j.uuid,locked):''}</td></tr>`));
+      } else if(this.view==='costs') {
+        const accounting=this.accounting?.revision===d.revision?this.accounting:null;
+        content='<p>Costs are grouped by the saved customer-order assignment. Changing a print assignment moves its costs without changing material consumption. Open prints can contribute provisional estimates.</p>';
+        if(!accounting) content+='<p>Loading current cost totals…</p>';
+        else {
+          content+=this.table(['Order / customer','Internal costs','Calculated invoice (net)','Recorded invoice','Actions'],this.filtered(accounting.orders.map(row=>({...row,order:d.orders.find(o=>o.id===row.uuid)}))).map(row=>`<tr><td>${e(row.order?.order_number)} · ${e(row.order?.title)}<small>${e(d.customers.find(c=>c.id===(row.customer_uuid||row.order?.customer_id))?.name||'Unknown customer')}</small></td><td>${this.costAmount(row,'total_cost_micros')}</td><td>${this.costAmount(row,'calculated_invoice_micros')}</td><td>${this.costAmount(row,'invoice_amount_micros')}</td><td>${this.button('Details / invoice','cost-order',row.uuid)}</td></tr>`));
+          const unassigned=accounting.jobs.filter(j=>!d.jobs.find(row=>row.uuid===j.uuid)?.customer_order_uuid);
+          content+=`<h3>Unassigned prints (${unassigned.length})</h3><p>These prints are not included in any customer order or customer invoice.</p>`+this.table(['Print','Internal costs','Actions'],this.filtered(unassigned.map(row=>({...row,job:d.jobs.find(j=>j.uuid===row.uuid)}))).map(row=>`<tr><td>${e(row.job?.name||row.uuid)}</td><td>${this.costAmount(row,'total_cost_micros')}</td><td>${this.button('Assign order','assign-order',row.uuid,locked)}${this.button('Costs','cost-job',row.uuid)}</td></tr>`));
+        }
       } else if (this.view==='history') {
         content=this.table(['Time','Roll','Stock change','Reason / print'],this.filtered(d.stock_events).slice().reverse().slice(0,200).map(v=>`<tr><td>${e(v.created_at)}</td><td>${e(this.roll(v.spool_id)?.product||v.spool_id)}</td><td>${this.grams(v.delta_mg)} g</td><td>${e(v.event_type)} ${e(v.note)}<small>${e(v.job_id)}</small></td></tr>`));
       } else if (this.view==='sync') {
@@ -124,10 +199,10 @@ class QuackInventoryCard extends HTMLElement {
     }
     this.shadowRoot.innerHTML=`<style>
       :host{display:block;color:var(--primary-text-color,#edf3f8);font:15px system-ui}*{box-sizing:border-box}article{padding:20px;background:var(--card-background-color,#19232e);border-radius:14px}h1{font-size:24px;margin:0 0 12px}nav{display:flex;flex-wrap:wrap;gap:5px;margin-bottom:15px}button{cursor:pointer;background:#263c50;color:inherit;border:1px solid #52677c;border-radius:7px;padding:8px 11px;margin:3px}button:hover{background:#34516c}button:disabled{opacity:.4;cursor:default}button.selected{border-color:#56cdf2;color:#56cdf2}input,select,textarea{width:100%;background:var(--secondary-background-color,#101a24);color:inherit;border:1px solid #718296;border-radius:6px;padding:9px;font:inherit}label{display:block;margin:12px 0}small{display:block;color:var(--secondary-text-color,#a8b5c3);font-size:12px;overflow-wrap:anywhere;margin:4px 0}.scroll{overflow:auto;margin-top:12px}table{width:100%;border-collapse:collapse}td,th{text-align:left;padding:12px 8px;border-bottom:1px solid #42505e;vertical-align:top}th{font-size:12px;text-transform:uppercase;white-space:nowrap}.swatch{display:inline-block;width:15px;height:15px;border:1px solid #aaa;border-radius:50%;margin-right:8px}.note{color:var(--secondary-text-color,#a8b5c3)}.warn{color:#ffcf6c}.notice{border:1px solid #56cdf2;padding:12px;border-radius:8px;margin:10px 0}.status{min-height:20px;color:#ffcf6c}.editor{position:fixed;inset:0;background:#0009;z-index:1000;display:grid;place-items:center;padding:15px}.sheet{background:var(--card-background-color,#19232e);border:1px solid #52677c;border-radius:12px;padding:20px;max-width:650px;width:100%;max-height:90vh;overflow:auto}.sheet img{width:240px;height:240px;background:white}.search{max-width:450px}code{overflow-wrap:anywhere}@media(max-width:600px){article{padding:12px}td{min-width:160px}h1{font-size:21px}}
-      .roll-action{min-width:44px;min-height:44px;display:inline-flex;align-items:center;justify-content:center;padding:9px}.roll-action ha-icon{--mdc-icon-size:24px}.roll-actions{display:flex;flex-wrap:wrap;min-width:156px}button:focus-visible{outline:3px solid var(--primary-color,#56cdf2);outline-offset:2px}
+      .sheet.wide{max-width:1100px}.sheet textarea{min-height:90px}.sheet input[type=checkbox]{width:auto}.roll-action{min-width:44px;min-height:44px;display:inline-flex;align-items:center;justify-content:center;padding:9px}.roll-action ha-icon{--mdc-icon-size:24px}.roll-actions{display:flex;flex-wrap:wrap;min-width:156px}button:focus-visible{outline:3px solid var(--primary-color,#56cdf2);outline-offset:2px}
       .roll-action ha-icon:not(:defined){display:none}.roll-action ha-icon:defined+.icon-fallback{display:none}
       </style><article><h1>Filament & Orders</h1><nav>${Object.entries(views).map(([v,l])=>`<button data-view="${v}" class="${v===this.view?'selected':''}">${l}</button>`).join('')}</nav><div class="status" role="status">${e(this.message)}</div><input class="search" placeholder="Search this view" value="${e(this.query)}">${content}</article>`;
-    this.shadowRoot.querySelectorAll('[data-view]').forEach(b=>b.onclick=()=>{this.view=b.dataset.view;this.query='';this.render();});
+    this.shadowRoot.querySelectorAll('[data-view]').forEach(b=>b.onclick=()=>{this.view=b.dataset.view;this.query='';this.render();if(this.view==='costs')void this.refresh();});
     const search=this.shadowRoot.querySelector('.search');
     search.oninput=ev=>{this.query=ev.target.value;this.render();};
     if (searchSelection) {
@@ -138,17 +213,20 @@ class QuackInventoryCard extends HTMLElement {
     window.QuackNfc?.controller?.attach(this);
     void window.QuackNfc?.controller?.deliver();
   }
-  editor(title, fields, submit) {
+  editor(title, fields, submit, options={}) {
     this.editing=true; const e=escapeHtml;
+    this.shadowRoot.querySelector('.editor')?.remove();
     const overlay=document.createElement('div'); overlay.className='editor';
-    overlay.innerHTML=`<form class="sheet"><h2>${e(title)}</h2>${fields}<p class="form-error" role="alert"></p><button type="submit">Save</button><button type="button" class="cancel">Cancel</button></form>`;
+    overlay.setAttribute('role','dialog');overlay.setAttribute('aria-modal','true');overlay.setAttribute('aria-label',title);
+    overlay.innerHTML=`<form class="sheet"><h2>${e(title)}</h2>${fields}<p class="form-error" role="alert"></p><button type="submit">${e(options.submitLabel||'Save')}</button><button type="button" class="cancel">Cancel</button></form>`;
     this.shadowRoot.append(overlay);
     const close=()=>{this.editing=false;overlay.remove();this.render();};
     overlay.querySelector('.cancel').onclick=close;
     overlay.querySelector('form').onsubmit=async ev=>{ev.preventDefault(); const button=ev.target.querySelector('[type=submit]'); button.disabled=true;
-      try { await submit(new FormData(ev.target)); close(); }
+      try { const result=await submit(new FormData(ev.target)); close();if(options.onSaved)options.onSaved(result); }
       catch(err) { overlay.querySelector('.form-error').textContent=this.error(err); button.disabled=false; }
     };
+    return overlay;
   }
   field(name,label,value='',type='text',required=false) { return `<label>${escapeHtml(label)}<input name="${escapeHtml(name)}" type="${type}" value="${escapeHtml(value)}" ${required?'required':''} ${type==='number'?'step="any"':''}></label>`; }
   options(items,selected) { return items.map(([id,name])=>`<option value="${escapeHtml(id)}" ${id===selected?'selected':''}>${escapeHtml(name)}</option>`).join(''); }
@@ -193,6 +271,51 @@ class QuackInventoryCard extends HTMLElement {
   async handle(action,id) {
     const d=this.data, e=escapeHtml, requestKey=newRequestId(), key=()=>requestKey, revision=d.revision;
     try {
+      if(action==='assign-order') {
+        if(!d.can_edit) throw Error('Inventory is read-only');
+        const job=d.jobs.find(row=>row.uuid===id);
+        if(!job) throw Error('Unknown print');
+        const current=job.customer_order_uuid||null;
+        const oldOrder=d.orders.find(order=>order.id===current);
+        if(oldOrder?.archived) throw Error('Restore the current order before changing its print assignment.');
+        const choices=d.orders.filter(order=>order.id===current||(!order.archived&&['active','draft'].includes(order.status)));
+        const describe=order=>`${d.customers.find(customer=>customer.id===order.customer_id)?.name||'Unknown customer'} · ${order.order_number?order.order_number+' · ':''}${order.title}`;
+        const fields=`<p><b>${e(job.name)}</b> · ${e(job.state)}</p><label>Customer order<select name="customer_order_uuid">${this.options([['','Unassigned / personal print'],...choices.map(order=>[order.id,describe(order)])],current||'')}</select></label><p>Changes move this print's recorded costs to the chosen order. Material consumption, stock, saved prices and runtime stay unchanged.</p><p class="note">Completed or cancelled target orders must be reopened; archived orders must be restored. Previously saved invoices keep their original values.</p>`;
+        this.editor('Change print order',fields,form=>{
+          const selected=form.get('customer_order_uuid')||null;
+          if(selected&&!choices.some(order=>order.id===selected))throw Error('Select an available customer order');
+          return this.action('job_order',{job_uuid:id,expected_order_uuid:current,customer_order_uuid:selected,revision,request_key:key()});
+        });return;
+      }
+      if(['cost-job','cost-order','cost-customer'].includes(action)) {await this.showAccounting(action.slice(5),id);return;}
+      if(action==='open-invoice') {
+        const result=await this.api('accounting?invoice_uuid='+encodeURIComponent(id));
+        this.showSavedInvoice(result);return;
+      }
+      if(action==='create-invoice') {
+        if(!d.can_edit) throw Error('Inventory is read-only');
+        const result=await this.api('accounting?order_uuid='+encodeURIComponent(id));
+        const defaults=result.invoice_defaults||{};
+        const today=new Date().toLocaleDateString('en-CA');
+        let fields=`<p>${e(result.order.title)} · ${e(result.customer.name)}</p>${this.invoiceLines(result.invoice_lines,result.summary.currency)}<p><b>Calculated net: ${e(this.money(result.summary.calculated_invoice_micros,result.summary.currency))}</b></p><p class="note">This saves a fixed invoice in HA. Tax, issuer and billing details must be chosen explicitly. Later order corrections do not change this invoice. The separately recorded invoice amount is not used to replace these calculated lines.</p><h3>Issuer</h3>`;
+        for(const [name,label] of [['seller_name','Company / name'],['seller_contact','Email / phone'],['tax_identifier','Tax number / VAT ID']]) fields+=this.field(name,label,defaults[name]||'','text',name==='seller_name');
+        fields+=`<label>Issuer address<textarea name="seller_address" required>${e(defaults.seller_address||'')}</textarea></label><h3>Recipient</h3>`+this.field('customer_name','Customer',result.customer.name,'text',true)+`<label>Billing address<textarea name="customer_address" required></textarea></label><h3>Invoice details</h3>`;
+        fields+=this.field('invoice_number','Invoice number','','text',true);
+        for(const [name,label] of [['invoice_date','Invoice date'],['service_date','Service date'],['due_date','Due date']]) fields+=this.field(name,label,today,'date',true);
+        fields+=`<label>Tax treatment<select name="tax_treatment" required><option value="">Choose tax treatment</option><option value="small_business">Small business — no VAT charged</option><option value="vat">Charge VAT at the entered rate</option></select></label>`+this.field('vat_rate','VAT (%) — used only when charging VAT','','number');
+        this.editor('Create invoice',fields,async form=>{
+          const details={};
+          for(const name of ['seller_name','seller_address','seller_contact','tax_identifier','customer_name','customer_address','invoice_number','invoice_date','service_date','due_date'])details[name]=String(form.get(name)||'').trim();
+          const treatment=form.get('tax_treatment');
+          if(!['small_business','vat'].includes(treatment))throw Error('Choose the invoice tax treatment');
+          details.small_business=treatment==='small_business';
+          const rate=String(form.get('vat_rate')||'').trim().replace(',','.');
+          if(!details.small_business&&!/^\d{1,3}(\.\d{1,2})?$/.test(rate))throw Error('Enter VAT with at most two decimal places');
+          details.vat_basis_points=details.small_business?0:Math.round(Number(rate)*100);
+          if(details.vat_basis_points>10000)throw Error('VAT must be between 0 and 100 percent');
+          return this.action('create_invoice',{order_uuid:id,details,revision:result.revision,request_key:key()});
+        },{submitLabel:'Create invoice',onSaved:saved=>this.showSavedInvoice(saved)});return;
+      }
       if (action==='export-recovery') {
         if (this.busy) return;
         this.busy=true;
@@ -317,7 +440,12 @@ class QuackInventoryCard extends HTMLElement {
         const fields=`<label>Roll<select name="spool_uuid">${this.options(d.spools.filter(s=>s.status!=='archived').map(s=>[s.uuid,s.product+' · '+this.grams(s.remaining_mg)+' g']),null)}</select></label><label>Slot<select name="slot">${this.options(d.slots.map(s=>[s.id,s.id]),'A1')}</select></label>`+this.field('grams','Actual or explicitly estimated total consumed (g)', '', 'text',true)+`<label>Outcome<select name="outcome"><option>completed</option><option>failed</option></select></label><label>Quantity quality<select name="quality"><option>estimated</option><option>measured</option></select></label><label>Order<select name="customer_order_uuid"><option value="">Unassigned</option>${this.options(d.orders.filter(o=>!o.archived).map(o=>[o.id,o.title]),null)}</select></label>`;
         this.editor('Reconcile observed print attempt',fields,f=>this.action('reconcile_observed',{job_uuid:id,spool_uuid:f.get('spool_uuid'),slot:f.get('slot'),consumed_mg:gramsToMg(f.get('grams')),outcome:f.get('outcome'),quality:f.get('quality'),customer_order_uuid:f.get('customer_order_uuid')||null,revision,request_key:key()}));
       }
-    } catch(err) {this.message=this.error(err);if (!this.editing)this.render();}
+    } catch(err) {
+      this.message=this.error(err);
+      const sheetError=this.shadowRoot?.querySelector('.sheet-error');
+      if(this.editing&&sheetError)sheetError.textContent=this.message;
+      else if(!this.editing)this.render();
+    }
   }
 }
 customElements.define('quack-inventory-card',QuackInventoryCard);

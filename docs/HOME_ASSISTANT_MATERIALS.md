@@ -51,6 +51,24 @@ inventory workflow and an explicit quantity; a profile cannot imply grams.
 
 ## Printing and inventory authority
 
+The standard print-start dialog still lets you select a customer order or
+create a customer/order. Its physical roll rows are locked to the checked HA
+UUIDs; local filament-profile overrides do not discard that physical identity.
+The order and reservation must be acknowledged by HA before dispatch continues.
+
+Use the native print-history editor or HA **Prints > Change order** to correct
+an assignment later. This moves cost attribution without booking consumption
+again. HA rejects stale edits, closed targets and currency mismatches. Reopen or
+restore an order when required; a previously unassigned print is never assigned
+by guessing its filename.
+
+HA **Costs & invoices** shows matching job/order/customer calculations and
+creates centrally saved invoice snapshots with explicit billing details.
+Browser HTML/text export and Print / Save as PDF complement Quack's native PDF
+export. Saved HA invoices remain fixed when assignments or current roll prices
+are corrected later; current order totals update. No automatic paid status or
+invoice-amount override is applied.
+
 Quack checks the configured physical printer, fresh HA roll UUIDs, assigned
 slots, material types, available stock and current native tray mapping before
 sending a print. An unmounted inventory roll must first be assigned physically

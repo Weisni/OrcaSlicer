@@ -355,7 +355,21 @@ class Provider:
                 if old['state'] in TERMINAL and old['state']!=j['state']:raise Conflict('Settled jobs cannot reopen')
                 if old['state'] in ('printing','needs_review') and j['state']=='reserved':raise Conflict('Started jobs cannot return to reservation')
             elif j['state']!='reserved':raise Conflict('New jobs must start with a central reservation')
-            if j.get('customer_order_id') and (j['customer_order_id'],) not in new['customer_orders']:raise ValueError('Unknown customer order')
+            if old and old.get('customer_order_id')!=j.get('customer_order_id'):
+                previous_order=new['customer_orders'].get((old.get('customer_order_id'),))
+                if previous_order and previous_order.get('archived',0):
+                    raise Conflict('Restore the archived customer order before editing its print jobs')
+            if j.get('customer_order_id'):
+                order=new['customer_orders'].get((j['customer_order_id'],))
+                if order is None:raise ValueError('Unknown customer order')
+                # A chooser's order can close while its reservation is pending.
+                # Validate the current authority inside this transaction, while
+                # preserving unchanged links on historical jobs and retries.
+                if (not old or old.get('customer_order_id')!=j['customer_order_id']) and (
+                        order.get('archived',0) or order.get('status') in ('completed','cancelled')):
+                    raise Conflict('A closed customer order cannot receive another print job')
+                if (not old or old.get('customer_order_id')!=j['customer_order_id']) and order['currency']!=j.get('cost_currency','EUR'):
+                    raise Conflict('Customer-order currency does not match the print-job currency')
         allocation_keys=set();actual={}
         for a in new['allocations'].values():
             identity(a['id'])
