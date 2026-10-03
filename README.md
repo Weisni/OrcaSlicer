@@ -74,7 +74,7 @@ separate maintainers and release channels.
 
 ## Development progress and open tasks
 
-### Home Assistant material workflow
+### QuackSlicer 2.5.20
 
 The optional Home Assistant material source supplies real roll UUIDs, current
 stock, colors and filament profiles through the existing filament dropdown.
@@ -88,7 +88,8 @@ checks, durable retry receipts, and paged snapshots; interrupted reads preserve
 the previous cache. Printing retains the native printer connection and checks
 the selected rolls and their live slot mapping before dispatch.
 
-See [setup, compatibility and recovery](docs/HOME_ASSISTANT_MATERIALS.md) and the
+See the [release notes](docs/releases/2.5.20.md),
+[setup, compatibility and recovery](docs/HOME_ASSISTANT_MATERIALS.md) and the
 [Home Assistant component](tools/ha-material-demo/README.md).
 
 - [x] Implement UUID-bound selection, explicit complete-profile synchronization,
