@@ -63,4 +63,7 @@ add_subdirectory(fff_print)
 add_subdirectory(sla_print)
 add_subdirectory(filament_group)
 
+add_test(NAME windows_version_resource
+    COMMAND ${CMAKE_COMMAND} -P ${CMAKE_CURRENT_SOURCE_DIR}/test_windows_version_resource.cmake)
+
 
