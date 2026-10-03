@@ -205,7 +205,7 @@ class QuackMaterialDemoCard extends HTMLElement {
 
       <div class="row"><input id="new-product" aria-label="New roll name" value="Elegoo Rapid PETG Blue"><input id="new-manufacturer" aria-label="Manufacturer" value="ELEGOO"><select id="new-type" aria-label="Material type"><option>PETG</option><option>PLA</option></select><input id="new-color" aria-label="Roll color" type="color" value="#2255aa"></div>
 
-      <div class="row"><input id="new-weight" aria-label="New roll grams" type="number" min="0" value="1000"><input id="new-preset" aria-label="Exact material preset" value="Elegoo Rapid PETG @BBL P2S - HA Demo"><button id="create-roll">Create roll and UUID</button></div>
+      <div class="row"><input id="new-weight" aria-label="New roll grams" type="number" min="0" value="1000"><input id="new-preset" aria-label="Exact material preset" placeholder="Exact installed profile name" value=""><button id="create-roll">Create roll and UUID</button></div>
 
       <h3>Assign a physical roll</h3><a style="color:#8ee0ef" href="/quack-material-demo/labels/index.html" target="_blank" rel="noopener">Printable demo QR labels</a>
 

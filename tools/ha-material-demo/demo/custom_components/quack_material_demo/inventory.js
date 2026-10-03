@@ -84,6 +84,9 @@ class QuackInventoryCard extends HTMLElement {
   table(head, rows) { return `<div class="scroll"><table><thead><tr>${head.map(h=>`<th>${escapeHtml(h)}</th>`).join('')}</tr></thead><tbody>${rows.join('') || '<tr><td>No records</td></tr>'}</tbody></table></div>`; }
   filtered(items) { return items.filter(v=>JSON.stringify(v).toLowerCase().includes(this.query.toLowerCase())); }
   render() {
+    const priorSearch=this.shadowRoot.querySelector('.search');
+    const searchSelection=priorSearch && this.shadowRoot.activeElement===priorSearch
+      ? [priorSearch.selectionStart,priorSearch.selectionEnd,priorSearch.selectionDirection] : null;
     const scan=this.shadowRoot.querySelector('#scan'),slot=this.shadowRoot.querySelector('#slot');
     if (scan) this.scanText=scan.value;if (slot) this.slotChoice=slot.value;
     const d=this.data, e=escapeHtml, locked=d && !d.can_edit;
@@ -125,7 +128,12 @@ class QuackInventoryCard extends HTMLElement {
       .roll-action ha-icon:not(:defined){display:none}.roll-action ha-icon:defined+.icon-fallback{display:none}
       </style><article><h1>Filament & Orders</h1><nav>${Object.entries(views).map(([v,l])=>`<button data-view="${v}" class="${v===this.view?'selected':''}">${l}</button>`).join('')}</nav><div class="status" role="status">${e(this.message)}</div><input class="search" placeholder="Search this view" value="${e(this.query)}">${content}</article>`;
     this.shadowRoot.querySelectorAll('[data-view]').forEach(b=>b.onclick=()=>{this.view=b.dataset.view;this.query='';this.render();});
-    this.shadowRoot.querySelector('.search').onchange=ev=>{this.query=ev.target.value;this.render();};
+    const search=this.shadowRoot.querySelector('.search');
+    search.oninput=ev=>{this.query=ev.target.value;this.render();};
+    if (searchSelection) {
+      search.focus({preventScroll:true});
+      search.setSelectionRange(...searchSelection);
+    }
     this.shadowRoot.querySelectorAll('[data-action]').forEach(b=>b.onclick=()=>this.handle(b.dataset.action,b.dataset.id));
     window.QuackNfc?.controller?.attach(this);
     void window.QuackNfc?.controller?.deliver();

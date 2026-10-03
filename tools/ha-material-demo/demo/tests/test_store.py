@@ -138,7 +138,7 @@ class LifecycleTests(unittest.TestCase):
     def new_roll(self):
         return self.store.dispatch('create', dict(product='Elegoo Rapid PETG Blue', manufacturer='ELEGOO',
             material_type='PETG', color='#2255AA', remaining_mg=1000000, nominal_mg=1000000,
-            diameter_mm=1.75, density_g_cm3=1.26, material_preset='Elegoo Rapid PETG @BBL P2S - HA Demo', request_key='new-roll'))
+            diameter_mm=1.75, density_g_cm3=1.26, material_preset='Example PETG @BBL P2S', request_key='new-roll'))
     def test_auto_identity_create_retry_and_profile(self):
         a=self.new_roll(); b=self.new_roll()
         self.assertEqual(a['uuid'], b['uuid'])

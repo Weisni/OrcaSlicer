@@ -86,8 +86,10 @@ device acceptance testing.
 Back up inventory, projects and user presets before changing installations.
 The first authoritative import preserves a local original-inventory JSON next
 to the Quack user data; treat that backup as private operational data. Complete
-workflow recovery also includes the HA database, profile files, pending request
-journals and configuration. Follow the component's recovery guide, keep the
+workflow recovery requires the HA database, profile files, pending request
+journals and a separate backup of the HA configuration. The recovery bundle
+includes the database, profiles and journals, but deliberately excludes
+configuration and credentials. Follow the component's recovery guide, keep the
 active writers stopped during restoration, and verify the restored ledger
 before resuming printing. Never publish these recovery files or access tokens.
 

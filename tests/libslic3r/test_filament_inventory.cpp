@@ -2345,7 +2345,7 @@ TEST_CASE("HA demo mirror retains generated UUIDs and roundtrips jobs and consum
 {
     TemporaryInventory source, destination;
     auto input=spool_input("Elegoo Rapid PETG",1000000);
-    input.material_type="PETG"; input.filament_preset_id="Elegoo Rapid PETG @BBL P2S - HA Demo";
+    input.material_type="PETG"; input.filament_preset_id="Example PETG @BBL P2S";
     const auto spool=source.store->create_spool(input);
     PrintJobInput job; job.idempotency_key="mirror-job"; job.job_name="Bracket";
     AllocationInput allocation; allocation.spool_id=spool.id; allocation.filament_index=0; allocation.estimated_weight_mg=20000;
