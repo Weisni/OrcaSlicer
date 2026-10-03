@@ -56,8 +56,8 @@ jobs:
         shell: bash
         run: |
           tar -xvf build_tests.tar
-          # Multi-config generators (Windows/macOS) need a config; Linux is single-config.
-          scripts/run_unit_tests.sh "${{ inputs.test-dir }}" "${{ runner.os != 'Linux' && 'Release' || '' }}"
+          # Linux also uses Ninja Multi-Config; all build artifacts use Release.
+          scripts/run_unit_tests.sh "${{ inputs.test-dir }}" "Release"
       - name: Upload Test Logs
         if: ${{ failure() }}
         uses: actions/upload-artifact@v7
