@@ -125,8 +125,8 @@ static void ha_load_changed_nozzle(const std::string &previous_context,
                     const auto bindings = HaMaterialBinding::read(current.project_config, current.filament_presets.size());
                     if (bindings[index].spool_uuid != original.spool_uuid || bindings[index].source != original.source ||
                         bindings[index].printer_id != original.printer_id) continue;
-                    const auto row = std::find_if(rows.begin(), rows.end(), [&](const auto &r) {
-                        return r.assignment.spool_uuid == original.spool_uuid;
+                    const auto row = std::find_if(rows.begin(), rows.end(), [spool_uuid = original.spool_uuid](const auto &r) {
+                        return r.assignment.spool_uuid == spool_uuid;
                     });
                     if (row == rows.end()) continue;
                     const auto assignment = HaMaterialProvider::for_printer(current, row->assignment);
