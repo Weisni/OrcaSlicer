@@ -1,3 +1,4 @@
+#include "slic3r/GUI/HaMaterialPrint.hpp"
 #include "SendJob.hpp"
 #include "libslic3r/MTUtils.hpp"
 #include "libslic3r/Model.hpp"
@@ -100,6 +101,9 @@ inline std::string get_transform_string(int bytes)
 
 void SendJob::process(Ctl &ctl)
 {
+    if (wxGetApp().app_config->get_bool("ha_material_demo_enabled"))
+        throw std::runtime_error("Printer uploads are disabled in HA material demo mode");
+    ctl.call_on_main_thread([this] { HaMaterialPrint::upload_check(m_dev_id); }).get();
     PrintParams params;
     std::string msg;
     int curr_percent = 10;

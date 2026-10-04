@@ -1,3 +1,4 @@
+#include "slic3r/GUI/HaMaterialPrint.hpp"
 #include "PrintJob.hpp"
 #include "libslic3r/MTUtils.hpp"
 #include "libslic3r/Model.hpp"
@@ -280,6 +281,14 @@ wxString PrintJob::get_http_error_msg(unsigned int status, std::string body)
 
 void PrintJob::process(Ctl &ctl)
 {
+    if (wxGetApp().app_config->get_bool("ha_material_demo_enabled"))
+        throw std::runtime_error("Printer dispatch is disabled in HA material demo mode");
+    if (HaMaterialProvider::enabled()) {
+        if (!m_ha_ticket) throw std::runtime_error("Reopen the print dialog to prepare HA material bindings");
+        ctl.call_on_main_thread([this] {
+            HaMaterialPrint::check(*m_ha_ticket,HaMaterialPrint::paired_machine(m_dev_id),m_inventory_job_id);
+        }).get();
+    } else if (m_ha_ticket) throw std::runtime_error("The HA material source was disabled during print preparation");
     /* display info */
     std::string msg;
     wxString error_str;
@@ -655,6 +664,9 @@ void PrintJob::process(Ctl &ctl)
 
     DeviceManager* dev = wxGetApp().getDeviceManager();
     MachineObject* obj = dev->get_selected_machine();
+    if (m_ha_ticket) ctl.call_on_main_thread([this,&obj] {
+        obj = HaMaterialPrint::paired_machine(m_dev_id);
+    }).get();
 
     auto wait_fn = [this, &ctl, curr_percent, &obj](int state, std::string job_info) {
             BOOST_LOG_TRIVIAL(info) << "print_job: get_job_info = " << job_info;
@@ -673,8 +685,11 @@ void PrintJob::process(Ctl &ctl)
             }
 
             if (!m_inventory_job_id.empty() && !curr_job_id.empty()) {
-                wxGetApp().filament_inventory().bind_bambu_job_id(
-                    m_inventory_job_id, m_dev_id, curr_job_id);
+                if (m_ha_ticket)
+                    m_ha_external_job_id = curr_job_id;
+                else
+                    wxGetApp().filament_inventory().bind_bambu_job_id(
+                        m_inventory_job_id, m_dev_id, curr_job_id);
             }
 
             if (obj == nullptr || !obj->is_support_wait_sending_finish) {
@@ -713,7 +728,18 @@ void PrintJob::process(Ctl &ctl)
             return true;
     };
 
+    const auto verify_dispatch_mapping = [&]() {
+        if (m_ha_ticket) ctl.call_on_main_thread([this,&params] {
+            // Provider mode never resends a physical command. Authorize only
+            // after preheating, immediately before its single dispatch attempt.
+            HaMaterialPrint::before_dispatch(*m_ha_ticket,m_inventory_job_id,params.project_name);
+            m_ha_prepared = true;
+        }).get();
+    };
     auto passive_preheat_fn = [&]() {
+        if (m_ha_ticket) ctl.call_on_main_thread([this] {
+            HaMaterialPrint::verify_mapping(*m_ha_ticket,m_inventory_job_id);
+        }).get();
         if (wxGetApp().app_config && !wxGetApp().app_config->get_bool("passive_chamber_preheat"))
             return true;
         return wait_for_passive_chamber_preheat(obj, passive_chamber_preheat, update_fn, cancel_fn);
@@ -722,6 +748,7 @@ void PrintJob::process(Ctl &ctl)
     if (m_print_type == "from_sdcard_view") {
         BOOST_LOG_TRIVIAL(info) << "print_job: try to send with cloud, model is sdcard view";
         ctl.update_status(curr_percent, _u8L("Sending print job through cloud service"));
+        verify_dispatch_mapping();
         m_inventory_dispatch_attempted = true;
         result = m_agent->start_sdcard_print(params, update_fn, cancel_fn);
     } else if (params.connection_type != "lan") {
@@ -750,7 +777,8 @@ void PrintJob::process(Ctl &ctl)
                 }
                 ctl.update_status(curr_percent, _u8L("Sending print job over LAN"));
                 is_try_lan_mode = true;
-                m_inventory_dispatch_attempted = true;
+                verify_dispatch_mapping();
+        m_inventory_dispatch_attempted = true;
                 result = m_agent->start_local_print_with_record(params, update_fn, cancel_fn, wait_fn);
                 if (result < 0) {
                     error_text = wxString::Format(_L("Access code:%s IP address:%s"), params.password, params.dev_ip);
@@ -771,7 +799,8 @@ void PrintJob::process(Ctl &ctl)
                     return;
                 }
                 ctl.update_status(curr_percent, _u8L("Sending print job over LAN"));
-                m_inventory_dispatch_attempted = true;
+                verify_dispatch_mapping();
+        m_inventory_dispatch_attempted = true;
                 result = m_agent->start_local_print_with_record(params, update_fn, cancel_fn, wait_fn);
                 if (result == 0) {
                     params.comments = "";
@@ -782,12 +811,13 @@ void PrintJob::process(Ctl &ctl)
                 else {
                     params.comments = (boost::format("failed(%1%)") % result).str();
                 }
-                if (result < 0) {
+                if (result < 0 && !m_ha_ticket) {
                     is_try_lan_mode_failed = true;
                     // try to send with cloud
                     BOOST_LOG_TRIVIAL(warning) << "print_job: try to send with cloud";
                     ctl.update_status(curr_percent, _u8L("Sending print job through cloud service"));
-                    m_inventory_dispatch_attempted = true;
+                    verify_dispatch_mapping();
+        m_inventory_dispatch_attempted = true;
                     result = m_agent->start_print(params, update_fn, cancel_fn, wait_fn);
                 }
             }
@@ -798,7 +828,8 @@ void PrintJob::process(Ctl &ctl)
                     return;
                 }
                 ctl.update_status(curr_percent, _u8L("Sending print job through cloud service"));
-                m_inventory_dispatch_attempted = true;
+                verify_dispatch_mapping();
+        m_inventory_dispatch_attempted = true;
                 result = m_agent->start_print(params, update_fn, cancel_fn, wait_fn);
             }
         }
@@ -809,7 +840,8 @@ void PrintJob::process(Ctl &ctl)
                 return;
             }
             ctl.update_status(curr_percent, _u8L("Sending print job over LAN"));
-            m_inventory_dispatch_attempted = true;
+            verify_dispatch_mapping();
+        m_inventory_dispatch_attempted = true;
             result = m_agent->start_local_print(params, update_fn, cancel_fn);
         } else {
             switch(this->sdcard_state) {
@@ -824,7 +856,8 @@ void PrintJob::process(Ctl &ctl)
                             return;
                         }
                         ctl.update_status(curr_percent, _u8L("Sending print job over LAN, but the Storage in the printer is abnormal and print-issues may be caused by this."));
-                        m_inventory_dispatch_attempted = true;
+                        verify_dispatch_mapping();
+        m_inventory_dispatch_attempted = true;
                         result = m_agent->start_local_print(params, update_fn, cancel_fn);
                         break;
                     }
@@ -839,7 +872,8 @@ void PrintJob::process(Ctl &ctl)
                         return;
                     }
                     ctl.update_status(curr_percent, _u8L("Sending print job over LAN"));
-                    m_inventory_dispatch_attempted = true;
+                    verify_dispatch_mapping();
+        m_inventory_dispatch_attempted = true;
                     result = m_agent->start_local_print(params, update_fn, cancel_fn);
                     break;
                 default:
@@ -849,8 +883,28 @@ void PrintJob::process(Ctl &ctl)
         }
     }
 
+    if (m_ha_ticket && m_ha_prepared) {
+        const std::string outcome = result >= 0 ? "accepted" :
+            (m_inventory_dispatch_attempted ? "uncertain" : "rejected");
+        try {
+            HaMaterialPrint::dispatch_result(m_inventory_job_id,outcome);
+            m_ha_outcome_recorded = true;
+        } catch (const std::exception &error) {
+            // The authority helper keeps a durable bookkeeping receipt; never resend a print.
+            BOOST_LOG_TRIVIAL(error) << "HA dispatch outcome awaits reconciliation: " << error.what();
+            m_ha_outcome_recorded = true;
+        }
+        if (outcome != "rejected" && !m_ha_external_job_id.empty()) {
+            try {
+                HaInventoryAuthority::provider_job("bind_external_id",m_inventory_job_id,
+                    {{"provider","bambu:" + m_dev_id},{"kind","job_id"},{"value",m_ha_external_job_id}});
+            } catch (const std::exception &error) {
+                BOOST_LOG_TRIVIAL(error) << "HA external job identifier awaits reconciliation: " << error.what();
+            }
+        }
+    }
     if (result < 0) {
-        if (!m_inventory_job_id.empty()) {
+        if (!m_inventory_job_id.empty() && !m_ha_ticket) {
             wxGetApp().filament_inventory().mark_dispatch_failed(
                 m_inventory_job_id,
                 m_inventory_dispatch_attempted &&
@@ -886,7 +940,7 @@ void PrintJob::process(Ctl &ctl)
 
         BOOST_LOG_TRIVIAL(error) << "print_job: failed, result = " << result;
     } else {
-        if (!m_inventory_job_id.empty()) {
+        if (!m_inventory_job_id.empty() && !m_ha_ticket) {
             FilamentInventoryService::BambuStatusSnapshot current;
             current.printer_id = m_dev_id;
             if (obj != nullptr && obj->get_dev_id() == m_dev_id) {
@@ -933,6 +987,16 @@ void PrintJob::finalize(bool canceled, std::exception_ptr &eptr) {
         eptr = std::current_exception();
     }
 
+    if (m_ha_ticket && !m_inventory_job_id.empty()) {
+        if (m_ha_prepared && !m_ha_outcome_recorded) {
+            try { HaMaterialPrint::dispatch_result(m_inventory_job_id,m_inventory_dispatch_attempted ? "uncertain" : "rejected"); }
+            catch (const std::exception &error) { BOOST_LOG_TRIVIAL(error) << "HA dispatch reconciliation pending: " << error.what(); }
+        } else if (!m_ha_prepared) {
+            try { wxGetApp().filament_inventory().store().discard_job(m_inventory_job_id); }
+            catch (const std::exception &error) { BOOST_LOG_TRIVIAL(error) << "HA reservation release pending: " << error.what(); }
+        }
+        m_inventory_handoff_complete = true;
+    }
     if (!m_inventory_job_id.empty() && !m_inventory_handoff_complete) {
         wxGetApp().filament_inventory().mark_dispatch_failed(
             m_inventory_job_id, m_inventory_dispatch_attempted);

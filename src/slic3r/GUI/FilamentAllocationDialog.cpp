@@ -129,7 +129,9 @@ public:
         auto *root = new wxBoxSizer(wxVERTICAL);
         root->Add(new wxStaticText(
                       this, wxID_ANY,
-                      _L("Assign each sliced project filament to the physical spool that will be used.")),
+                      context.fixed_allocations ?
+                          _L("Choose the customer order for this print. Physical spools are assigned by Home Assistant.") :
+                          _L("Assign each sliced project filament to the physical spool that will be used.")),
                   0, wxEXPAND | wxALL, FromDIP(12));
 
         auto *tracking_grid = new wxFlexGridSizer(2, FromDIP(8), FromDIP(10));
@@ -224,23 +226,31 @@ public:
             m_choices.push_back(choice);
             m_grid->Add(choice, 1, wxEXPAND | wxALIGN_CENTER_VERTICAL);
 
-            auto *create = new wxButton(scroll, wxID_ANY, _L("Create spool"));
-            create->Bind(wxEVT_BUTTON, [this, index](wxCommandEvent &) {
-                create_spool(index);
-            });
-            m_grid->Add(create, 0, wxALIGN_CENTER_VERTICAL);
+            if (context.fixed_allocations) {
+                choice->Disable();
+                m_grid->Add(new wxStaticText(scroll, wxID_ANY, _L("Home Assistant")),
+                            0, wxALIGN_CENTER_VERTICAL);
+            } else {
+                auto *create = new wxButton(scroll, wxID_ANY, _L("Create spool"));
+                create->Bind(wxEVT_BUTTON, [this, index](wxCommandEvent &) {
+                    create_spool(index);
+                });
+                m_grid->Add(create, 0, wxALIGN_CENTER_VERTICAL);
+            }
         }
         scroll->SetSizer(m_grid);
         root->Add(scroll, 1, wxEXPAND | wxLEFT | wxRIGHT, FromDIP(12));
         auto *button_row = new wxBoxSizer(wxHORIZONTAL);
-        auto *without_tracking = new wxButton(
-            this, ID_CONTINUE_WITHOUT_TRACKING, _L("Continue without tracking"));
-        without_tracking->SetToolTip(
-            _L("Start the print without reserving or deducting filament."));
-        without_tracking->Bind(wxEVT_BUTTON, [this](wxCommandEvent &) {
-            EndModal(ID_CONTINUE_WITHOUT_TRACKING);
-        });
-        button_row->Add(without_tracking, 0, wxALIGN_CENTER_VERTICAL);
+        if (!context.fixed_allocations) {
+            auto *without_tracking = new wxButton(
+                this, ID_CONTINUE_WITHOUT_TRACKING, _L("Continue without tracking"));
+            without_tracking->SetToolTip(
+                _L("Start the print without reserving or deducting filament."));
+            without_tracking->Bind(wxEVT_BUTTON, [this](wxCommandEvent &) {
+                EndModal(ID_CONTINUE_WITHOUT_TRACKING);
+            });
+            button_row->Add(without_tracking, 0, wxALIGN_CENTER_VERTICAL);
+        }
         button_row->AddStretchSpacer();
 
         auto *standard_buttons = new wxStdDialogButtonSizer();
@@ -250,8 +260,10 @@ public:
         button_row->Add(standard_buttons, 0, wxALIGN_CENTER_VERTICAL);
         root->Add(button_row, 0, wxEXPAND | wxALL, FromDIP(12));
         SetSizer(root);
-        SetSize(wxSize(FromDIP(850), FromDIP(500)));
+        // Fitting the sizer first must not override the viewport height below.
+        root->SetSizeHints(this);
         SetMinSize(wxSize(FromDIP(650), FromDIP(330)));
+        SetSize(wxSize(FromDIP(850), FromDIP(500)));
         CentreOnParent();
 
         refresh_spools();
@@ -385,34 +397,50 @@ private:
 
     void create_customer()
     {
-        const auto customer =
-            edit_customer_interactively(this, m_store);
-        if (!customer)
-            return;
-        m_preferred_customer_id = customer->id;
-        refresh_customer_orders();
+        try {
+            if (m_context.refresh_inventory)
+                m_context.refresh_inventory();
+            const auto customer = edit_customer_interactively(this, m_store);
+            if (!customer)
+                return;
+            m_preferred_customer_id = customer->id;
+            if (m_context.refresh_inventory)
+                m_context.refresh_inventory();
+            refresh_customer_orders();
+        } catch (const std::exception &error) {
+            wxMessageBox(from_u8(error.what()), _L("Customer"), wxOK | wxICON_ERROR, this);
+        }
     }
 
     void create_customer_order()
     {
-        if (m_store.list_customers().empty()) {
-            wxMessageBox(
-                _L("Create the customer first, then add the order for this print."),
-                _L("Customer order"), wxOK | wxICON_INFORMATION, this);
-            return;
-        }
+        try {
+            if (m_context.refresh_inventory)
+                m_context.refresh_inventory();
+            if (m_store.list_customers().empty()) {
+                wxMessageBox(
+                    _L("Create the customer first, then add the order for this print."),
+                    _L("Customer order"), wxOK | wxICON_INFORMATION, this);
+                return;
+            }
 
-        std::string preferred_customer_id = m_preferred_customer_id;
-        const int selection = m_customer_order->GetSelection();
-        if (preferred_customer_id.empty() && selection > 0 &&
-            static_cast<std::size_t>(selection) <= m_orders.size())
-            preferred_customer_id =
-                m_orders[static_cast<std::size_t>(selection - 1)].customer_id;
-        const auto order = edit_customer_order_interactively(
-            this, m_store, nullptr, preferred_customer_id);
-        if (order) {
-            m_preferred_customer_id.clear();
-            refresh_customer_orders(order->id);
+            std::string preferred_customer_id = m_preferred_customer_id;
+            const int selection = m_customer_order->GetSelection();
+            if (preferred_customer_id.empty() && selection > 0 &&
+                static_cast<std::size_t>(selection) <= m_orders.size())
+                preferred_customer_id =
+                    m_orders[static_cast<std::size_t>(selection - 1)].customer_id;
+            const auto order = edit_customer_order_interactively(
+                this, m_store, nullptr, preferred_customer_id);
+            if (order) {
+                m_preferred_customer_id.clear();
+                refresh_customer_orders(order->id);
+                if (m_context.refresh_inventory)
+                    m_context.refresh_inventory();
+                refresh_customer_orders(order->id);
+            }
+        } catch (const std::exception &error) {
+            wxMessageBox(from_u8(error.what()), _L("Customer order"), wxOK | wxICON_ERROR, this);
         }
     }
 
@@ -490,6 +518,15 @@ private:
             std::string desired = previous[row];
             if (preferred_row && *preferred_row == row)
                 desired = preferred_spool_id;
+            if (m_context.fixed_allocations) {
+                const auto fixed = std::find_if(m_context.fixed_allocations->begin(),
+                    m_context.fixed_allocations->end(), [this, row](const auto &allocation) {
+                        return allocation.filament_index == m_context.usages[row].filament_index;
+                    });
+                if (fixed == m_context.fixed_allocations->end())
+                    throw std::runtime_error("A sliced material has no prevalidated HA roll");
+                desired = fixed->spool_id;
+            }
             int selection = wxNOT_FOUND;
             if (!desired.empty()) {
                 const auto found = std::find_if(
@@ -498,6 +535,8 @@ private:
                 if (found != m_spools.end())
                     selection = static_cast<int>(std::distance(m_spools.begin(), found)) + 1;
             }
+            if (selection == wxNOT_FOUND && m_context.fixed_allocations)
+                throw std::runtime_error("A prevalidated HA roll is no longer available; refresh the print dialog");
             if (selection == wxNOT_FOUND)
                 selection = best_selection(m_context.usages[row]);
             choice->SetSelection(selection == wxNOT_FOUND ? 0 : selection);
@@ -577,6 +616,11 @@ FilamentReservationResult reserve_filament_for_print(
     if (context.usages.empty())
         throw Error(ErrorCode::validation, "The sliced plate contains no measurable filament usage");
 
+    if (context.refresh_inventory)
+        context.refresh_inventory();
+    if (context.fixed_allocations)
+        (void) make_filament_reservation_plan(context, {}, {}, *context.fixed_allocations);
+
     if (store.list_spools().empty()) {
         wxMessageBox(
             _L("No physical filament spool exists yet. Create a spool for each material "
@@ -588,7 +632,7 @@ FilamentReservationResult reserve_filament_for_print(
     FilamentAllocationDialog dialog(parent, store, context);
     for (;;) {
         const int modal_result = dialog.ShowModal();
-        if (modal_result == ID_CONTINUE_WITHOUT_TRACKING)
+        if (modal_result == ID_CONTINUE_WITHOUT_TRACKING && !context.fixed_allocations)
             return {FilamentReservationDecision::without_tracking, std::nullopt};
         if (modal_result != wxID_OK)
             return {FilamentReservationDecision::cancelled, std::nullopt};
@@ -607,18 +651,13 @@ FilamentReservationResult reserve_filament_for_print(
                 wxYES_NO | wxNO_DEFAULT | wxICON_WARNING, parent) != wxYES)
             continue;
         try {
-            PrintJobInput job_input {
-                launch_key,
-                context.job_name,
-                context.project_path,
-                context.printer_id
-            };
-            job_input.customer_order_id = dialog.selected_customer_order_id();
-            job_input.estimated_runtime_seconds =
-                context.estimated_runtime_seconds;
+            const auto plan = make_filament_reservation_plan(context, launch_key,
+                dialog.selected_customer_order_id(), allocations);
+            if (context.refresh_inventory)
+                context.refresh_inventory();
             return {
                 FilamentReservationDecision::reserved,
-                store.reserve_job(job_input, allocations)
+                store.reserve_job(plan.job, plan.allocations)
             };
         } catch (const std::exception &exception) {
             wxMessageBox(

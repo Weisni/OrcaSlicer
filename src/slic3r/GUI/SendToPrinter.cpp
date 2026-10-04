@@ -1,3 +1,4 @@
+#include "HaMaterialPrint.hpp"
 #include "SendToPrinter.hpp"
 #include "I18N.hpp"
 
@@ -808,6 +809,11 @@ void SendToPrinterDialog::on_cancel(wxCloseEvent &event)
 
 void SendToPrinterDialog::on_ok(wxCommandEvent &event)
 {
+    if (wxGetApp().app_config->get_bool("ha_material_demo_enabled")) {
+        wxMessageBox("Printer uploads are disabled in HA material demo mode. Use the demo job journal.",
+                     "HA material demo", wxOK | wxICON_INFORMATION, this);
+        return;
+    }
     BOOST_LOG_TRIVIAL(info) << "print_job: on_ok to send !";
     m_is_canceled = false;
     Enable_Send_Button(false);
@@ -827,6 +833,13 @@ void SendToPrinterDialog::on_ok(wxCommandEvent &event)
     if (obj_ == nullptr) {
         m_printer_last_select = "";
         m_comboBox_printer->SetTextLabel("");
+        return;
+    }
+    if (obj_->get_dev_id() != m_printer_last_select) return;
+    try { HaMaterialPrint::upload_check(m_printer_last_select); }
+    catch (const std::exception &error) {
+        wxMessageBox(from_u8(error.what()),"Home Assistant material source",wxOK | wxICON_ERROR,this);
+        Enable_Send_Button(true);
         return;
     }
     assert(obj_->get_dev_id() == m_printer_last_select);
@@ -1943,6 +1956,12 @@ void SendToPrinterDialog::CreateUploadFileJob(const std::string &path, const std
     });
     // Guard against a null transfer tunnel before dereferencing.
     if (m_filetransfer_tunnel) {
+        try { HaMaterialPrint::upload_check(m_printer_last_select); }
+        catch (const std::exception &error) {
+            wxMessageBox(from_u8(error.what()),"Home Assistant material source",wxOK | wxICON_ERROR,this);
+            Enable_Send_Button(true);
+            return;
+        }
         m_filetransfer_uploadfile_job->start_on(*m_filetransfer_tunnel);
     } else {
         BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << ": file transfer tunnel is null";

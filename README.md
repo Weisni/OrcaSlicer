@@ -1,4 +1,5 @@
 <div align="center">
+
   <img src="QuackSlicer/QuackSlicer_Wordmark.png" alt="QuackSlicer" width="520">
   <h1>QuackSlicer</h1>
   <p>An independent fork of <a href="https://github.com/OrcaSlicer/OrcaSlicer">OrcaSlicer</a></p>
@@ -72,6 +73,47 @@ Only download binaries from a release page you trust. The two projects have
 separate maintainers and release channels.
 
 ## Development progress and open tasks
+
+### QuackSlicer 2.5.20
+
+The optional Home Assistant material source supplies real roll UUIDs, current
+stock, colors and filament profiles through the existing filament dropdown.
+Mounted rolls appear by slot; other usable rolls appear under Inventory.
+Local profile overrides retain the physical roll identity. Explicit
+synchronization transfers selected profile/color changes and can import all
+occupied HA slots while preserving existing project material indices.
+
+HA remains the writable inventory authority. Changes use row/field conflict
+checks, durable retry receipts, and paged snapshots; interrupted reads preserve
+the previous cache. Printing retains the native printer connection and checks
+the selected rolls and their live slot mapping before dispatch.
+
+See the [release notes](docs/releases/2.5.20.md),
+[setup, compatibility and recovery](docs/HOME_ASSISTANT_MATERIALS.md) and the
+[Home Assistant component](tools/ha-material-demo/README.md).
+
+- [x] Implement UUID-bound selection, explicit complete-profile synchronization,
+  and HA-backed inventory/job bookkeeping.
+- [x] Add regressions for large history imports, conflicts, retry receipts,
+  profile compatibility and printer mapping.
+- [ ] Complete cross-platform CI and verify the release assets for this revision.
+- [ ] Complete physical iPhone NFC writing, cold-start scans and two-phone testing.
+
+### QuackSlicer 2.5.19
+
+This maintenance release backports three focused OrcaSlicer safety fixes while
+the official stable baselines remain OrcaSlicer 2.4.2 and Bambu Studio 2.8.2.61.
+See the [release notes](docs/releases/2.5.19.md) for compatibility, validation,
+and the explicit auto-backup compromise.
+
+- [x] Bound ASCII STL solid-name and MakerWorld metadata parsing.
+- [x] Prevent CGAL model repair from racing the auto-backup worker.
+- [x] Keep per-variant configuration migration within source and destination
+  row bounds when switching printers.
+- [x] Complete the capped-load Windows Release build, all 532 runnable CTest
+  cases (five optional Python host tests skipped), and profile validation for
+  all 1,009 printer presets.
+- [ ] Complete cross-platform CI and verify the published release assets.
 
 ### QuackSlicer 2.5.18
 

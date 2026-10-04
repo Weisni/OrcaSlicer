@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <stdexcept>
@@ -392,12 +393,24 @@ public:
 
     int current_schema_version() const;
 
+    // Called with the native transaction still uncommitted. Throwing rejects
+    // the write and rolls it back. Confirmed cache imports bypass this gateway.
+    using AuthorityHandler = std::function<void(const std::string &, const std::string &)>;
+    void set_authority_handler(AuthorityHandler before_commit, std::function<void()> after_commit = {});
+
     InventorySettings get_settings() const;
     InventorySettings update_settings(const InventorySettings &settings);
     // Replaces the saved runtime-cost snapshots of the selected customer
     // orders with the current global settings. Material usage is unchanged.
     std::size_t recalculate_customer_order_costs(
         const std::vector<std::string> &order_ids);
+
+    // Isolated demo synchronization; full schema-checked transactional mirror.
+    std::string export_ha_demo_bundle() const;
+    void import_ha_demo_bundle(const std::string &payload, const std::string &sync_state = {});
+    void import_authoritative_ha_bundle(const std::string &payload, const std::string &sync_state);
+    std::string ha_demo_sync_state() const;
+    void save_ha_demo_sync_state(const std::string &sync_state);
 
     Spool create_spool(const SpoolInput &input,
                        const std::vector<SpoolIdentifierInput> &identifiers = {});
@@ -445,8 +458,11 @@ public:
         bool include_archived = false) const;
 
     PrintJob reserve_job(const PrintJobInput &job, const std::vector<AllocationInput> &allocations);
+    // An editor may pin the reviewed snapshot. Compare it inside the same
+    // transaction as the update so refreshes and lifecycle events cannot race it.
     PrintJob update_print_job(
-        const std::string &job_id, const PrintJobUpdateInput &input);
+        const std::string &job_id, const PrintJobUpdateInput &input,
+        const PrintJob *expected_job = nullptr);
     PrintJob get_job(const std::string &job_id) const;
     std::vector<PrintJob> list_jobs(bool include_closed = true, std::size_t limit = 0) const;
     std::vector<PrintJob> list_open_jobs() const;
@@ -471,6 +487,7 @@ public:
         const std::string &order_id) const;
 
 private:
+    void import_ha_bundle_impl(const std::string &payload, const std::string &sync_state, bool authoritative);
     struct Impl;
     std::unique_ptr<Impl> m_impl;
 };
