@@ -1,6 +1,7 @@
 name: Home Assistant materials tests
 
 on:
+  workflow_dispatch:
   pull_request:
     paths:
       - 'tools/ha-material-demo/**'

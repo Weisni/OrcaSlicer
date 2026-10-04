@@ -434,6 +434,8 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: ${{ env.artifact_prefix }}_Windows_${{ env.ver }}${{ env.ARCH_SUFFIX }}_portable
+          # Committed Dremel presets and tooltip placeholders have dot-prefixed names.
+          include-hidden-files: true
           path: ${{ github.workspace }}/${{ env.BUILD_DIR }}/OrcaSlicer
 
       - name: Upload artifacts Win installer
