@@ -6,6 +6,7 @@
 #include "HaProjectMaterialDialog.hpp"
 #include "HaProjectMaterialPublish.hpp"
 #include "HaMaterialProvider.hpp"
+#include <wx/choicdlg.h>
 #include "HaMaterialSyncDialog.hpp"
 #include <wx/checkbox.h>
 #include <wx/textctrl.h>
@@ -4692,6 +4693,7 @@ bool Sidebar::sync_ha_material_demo(bool report_error, const std::string &select
         auto *bundle = wxGetApp().preset_bundle;
         if (bundle->printers.get_edited_preset().printer_technology() != ptFFF)
             throw std::runtime_error("HA project filament synchronization requires an FFF printer");
+        std::map<std::string, std::string> chosen_profiles;
         const auto read_rows = [&]() {
             wxBusyCursor cursor;
             const auto snapshot = HaMaterialProvider::enabled() ? HaMaterialProvider::fresh_snapshot() : ha_inventory_request(endpoint);
@@ -4700,14 +4702,23 @@ bool Sidebar::sync_ha_material_demo(bool report_error, const std::string &select
             if (HaMaterialProvider::enabled()) {
                 const auto catalog = HaMaterialCatalog::available(snapshot);
                 const auto material_row = [&](const auto &roll) {
-                    const auto &profile = roll.assignment.material_profile;
+                    const auto assignment = HaMaterialProvider::for_printer(*bundle, roll.assignment);
+                    const auto &profile = assignment.material_profile;
+                    const auto chosen = chosen_profiles.find(assignment.spool_uuid);
+                    if (chosen != chosen_profiles.end()) {
+                        const auto *preset = bundle->filaments.find_preset(chosen->second);
+                        if (!preset || !HaMaterialProvider::compatible(*bundle, *preset, assignment.material_type))
+                            throw std::runtime_error("The chosen filament profile is no longer compatible; select the roll again");
+                        return HaProjectMaterialSync::Row{assignment, preset->name,
+                            HaMaterialProfile::digest(HaMaterialProfile::capture(*preset)), roll.remaining_mg};
+                    }
                     if (!profile.is_null())
-                        return HaProjectMaterialSync::Row{roll.assignment, HaMaterialProfile::managed_name(profile),
+                        return HaProjectMaterialSync::Row{assignment, HaMaterialProfile::managed_name(profile),
                             HaMaterialProfile::digest(profile), roll.remaining_mg};
-                    const auto *preset = HaMaterialProvider::resolve(*bundle, roll.assignment);
+                    const auto *preset = HaMaterialProvider::resolve(*bundle, assignment);
                     nlohmann::json fingerprint = nlohmann::json::object();
                     if (preset) for (const auto &key : preset->config.keys()) fingerprint[key] = preset->config.opt_serialize(key);
-                    return HaProjectMaterialSync::Row{roll.assignment, preset ? preset->name : std::string(), fingerprint.dump(), roll.remaining_mg};
+                    return HaProjectMaterialSync::Row{assignment, preset ? preset->name : std::string(), fingerprint.dump(), roll.remaining_mg};
                 };
                 for (const auto &slot : HaMaterialSource::parse_snapshot(snapshot, snapshot.at("printer_id"))) {
                     const auto found = std::find_if(catalog.begin(), catalog.end(), [&](const auto &r) { return r.assignment.slot == slot.slot; });
@@ -4772,6 +4783,7 @@ bool Sidebar::sync_ha_material_demo(bool report_error, const std::string &select
         const auto process_name = bundle->prints.get_selected_preset_name();
         const bool provider_mode = HaMaterialProvider::enabled();
         const auto provider_device = HaMaterialProvider::physical_device_id();
+        const auto reviewed_profile_context = provider_mode ? HaMaterialProvider::profile_context(*bundle) : nlohmann::json(nullptr);
         const auto *binding_option = bundle->project_config.option<ConfigOptionStrings>(HaMaterialBinding::config_key);
         const auto reviewed_bindings = binding_option ? binding_option->values : std::vector<std::string>{};
         const auto initial_rows = read_rows();
@@ -4805,6 +4817,7 @@ bool Sidebar::sync_ha_material_demo(bool report_error, const std::string &select
                 wxGetApp().app_config->get("ha_material_demo_endpoint") != endpoint ||
                 HaMaterialProvider::enabled() != provider_mode ||
                 (provider_mode && (HaMaterialProvider::physical_device_id() != provider_device ||
+                    HaMaterialProvider::profile_context(*bundle) != reviewed_profile_context ||
                     (current_bindings ? current_bindings->values : std::vector<std::string>{}) != reviewed_bindings)) ||
                 bundle->printers.get_edited_preset().config != printer_config ||
                 bundle->prints.get_edited_preset().config != process_config ||
@@ -4817,13 +4830,53 @@ bool Sidebar::sync_ha_material_demo(bool report_error, const std::string &select
         };
         const auto load = [&](const std::vector<HaProjectMaterialSync::Selection> &selections,
                               const HaProjectMaterialSync::Project &original,
-                              const std::vector<HaProjectMaterialSync::Row> &reviewed) -> std::optional<HaProjectMaterialSync::Project> {
+                              const std::vector<HaProjectMaterialSync::Row> &reviewed_input) -> std::optional<HaProjectMaterialSync::Project> {
+        auto reviewed = reviewed_input;
+        const auto previous_chosen_profiles = chosen_profiles;
         validate_project(original);
         const auto reviewed_project_config = bundle->project_config;
         const bool profiles_changed = std::any_of(selections.begin(), selections.end(), [](const auto &s) { return !s.color_only; });
         auto *tab = wxGetApp().get_tab(Preset::TYPE_FILAMENT);
         if (profiles_changed && tab->get_presets()->current_is_dirty())
             throw std::runtime_error("Save or discard the edited material preset before applying HA profiles. Color-only synchronization preserves material edits.");
+        if (provider_mode) for (const auto &selection : selections) {
+            if (selection.color_only) continue;
+            auto &row = reviewed.at(selection.source_index);
+            if (HaMaterialProvider::resolve(*bundle, row.assignment)) continue;
+            // An explicit roll selection may download the linked variant. A
+            // failed/incompatible association still permits a local same-family choice.
+            if (!row.assignment.material_profile.is_null()) {
+                try {
+                    HaMaterialProvider::install_profile(*bundle, row.assignment);
+                    if (HaMaterialProvider::resolve(*bundle, row.assignment)) continue;
+                } catch (const std::exception &) { /* Offer installed compatible profiles below. */ }
+            }
+            wxArrayString choices;
+            for (const auto &preset : bundle->filaments)
+                if (!preset.is_default && HaMaterialProvider::compatible(*bundle, preset, row.assignment.material_type))
+                    choices.Add(from_u8(preset.name));
+            if (choices.empty()) throw std::runtime_error("Install a compatible filament profile of this roll's material type first");
+            wxSingleChoiceDialog picker(this,
+                from_u8(row.assignment.product) + " / " + from_u8(row.assignment.material_type) + "\n" +
+                _L("Choose a compatible filament profile for this nozzle. It stays local until Project to Home Assistant synchronization."),
+                _L("Choose filament profile"), choices);
+            wxGetApp().UpdateDlgDarkUI(&picker);
+            if (picker.ShowModal() != wxID_OK) {
+                chosen_profiles = previous_chosen_profiles;
+                return std::nullopt;
+            }
+            chosen_profiles[row.assignment.spool_uuid] = into_u8(picker.GetStringSelection());
+            const auto fresh = read_rows();
+            const auto chosen = std::find_if(fresh.begin(), fresh.end(), [&](const auto &r) {
+                return r.assignment.spool_uuid == row.assignment.spool_uuid;
+            });
+            if (chosen == fresh.end()) throw std::runtime_error("The roll became unavailable while choosing its profile");
+            if (HaMaterialProfile::digest(chosen->assignment.material_profile) != HaMaterialProfile::digest(row.assignment.material_profile) ||
+                chosen->assignment.revision != row.assignment.revision || chosen->assignment.color != row.assignment.color ||
+                chosen->assignment.material_type != row.assignment.material_type || chosen->assignment.slot != row.assignment.slot)
+                throw std::runtime_error("The HA roll changed while choosing its profile; select it again");
+            row = *chosen;
+        }
         if (p->plater->is_background_process_slicing() ||
             !(wxGetApp().app_config->get_bool("ha_material_demo_enabled") || HaMaterialProvider::enabled()) ||
             wxGetApp().app_config->get("ha_material_demo_endpoint") != endpoint ||
@@ -4853,7 +4906,8 @@ bool Sidebar::sync_ha_material_demo(bool report_error, const std::string &select
             // user preset. It never selects it or overwrites a local profile.
             for (const auto &selection : selections) {
                 const auto &source = reviewed.at(selection.source_index).assignment;
-                if (!selection.color_only && !source.material_profile.is_null()) {
+                if (!selection.color_only && !source.material_profile.is_null() &&
+                    reviewed.at(selection.source_index).resolved_preset == HaMaterialProfile::managed_name(source.material_profile)) {
                     wxBusyCursor cursor;
                     if (HaMaterialProvider::install_profile(*bundle, source) != staged.presets.at(selection.project_index))
                         throw std::runtime_error("The selected HA material changed while downloading; reopen synchronization");
@@ -4871,8 +4925,19 @@ bool Sidebar::sync_ha_material_demo(bool report_error, const std::string &select
             staged_bundle.set_filament_preset(index, staged.presets[index]);
             if (HaMaterialProvider::enabled()) {
                 const auto &source = reviewed.at(selection.source_index).assignment;
+                auto binding = HaMaterialBinding::Binding{source.spool_uuid, endpoint, "duck-poop-demo"};
+                if (!selection.color_only && !chosen_profiles.count(source.spool_uuid)) {
+                    const auto *preset = staged_bundle.filaments.find_preset(staged.presets[index]);
+                    if (!preset) throw std::runtime_error("The selected filament profile is no longer installed");
+                    binding.profile_context = source.profile_context_key;
+                    binding.profile_name = preset->name;
+                    binding.profile_sha256 = HaMaterialProfile::digest(HaMaterialProfile::capture(*preset));
+                } else if (selection.color_only) {
+                    const auto previous = HaMaterialBinding::read(bundle->project_config, original.presets.size());
+                    if (index < previous.size() && previous[index].spool_uuid == binding.spool_uuid) binding = previous[index];
+                }
                 HaMaterialBinding::set(staged_bundle.project_config, index,
-                    {source.spool_uuid, endpoint, "duck-poop-demo"}, staged.presets.size());
+                    binding, staged.presets.size());
             }
             if (selection.profile_only) continue;
             staged_bundle.project_config.option<ConfigOptionStrings>("filament_colour")->values[index] = staged.colors[index];
@@ -4982,6 +5047,8 @@ bool Sidebar::sync_ha_material_demo(bool report_error, const std::string &select
             if(provider_mode && (provider_device.empty() || snapshot.value("provider_api_version",0)!=1 ||
                 snapshot.value("provider_printer_id",std::string())!=provider_device))
                 throw std::runtime_error("The HA material source or its physical printer changed; reopen synchronization");
+            if (provider_mode && !HaMaterialSource::supports_profile_variants(snapshot))
+                throw std::runtime_error("Update the HA material integration to support nozzle-specific profiles before sending");
             const auto bindings=provider_mode ? HaMaterialBinding::read(bundle->project_config,project.presets.size()) :
                                                std::vector<HaMaterialBinding::Binding>{};
             for(auto &roll:rolls) {
@@ -4998,17 +5065,21 @@ bool Sidebar::sync_ha_material_demo(bool report_error, const std::string &select
                 if(!roll.create) {
                     const auto old=std::find_if(reviewed.begin(),reviewed.end(),[&](const auto &r){return r.assignment.spool_uuid==roll.uuid;});
                     if(old==reviewed.end()||!target||old->remaining_mg!=HaInventorySelection::balance(snapshot.at("native_bundle"),roll.uuid) ||
-                       old->assignment.material_preset!=target->at("filament_preset_id") || old->assignment.color!=target->at("color_hex") ||
+                       (!provider_mode && old->assignment.material_preset!=target->at("filament_preset_id")) || old->assignment.color!=target->at("color_hex") ||
                        old->assignment.material_type!=target->at("material_type"))
                         throw std::runtime_error("HA roll or stock changed during review; refresh the dialog before sending");
                     if (!roll.color_only && !project.profiles.empty()) {
                         const auto fresh = std::find_if(snapshot.at("spools").begin(), snapshot.at("spools").end(),
                             [&](const auto &spool) { return spool.at("uuid") == roll.uuid; });
-                        if (fresh == snapshot.at("spools").end() ||
-                            HaMaterialProfile::digest(fresh->value("material_profile", nlohmann::json())) !=
-                                HaMaterialProfile::digest(old->assignment.material_profile))
+                        if (fresh == snapshot.at("spools").end())
                             throw std::runtime_error("HA material settings changed during review; refresh the dialog before sending");
-                        roll.expected_profile_sha256 = HaMaterialProfile::digest(old->assignment.material_profile);
+                        const auto fresh_assignment = HaMaterialProvider::for_printer(*bundle,
+                            HaMaterialSource::assignment_from_spool(*fresh, old->assignment.slot, old->assignment.revision));
+                        if (HaMaterialProfile::digest(HaMaterialSource::variant_profile(fresh_assignment)) !=
+                            HaMaterialProfile::digest(HaMaterialSource::variant_profile(old->assignment)))
+                            throw std::runtime_error("HA material settings changed during review; refresh the dialog before sending");
+                        roll.expected_profile_sha256 = HaMaterialProfile::digest(HaMaterialSource::variant_profile(old->assignment));
+                        if (provider_mode) roll.profile_context = HaMaterialProvider::profile_context(*bundle);
                     }
                 }
                 if(roll.color_only) continue;
@@ -5016,7 +5087,7 @@ bool Sidebar::sync_ha_material_demo(bool report_error, const std::string &select
                 if(!preset || (project.profiles.empty() && (preset->is_external || preset->is_project_embedded)))
                     throw std::runtime_error("The selected material profile is unavailable for this transfer");
                 if(!is_compatible_with_printer(bundle->filaments.get_preset_with_vendor_profile(*preset),bundle->printers.get_edited_preset_with_vendor_profile()) ||
-                   (!roll.create && preset->config.opt_string("filament_type",0)!=target->at("material_type")))
+                   (!roll.create && !HaMaterialSource::same_material_family(preset->config.opt_string("filament_type",0), target->at("material_type"))))
                     throw std::runtime_error("Choose a compatible profile of the physical roll's material type");
                 if(project.profiles.empty() && bundle->filaments.current_is_dirty() && bundle->filaments.get_edited_preset().name==preset->name)
                     throw std::runtime_error("Save the edited material preset before publishing its association");
@@ -5031,7 +5102,25 @@ bool Sidebar::sync_ha_material_demo(bool report_error, const std::string &select
             const auto changes=HaProjectRollPublish::publish_roll_changes(project,snapshot.at("native_bundle"),rolls);
             std::vector<std::string> selected_ids;
             for(const auto &roll:rolls) selected_ids.push_back(roll.uuid);
-            return publish_ha_project_materials(this,endpoint,snapshot,changes,[&](){validate_project(project);},selected_ids,provider_mode);
+            const bool acknowledged = publish_ha_project_materials(this,endpoint,snapshot,changes,[&](){validate_project(project);},selected_ids,provider_mode);
+            if (acknowledged && provider_mode) {
+                auto updated_bindings = HaMaterialBinding::read(bundle->project_config, project.presets.size());
+                for (const auto &roll : rolls) {
+                    if (roll.color_only) continue;
+                    for (size_t index = 0; index < updated_bindings.size(); ++index) {
+                        auto &binding = updated_bindings[index];
+                        if (binding.spool_uuid != roll.uuid || binding.source != endpoint) continue;
+                        const auto *preset = effective_preset(project.presets[index]);
+                        if (!preset) continue;
+                        binding.profile_context = HaMaterialContext::key(roll.profile_context);
+                        binding.profile_name = preset->name;
+                        binding.profile_sha256 = HaMaterialProfile::digest(HaMaterialProfile::capture(*preset));
+                    }
+                }
+                HaMaterialBinding::write(bundle->project_config, updated_bindings);
+                p->plater->update_project_dirty_from_presets();
+            }
+            return acknowledged;
         };
         const auto local_stock=[&](const std::string &uuid)->std::optional<int64_t> {
             const auto local=nlohmann::json::parse(wxGetApp().filament_inventory().store().export_ha_demo_bundle());

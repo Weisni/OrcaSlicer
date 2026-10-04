@@ -28,7 +28,7 @@ inline bool unchanged_fallback(const HaProjectMaterialSync::Row &row, const std:
 {
     if (preset != row.resolved_preset || preset == row.assignment.material_preset || row.assignment.material_type.empty())
         return false;
-    const auto prefix = "Generic " + row.assignment.material_type;
+    const auto prefix = "Generic " + HaMaterialSource::material_family(row.assignment.material_type);
     return preset.compare(0, prefix.size(), prefix) == 0 &&
            (preset.size() == prefix.size() || preset[prefix.size()] == ' ' || preset[prefix.size()] == '@');
 }
@@ -78,7 +78,7 @@ inline std::vector<Difference> compare(const HaProjectMaterialSync::Project &pro
                     const auto &profile = project.profiles.at(first);
                     HaMaterialProfile::validate(profile);
                     difference.after = profile.at("name").get<std::string>();
-                    difference.before_profile_sha256 = HaMaterialProfile::digest(row.assignment.material_profile);
+                    difference.before_profile_sha256 = HaMaterialProfile::digest(HaMaterialSource::variant_profile(row.assignment));
                     difference.after_profile_sha256 = HaMaterialProfile::digest(profile);
                     for (const auto index : group.project_indices) {
                         HaMaterialProfile::validate(project.profiles.at(index));

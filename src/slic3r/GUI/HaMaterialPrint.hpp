@@ -8,7 +8,7 @@
 
 namespace Slic3r::GUI::HaMaterialPrint {
 struct Ticket {
-    std::string source, printer_id;
+    std::string source, printer_id, profile_context;
     std::vector<HaMaterialBinding::Binding> bindings;
     std::vector<HaMaterialBinding::Usage> usages;
     std::vector<HaMaterialBinding::Resolved> expected;
@@ -55,6 +55,18 @@ inline std::vector<HaMaterialBinding::Resolved> check(const Ticket &ticket, Mach
     if (!HaMaterialProvider::enabled() || ticket.source != HaMaterialProvider::endpoint() ||
         !machine || ticket.printer_id != machine->get_dev_id())
         throw std::runtime_error("The HA material source or selected printer changed; reopen the print dialog");
+    const auto &bundle = *wxGetApp().preset_bundle;
+    const auto active_context = HaMaterialProvider::profile_context(bundle);
+    for (const auto &usage : ticket.usages) {
+        if (usage.project_index >= bundle.filament_presets.size())
+            throw std::runtime_error("The project filament list changed; slice again and reopen the print dialog");
+        const auto &name = bundle.filament_presets[usage.project_index];
+        const auto &edited = bundle.filaments.get_edited_preset();
+        const auto *effective = edited.name == name ? &edited : bundle.filaments.find_preset(name);
+        if (!effective) throw std::runtime_error("A selected filament profile is missing; select a compatible profile and slice again");
+        HaMaterialSource::validate_print_profile(bundle.filaments.get_preset_with_vendor_profile(*effective),
+            bundle.printers.get_edited_preset_with_vendor_profile(), usage.material_type, ticket.profile_context, active_context);
+    }
     const auto snapshot = refresh ? HaMaterialProvider::fresh_snapshot() : HaMaterialProvider::snapshot();
     return HaMaterialBinding::preflight(ticket.bindings,ticket.usages,snapshot,
         ticket.source,HaMaterialProvider::physical_device_id(),machine->get_dev_id(),live_slots(machine),job_uuid);
@@ -64,6 +76,7 @@ inline std::shared_ptr<Ticket> prepare(const DynamicPrintConfig &config, size_t 
 {
     auto ticket = std::make_shared<Ticket>();
     ticket->source = HaMaterialProvider::endpoint(); ticket->printer_id = machine->get_dev_id();
+    ticket->profile_context = HaMaterialContext::key(HaMaterialSource::profile_context(config, config));
     ticket->bindings = HaMaterialBinding::read(config,count); ticket->usages = usages;
     ticket->expected = check(*ticket,machine,{},refresh);
     const auto devices = live_slots(machine);

@@ -48,3 +48,26 @@ Before switching live data, stop the integration, back up its current database/c
 ## Validation status
 
 Automated restore tests cover reserved jobs, once-only completion after restore, corrupted payloads, missing/extra archive members, path traversal, preserved profile/journal bytes and refusal to overwrite existing destinations. Live acceptance must additionally compare the exported production ledger with its isolated restore; a local test database is not a production restore exercise.
+
+## Nozzle profile deployment and rollback
+
+For the 0.9.1 to 0.10.0 backend update, retain a fresh consistent predeployment
+SQLite backup and the installed versions of the five affected modules
+(`profiles.py`, `explicit_sync.py`, `store.py`, `read_api.py`, `recovery.py`) and
+`manifest.json`. Deploy those six files only; preserve unrelated integration and
+dashboard changes. Verify the running version, existing UUIDs/stock/assignments,
+legacy profile hashes and the new provider capability after the bounded restart.
+
+Startup adds `material_profile_variants` without rewriting the existing ledger.
+A source-only rollback leaves that new table present. The old recovery exporter
+and importer do not recognize the table and cannot handle a post-update recovery
+bundle. Do not describe restoring the old source files as a full data rollback.
+
+A full rollback requires the consistent predeployment database backup together
+with the old source files. Stop the integration before restoring either. Preserve
+a fresh post-update backup first, and reconcile any inventory, print-accounting,
+assignment or profile writes made after deployment before restoring an older
+database. Never overwrite newer production events with the old backup merely to
+remove the variant table. With no intervening writes, the predeployment backup is
+the bounded full rollback point; otherwise retain the current database and use a
+reviewed reconciliation or forward repair.

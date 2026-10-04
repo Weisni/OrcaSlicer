@@ -1,6 +1,7 @@
 // #include "libslic3r/GCodeSender.hpp"
 //#include "slic3r/Utils/Serial.hpp"
 #include "Tab.hpp"
+#include "HaMaterialProvider.hpp"
 #include "PresetHints.hpp"
 #include "libslic3r/PresetBundle.hpp"
 #include "libslic3r/PrintConfig.hpp"
@@ -72,6 +73,71 @@ namespace Slic3r {
 t_config_option_keys deep_diff(const ConfigBase &config_this, const ConfigBase &config_other, bool strict = true);
 
 namespace GUI {
+
+// Capture before native compatibility switching can replace a filament preset.
+// A project override has no authority baseline, or differs from its baseline.
+static std::vector<std::pair<size_t, HaMaterialBinding::Binding>> ha_clean_nozzle_bindings()
+{
+    std::vector<std::pair<size_t, HaMaterialBinding::Binding>> result;
+    if (!HaMaterialProvider::enabled()) return result;
+    auto &bundle = *wxGetApp().preset_bundle;
+    try {
+        const auto bindings = HaMaterialBinding::read(bundle.project_config, bundle.filament_presets.size());
+        for (size_t i = 0; i < bindings.size(); ++i)
+            if (!bindings[i].spool_uuid.empty() && bindings[i].source == HaMaterialProvider::endpoint() &&
+                !HaMaterialProvider::preserves_override(bundle, i, bindings[i]))
+                result.emplace_back(i, bindings[i]);
+    } catch (const std::exception &) { /* A malformed binding is handled by explicit selection/preflight. */ }
+    return result;
+}
+
+static void ha_load_changed_nozzle(const std::string &previous_context,
+    std::vector<std::pair<size_t, HaMaterialBinding::Binding>> targets)
+{
+    if (targets.empty() || !HaMaterialProvider::enabled()) return;
+    try {
+        auto &bundle = *wxGetApp().preset_bundle;
+        const auto context = HaMaterialContext::key(HaMaterialProvider::profile_context(bundle));
+        if (context == previous_context) return;
+        const auto expected_presets = bundle.filament_presets;
+        std::vector<std::string> expected_digests(expected_presets.size());
+        for (const auto &[index, binding] : targets) {
+            if (index >= expected_presets.size()) continue;
+            const auto &edited = bundle.filaments.get_edited_preset();
+            const auto *preset = edited.name == expected_presets[index] ? &edited : bundle.filaments.find_preset(expected_presets[index]);
+            if (preset) expected_digests[index] = HaMaterialProfile::digest(HaMaterialProfile::capture(*preset));
+        }
+        wxTheApp->CallAfter([context, targets = std::move(targets), expected_presets, expected_digests]() {
+            if (!wxGetApp().plater() || !HaMaterialProvider::enabled()) return;
+            try {
+                auto &current = *wxGetApp().preset_bundle;
+                if (HaMaterialContext::key(HaMaterialProvider::profile_context(current)) != context) return;
+                const auto snapshot = HaMaterialProvider::snapshot();
+                if (snapshot.is_null()) return;
+                const auto rows = HaMaterialCatalog::available(snapshot);
+                for (const auto &[index, original] : targets) {
+                    if (index >= current.filament_presets.size() || index >= expected_presets.size() ||
+                        current.filament_presets[index] != expected_presets[index]) continue;
+                    const auto &edited = current.filaments.get_edited_preset();
+                    const auto *preset = edited.name == expected_presets[index] ? &edited : current.filaments.find_preset(expected_presets[index]);
+                    if (!preset || expected_digests[index].empty() ||
+                        HaMaterialProfile::digest(HaMaterialProfile::capture(*preset)) != expected_digests[index]) continue;
+                    const auto bindings = HaMaterialBinding::read(current.project_config, current.filament_presets.size());
+                    if (bindings[index].spool_uuid != original.spool_uuid || bindings[index].source != original.source ||
+                        bindings[index].printer_id != original.printer_id) continue;
+                    const auto row = std::find_if(rows.begin(), rows.end(), [&](const auto &r) {
+                        return r.assignment.spool_uuid == original.spool_uuid;
+                    });
+                    if (row == rows.end()) continue;
+                    const auto assignment = HaMaterialProvider::for_printer(current, row->assignment);
+                    // Unknown variants require an explicit picker, never a guessed automatic profile.
+                    if (HaMaterialSource::variant_profile(assignment).is_null()) continue;
+                    wxGetApp().plater()->sidebar().sync_ha_material_demo(false, original.spool_uuid, int(index));
+                }
+            } catch (const std::exception &) { /* Explicit refresh/selection reports transport or compatibility errors. */ }
+        });
+    } catch (const std::exception &) { /* Unsupported nozzle configurations remain explicit. */ }
+}
 
 namespace
 {
@@ -1808,6 +1874,12 @@ void Tab::on_value_change(const std::string& opt_key, const boost::any& value)
         return;
     }
 
+    const bool ha_nozzle_changed = m_type == Preset::TYPE_PRINTER &&
+        (opt_key.rfind("nozzle_volume_type", 0) == 0 || opt_key.rfind("nozzle_diameter", 0) == 0);
+    auto ha_targets = ha_nozzle_changed ? ha_clean_nozzle_bindings() :
+        std::vector<std::pair<size_t, HaMaterialBinding::Binding>>{};
+    const std::string ha_previous_context = ha_targets.empty() ? std::string() : ha_targets.front().second.profile_context;
+
     // Keep this preset's "plugins" manifest in sync when a plugin picker changes, so full_config() and
     // save_to_json() always find resolved "name;uuid;capability" references and rebuild it nowhere else.
     // Also drop any plugin config override entries for a capability the change just stopped
@@ -2311,6 +2383,7 @@ void Tab::on_value_change(const std::string& opt_key, const boost::any& value)
     auto& plate_list = wxGetApp().plater()->get_partplate_list();
     for (auto plate : plate_list.get_plate_list())
         plate->update_slice_result_valid_state(false);
+    ha_load_changed_nozzle(ha_previous_context, std::move(ha_targets));
 }
 
 void Tab::show_timelapse_warning_dialog() {
@@ -6684,6 +6757,13 @@ void Tab::update_preset_choice()
 bool Tab::select_preset(
     std::string preset_name, bool delete_current /*=false*/, const std::string &last_selected_ph_printer_name /* =""*/, bool force_select, bool force_no_transfer)
 {
+    auto ha_targets = m_type == Preset::TYPE_PRINTER ? ha_clean_nozzle_bindings() :
+        std::vector<std::pair<size_t, HaMaterialBinding::Binding>>{};
+    std::string ha_previous_context;
+    if (!ha_targets.empty()) {
+        try { ha_previous_context = HaMaterialContext::key(HaMaterialProvider::profile_context(*m_preset_bundle)); }
+        catch (const std::exception &) { ha_targets.clear(); }
+    }
     BOOST_LOG_TRIVIAL(info) << boost::format("select preset, name %1%, delete_current %2%")
         %preset_name %delete_current;
     if (preset_name.empty()) {
@@ -6983,6 +7063,8 @@ bool Tab::select_preset(
     if (technology_changed)
         wxGetApp().mainframe->technology_changed();
     BOOST_LOG_TRIVIAL(info) << boost::format("select preset, exit");
+
+    if (!canceled) ha_load_changed_nozzle(ha_previous_context, std::move(ha_targets));
 
     return !canceled;
 }
