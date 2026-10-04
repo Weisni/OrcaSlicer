@@ -26,7 +26,9 @@ inline nlohmann::json ha_inventory_request_raw(const std::string &endpoint, cons
     const auto token = ha_inventory_token(endpoint);
     if (!token.empty()) http.header("Authorization", "Bearer " + token);
     if(payload) http.header("Content-Type","application/json").set_post_body(payload->dump());
-    http.tls_verify(true).follow_redirects(false).timeout_connect(2).timeout_max(8).size_limit(maximum_bytes)
+    // Local HA names may need several seconds for the first Windows DNS/mDNS lookup.
+    // Keep connection and whole-request deadlines bounded without rejecting that lookup.
+    http.tls_verify(true).follow_redirects(false).timeout_connect(8).timeout_max(15).size_limit(maximum_bytes)
         .on_complete([&](std::string body,unsigned code){response=std::move(body);status=code;})
         .on_error([&](std::string body,std::string,unsigned code){response=std::move(body);status=code;}).perform_sync();
     if(status!=200) {
