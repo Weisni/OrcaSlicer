@@ -260,9 +260,10 @@ public:
         button_row->Add(standard_buttons, 0, wxALIGN_CENTER_VERTICAL);
         root->Add(button_row, 0, wxEXPAND | wxALL, FromDIP(12));
         SetSizer(root);
-        SetSize(wxSize(FromDIP(850), FromDIP(500)));
-        SetMinSize(wxSize(FromDIP(650), FromDIP(330)));
+        // Fitting the sizer first must not override the viewport height below.
         root->SetSizeHints(this);
+        SetMinSize(wxSize(FromDIP(650), FromDIP(330)));
+        SetSize(wxSize(FromDIP(850), FromDIP(500)));
         CentreOnParent();
 
         refresh_spools();
