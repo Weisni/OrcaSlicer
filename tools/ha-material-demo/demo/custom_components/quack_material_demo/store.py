@@ -64,6 +64,8 @@ class Store(Lifecycle, NativeBridge, Pilot, ExplicitSync, Provider):
                     bindings TEXT NOT NULL,updated_at TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS material_profiles(spool_uuid TEXT PRIMARY KEY REFERENCES spools(uuid),
                     payload TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS material_profile_variants(spool_uuid TEXT NOT NULL REFERENCES spools(uuid),
+                    context_key TEXT NOT NULL, payload TEXT NOT NULL, PRIMARY KEY(spool_uuid,context_key));
             ''')
             db.execute('BEGIN IMMEDIATE')
             for slot in SLOTS:

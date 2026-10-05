@@ -123,3 +123,48 @@ listener. Never use its seeded demonstration stock as a production inventory.
 
 The package intentionally excludes private deployment scripts, real inventory
 snapshots, generated labels and uncalibrated demonstration filament presets.
+## Nozzle-specific material profiles
+
+HA stores effective profile variants separately from each physical roll's legacy
+profile association. The context is `{printer_model, nozzle_diameter, flow_type}`;
+the key is `printer_model|nozzle_diameter|flow_type`. Printer models must be nonempty,
+at most 128 UTF-8 bytes, and contain no `|`. Diameter uses a canonical positive
+decimal string such as `0.4`; flow is `standard` or `high_flow`.
+
+An explicitly confirmed `native_apply` change can supply `profile_context`,
+`material_profile`, and `expected_profile_sha256`, with empty `fields` and
+`expected` objects for a profile-only change. The expected digest is the current
+digest for that exact context, or null when adding a new variant. Upload validation,
+receipt replay, and rollback join the existing inventory transaction. A supplied
+`filament_preset_id` must match the profile envelope; variant saves preserve the
+legacy association, other contexts, roll UUID, stock, slots, and native history.
+ASA+ physical products explicitly use the ASA slicer family; other materials must
+match exactly.
+
+Full snapshots contain `material_profile_variants` keyed by context. Provider
+views expose profile summaries and advertise `material_profile_variants_v1`.
+`/profile?spool_uuid=...&sha256=...&context=...` downloads a digest-pinned exact
+variant; omit context to retain the legacy download behavior. Missing or stale
+profiles return the existing conflict response. Existing databases gain an empty
+variant table without relabeling old profiles; recovery exports preserve both
+stores and older bundles remain importable.
+
+Progress: 235 backend tests, ten JavaScript test files and 410 native tests pass.
+Coverage includes actual nozzle transitions with saved and edited local overrides,
+material-family checks, digest-pinned variants, independent CAS, rollback and
+recovery. Independent review identified and verified fixes for capability-envelope
+parsing and native compatibility replacement. The backed-up live 0.10.0 migration
+preserves existing inventory and accounting tables. Native isolated acceptance
+passed cancellation, same-family selection, two full profile uploads for 0.4
+standard and 0.8 high flow, digest-pinned reload and automatic nozzle switching.
+The backed-up local runtime also selected the real HA HT1 ASA+ roll at 0.8 high
+flow. Renewed final-head cross-platform CI and release-asset checks remain required
+before publication. No physical print was performed for this change.
+
+Selecting a roll applies its saved compatible profile for the active nozzle.
+If none resolves, choose an installed compatible same-family profile; cancelling
+leaves project selection and HA unchanged. A different profile or edited settings
+stay local until **Project to Home Assistant / Synchronize now** is confirmed.
+That explicit save updates only the current printer/nozzle/flow variant. Switching
+nozzles loads an existing variant only for an unchanged HA profile baseline;
+local overrides are retained and incompatible profiles block print dispatch.

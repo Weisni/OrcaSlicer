@@ -9,6 +9,32 @@ PROFILE_KEYS = {'schema_version', 'name', 'material_type', 'settings', 'dependen
 DEPENDENCY_KEYS = {'inherits', 'filament_id', 'vendor'}
 
 
+def material_family(value):
+    """ASA+ is a physical product in the ASA slicer family."""
+    return 'ASA' if value == 'ASA+' else value
+
+
+def profile_context_key(context):
+    if not isinstance(context, dict) or set(context) != {'printer_model', 'nozzle_diameter', 'flow_type'}:
+        raise ValueError('Invalid profile context')
+    model, diameter, flow = (context[key] for key in ('printer_model', 'nozzle_diameter', 'flow_type'))
+    _text(model, 128)
+    if '|' in model:
+        raise ValueError('Invalid printer model delimiter')
+    if (not isinstance(diameter, str) or len(diameter) > 32 or
+            not re.fullmatch(r'(?:0|[1-9][0-9]*)(?:\.[0-9]*[1-9])?', diameter) or diameter == '0'):
+        raise ValueError('Use a canonical positive nozzle diameter string')
+    if flow not in ('standard', 'high_flow'):
+        raise ValueError('Invalid profile flow type')
+    return '|'.join((model, diameter, flow))
+
+
+def validate_context_key(key):
+    if not isinstance(key, str) or len(key.split('|')) != 3:
+        raise ValueError('Invalid profile context key')
+    return profile_context_key(dict(zip(('printer_model', 'nozzle_diameter', 'flow_type'), key.split('|'))))
+
+
 def _text(value, maximum, allow_empty=False):
     if (not isinstance(value, str) or '\0' in value or len(value.encode('utf-8')) > maximum
             or not allow_empty and not value.strip()):
@@ -59,27 +85,34 @@ def validate_profile(value):
 def apply_profile_change(db, ident, change, native):
     """Join the caller's roll/receipt transaction; never commit independently."""
     from .store import Conflict
+    context = profile_context_key(change['profile_context']) if 'profile_context' in change else None
     if 'material_profile' not in change:
-        if 'expected_profile_sha256' in change:
+        if 'expected_profile_sha256' in change or context is not None:
             raise ValueError('A profile baseline requires a selected profile upload')
         detach_incompatible_profile(db, ident, native)
         return
     profile = validate_profile(change['material_profile'])
-    if (change.get('fields', {}).get('filament_preset_id') != profile['name'] or
-            native.get('filament_preset_id') != profile['name'] or
-            native.get('material_type') != profile['material_type']):
+    selected_name = change.get('fields', {}).get('filament_preset_id')
+    if ((context is None and (selected_name != profile['name'] or native.get('filament_preset_id') != profile['name'])) or
+            (context is not None and selected_name is not None and selected_name != profile['name']) or
+            material_family(native.get('material_type')) != material_family(profile['material_type'])):
         raise ValueError('Select the matching material profile association for this roll')
     if 'expected_profile_sha256' not in change:
         raise ValueError('The previous HA profile digest is required')
     expected = change['expected_profile_sha256']
     if expected is not None:
         _sha(expected)
-    prior = db.execute('SELECT payload FROM material_profiles WHERE spool_uuid=?', (ident,)).fetchone()
+    prior = (db.execute('SELECT payload FROM material_profile_variants WHERE spool_uuid=? AND context_key=?', (ident, context))
+             if context is not None else db.execute('SELECT payload FROM material_profiles WHERE spool_uuid=?', (ident,))).fetchone()
     before = json.loads(prior['payload'])['sha256'] if prior else None
     if before != expected:
         raise Conflict('HA material profile changed; refresh before synchronizing')
-    db.execute('INSERT INTO material_profiles VALUES (?,?) ON CONFLICT(spool_uuid) DO UPDATE SET payload=excluded.payload',
-               (ident, _canonical(profile)))
+    if context is not None:
+        db.execute('INSERT INTO material_profile_variants VALUES (?,?,?) ON CONFLICT(spool_uuid,context_key) DO UPDATE SET payload=excluded.payload',
+                   (ident, context, _canonical(profile)))
+    else:
+        db.execute('INSERT INTO material_profiles VALUES (?,?) ON CONFLICT(spool_uuid) DO UPDATE SET payload=excluded.payload',
+                   (ident, _canonical(profile)))
 
 
 def detach_incompatible_profile(db, ident, native):
@@ -87,14 +120,16 @@ def detach_incompatible_profile(db, ident, native):
     if not prior:
         return
     value = json.loads(prior['payload'])
-    if value['name'] != native.get('filament_preset_id') or value['material_type'] != native.get('material_type'):
+    if value['name'] != native.get('filament_preset_id') or material_family(value['material_type']) != material_family(native.get('material_type')):
         db.execute('DELETE FROM material_profiles WHERE spool_uuid=?', (ident,))
 
 
-def read_profile(db, ident, expected_sha256):
+def read_profile(db, ident, expected_sha256, context=None):
     from .store import Conflict
     _sha(expected_sha256)
-    row = db.execute('SELECT payload FROM material_profiles WHERE spool_uuid=?', (ident,)).fetchone()
+    if context is not None: validate_context_key(context)
+    row = (db.execute('SELECT payload FROM material_profile_variants WHERE spool_uuid=? AND context_key=?', (ident, context))
+           if context is not None else db.execute('SELECT payload FROM material_profiles WHERE spool_uuid=?', (ident,))).fetchone()
     if not row:
         raise Conflict('HA material profile is no longer available; refresh the roll')
     value = validate_profile(json.loads(row['payload']))
@@ -102,7 +137,8 @@ def read_profile(db, ident, expected_sha256):
         raise Conflict('HA material profile changed; refresh before loading it')
     spool = db.execute('SELECT data FROM spools WHERE uuid=?', (ident,)).fetchone()
     metadata = json.loads(spool['data']) if spool else {}
-    if metadata.get('material_preset') != value['name'] or metadata.get('material_type') != value['material_type']:
+    if ((context is None and metadata.get('material_preset') != value['name']) or
+            material_family(metadata.get('material_type')) != material_family(value['material_type'])):
         raise Conflict('HA roll profile association changed; refresh before loading it')
     return value
 
@@ -117,9 +153,17 @@ def profile_summary(value):
 def attach_profiles(db, spools):
     by_id = {row['spool_uuid']: json.loads(row['payload'])
              for row in db.execute('SELECT spool_uuid,payload FROM material_profiles')}
+    variants = {}
+    # Small direct unit fixtures predate the optional migration table.
+    if db.execute("SELECT 1 FROM sqlite_master WHERE name='material_profile_variants'").fetchone():
+        for row in db.execute('SELECT spool_uuid,context_key,payload FROM material_profile_variants'):
+            validate_context_key(row['context_key'])
+            variants.setdefault(row['spool_uuid'], {})[row['context_key']] = validate_profile(json.loads(row['payload']))
     for spool in spools:
         value = by_id.get(spool['uuid'])
         if value is not None and (spool.get('material_preset', value['name']) != value['name'] or
-                                  spool.get('material_type', value['material_type']) != value['material_type']):
+                                  material_family(spool.get('material_type', value['material_type'])) != material_family(value['material_type'])):
             value = None
         spool['material_profile'] = value
+        spool['material_profile_variants'] = {key: variant for key, variant in variants.get(spool['uuid'], {}).items()
+            if material_family(spool.get('material_type', variant['material_type'])) == material_family(variant['material_type'])}

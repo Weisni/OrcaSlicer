@@ -73,6 +73,11 @@ inline bool publish_ha_project_materials(wxWindow *parent, const std::string &en
             preview += names.at(field.key()) + ": " +
                 (create ? "" : change.at("expected").at(field.key()).get<std::string>() + " -> ") + after + "\n";
         }
+        if (change.contains("material_profile")) {
+            preview += "Profile settings: " + change.at("material_profile").at("name").get<std::string>() + "\n";
+            if (change.contains("profile_context"))
+                preview += "Printer/nozzle: " + HaMaterialContext::key(change.at("profile_context")) + "\n";
+        }
         if (change.contains("remaining_mg"))
             preview += "Stock: " + (create ? std::string("new -> ") : grams(change.at("expected_remaining_mg")) + " -> ") +
                 grams(change.at("remaining_mg")) + " (estimated)\n";

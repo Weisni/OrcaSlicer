@@ -7,7 +7,8 @@ from .native_bridge import TABLES
 from .profiles import profile_summary, read_profile
 
 CAPABILITIES = dict(native_apply_fields=True, provider_delta=True,
-                    native_snapshot_pages=True, provider_materials_view=True, material_profiles_v1=True)
+                    native_snapshot_pages=True, provider_materials_view=True, material_profiles_v1=True,
+                    material_profile_variants_v1=True)
 PAGE_BYTES = 192 * 1024
 NATIVE_CACHE_BYTES = 64 * 1024 * 1024
 
@@ -32,17 +33,18 @@ def _within_cache_budget(bundle):
 def provider_view(snapshot):
     """Keep the material selection envelope independent of ledger history size."""
     result = {key: value for key, value in snapshot.items() if key not in ('jobs', 'native_bundle', 'orders')}
-    result['spools'] = [dict(spool, material_profile=profile_summary(spool.get('material_profile')))
+    result['spools'] = [dict(spool, material_profile=profile_summary(spool.get('material_profile')),
+        material_profile_variants={key: profile_summary(value) for key, value in spool.get('material_profile_variants', {}).items()})
                         for spool in snapshot['spools']]
     result['capabilities'] = dict(CAPABILITIES)
     return result
 
 
 def profile(store, query):
-    if set(query) != {'spool_uuid', 'sha256'}:
+    if not {'spool_uuid', 'sha256'} <= set(query) or set(query) - {'spool_uuid', 'sha256', 'context'}:
         raise ValueError('Select a roll and its expected profile digest')
     with store.connection() as db:
-        return read_profile(db, query['spool_uuid'], query['sha256'])
+        return read_profile(db, query['spool_uuid'], query['sha256'], query.get('context'))
 
 
 def _integer(query, name, default=None):

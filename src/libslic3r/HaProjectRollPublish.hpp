@@ -14,6 +14,7 @@ struct RollPublish {
     std::int64_t nominal_mg = 1000000;
     bool color_only = false, profile_only = false;
     std::string expected_profile_sha256;
+    Json profile_context = nullptr;
 };
 
 inline void require_keys(const Json &value, const std::set<std::string> &allowed)
@@ -68,7 +69,7 @@ inline void validate_changes(const Json &changes)
         throw std::runtime_error("Select between one and 100 physical rolls");
     std::set<std::string> seen;
     for (const auto &change : changes) {
-        require_keys(change, {"spool_uuid", "fields", "expected", "create", "remaining_mg", "expected_remaining_mg", "quality", "material_profile", "expected_profile_sha256"});
+        require_keys(change, {"spool_uuid", "fields", "expected", "create", "remaining_mg", "expected_remaining_mg", "quality", "material_profile", "expected_profile_sha256", "profile_context"});
         require_text(change.at("spool_uuid"), 36);
         const auto uuid = change.at("spool_uuid").get<std::string>();
         if (!canonical_uuid(uuid) || !seen.insert(uuid).second)
@@ -93,15 +94,16 @@ inline void validate_changes(const Json &changes)
         if (change.contains("material_profile")) {
             const auto &profile = change.at("material_profile");
             HaMaterialProfile::validate(profile);
-            if (!fields.contains("filament_preset_id") || fields.at("filament_preset_id") != profile.at("name"))
+            if (change.contains("profile_context")) HaMaterialContext::key(change.at("profile_context"));
+            else if (!fields.contains("filament_preset_id") || fields.at("filament_preset_id") != profile.at("name"))
                 throw std::runtime_error("Material settings require the matching selected profile association");
             const auto &baseline = change.at("expected_profile_sha256");
             if (!baseline.is_null() && !HaMaterialProfile::is_sha256(baseline))
                 throw std::runtime_error("Material settings need a valid HA digest baseline");
-        } else if (change.contains("expected_profile_sha256"))
+        } else if (change.contains("expected_profile_sha256") || change.contains("profile_context"))
             throw std::runtime_error("A material digest baseline requires complete settings");
         const bool stock = change.contains("remaining_mg");
-        if (!stock && (fields.empty() || change.contains("quality") || change.contains("expected_remaining_mg")))
+        if (!stock && ((fields.empty() && !change.contains("material_profile")) || change.contains("quality") || change.contains("expected_remaining_mg")))
             throw std::runtime_error("Stock provenance requires an explicit stock transfer");
         if (stock) {
             checked_weight(change.at("remaining_mg"));
@@ -171,14 +173,19 @@ inline Json publish_roll_changes(const HaProjectMaterialSync::Project &project,
                     change["expected"][field] = target->at(field);
                 }
             };
-            if (!item.color_only) add("filament_preset_id", project.presets.at(item.project_index));
+            if (!item.color_only && item.profile_context.is_null()) add("filament_preset_id", project.presets.at(item.project_index));
             if (!item.profile_only) add("color_hex", project.colors.at(item.project_index));
         }
         if (!item.color_only && !project.profiles.empty()) {
             const auto &profile = project.profiles.at(item.project_index);
             HaMaterialProfile::validate(profile);
-            fields["filament_preset_id"] = profile.at("name");
-            if (!item.create) change["expected"]["filament_preset_id"] = target->at("filament_preset_id");
+            if (!item.profile_context.is_null()) {
+                HaMaterialContext::key(item.profile_context);
+                change["profile_context"] = item.profile_context;
+            } else {
+                fields["filament_preset_id"] = profile.at("name");
+                if (!item.create) change["expected"]["filament_preset_id"] = target->at("filament_preset_id");
+            }
             change["material_profile"] = profile;
             change["expected_profile_sha256"] = item.expected_profile_sha256.empty()
                 ? Json(nullptr) : Json(item.expected_profile_sha256);
@@ -195,7 +202,7 @@ inline Json publish_roll_changes(const HaProjectMaterialSync::Project &project,
             change["remaining_mg"] = amount;
             change["quality"] = "estimated";
         }
-        if (!fields.empty() || change.contains("remaining_mg")) changes.push_back(std::move(change));
+        if (!fields.empty() || change.contains("remaining_mg") || change.contains("material_profile")) changes.push_back(std::move(change));
     }
     if (!changes.empty()) validate_changes(changes);
     return changes;

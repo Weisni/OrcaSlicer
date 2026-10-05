@@ -28,6 +28,32 @@ static RollPublish existing()
     return {0, roll_id, 600000};
 }
 
+TEST_CASE("Nozzle profile publication preserves the legacy association and all stock fields", "[HaProjectRollPublish]")
+{
+    auto current = project();
+    const auto profile = Slic3r::HaMaterialProfile::seal({{"schema_version",1}, {"name","PLA HF"}, {"material_type","PLA"},
+        {"dependencies", {{"inherits",""}, {"filament_id",""}, {"vendor",""}}},
+        {"settings", {{"filament_type","PLA"}}}});
+    current.profiles = {profile, profile};
+    auto selection = existing();
+    selection.profile_only = true;
+    selection.profile_context = Slic3r::HaMaterialContext::make("Bambu Lab P2S", 0.8, "high_flow");
+    const auto remote = remote_rolls();
+    const auto changes = publish_roll_changes(current, remote, {selection});
+    REQUIRE(changes.size() == 1);
+    CHECK(changes[0]["fields"].empty());
+    CHECK(changes[0]["expected"].empty());
+    CHECK(changes[0]["expected_profile_sha256"].is_null());
+    CHECK(changes[0]["profile_context"] == selection.profile_context);
+    CHECK(changes[0]["material_profile"] == profile);
+    CHECK_FALSE(changes[0].contains("remaining_mg"));
+    CHECK(remote["tables"]["spools"][0]["filament_preset_id"] == "Original PLA");
+    CHECK_NOTHROW(validate_changes(changes));
+    auto invalid = changes;
+    invalid[0]["profile_context"]["flow_type"] = "hybrid";
+    CHECK_THROWS(validate_changes(invalid));
+}
+
 static RollPublish new_roll()
 {
     return {0, new_id, 750000, true, "Physical PLA roll", "Maker", "PLA", 1000000};

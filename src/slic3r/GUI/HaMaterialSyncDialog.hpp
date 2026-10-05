@@ -73,7 +73,7 @@ public:
             upload_layout->Add(pending, 0, wxEXPAND | wxBOTTOM, FromDIP(12));
         }
         auto *description = new wxStaticText(uploads, wxID_ANY,
-            _L("Changes to Home Assistant are selected below. Uncheck any change you want to keep only in this project."));
+            _L("Changes to Home Assistant are selected below. Filament profiles are saved for the current printer, nozzle diameter and flow type. Uncheck any change you want to keep only in this project."));
         description->Wrap(FromDIP(690));
         upload_layout->Add(description, 0, wxEXPAND | wxBOTTOM, FromDIP(12));
         auto *changes = new wxScrolledWindow(uploads, wxID_ANY, wxDefaultPosition, FromDIP(wxSize(710, 270)), wxVSCROLL);
@@ -98,7 +98,7 @@ public:
             if (difference.field == HaProjectMaterialDifferences::Field::Profile && !difference.after_profile_sha256.empty()) {
                 auto *settings = new wxStaticText(changes, wxID_ANY, difference.before_profile_sha256.empty()
                     ? _L("The complete material settings will be stored in Home Assistant.")
-                    : _L("Material settings differ. The complete project profile will replace the HA profile for this roll."));
+                    : _L("Material settings differ. The complete project profile will replace the HA profile for this roll and nozzle configuration."));
                 settings->Wrap(FromDIP(650));
                 change_layout->Add(settings, 0, wxEXPAND | wxLEFT | wxBOTTOM, FromDIP(7));
             }

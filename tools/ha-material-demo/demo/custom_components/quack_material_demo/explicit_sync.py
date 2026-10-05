@@ -16,7 +16,7 @@ FIELDS = frozenset(('name', 'manufacturer', 'material_type', 'filament_preset_id
 CANONICAL = dict(name='product', filament_preset_id='material_preset',
                  color_hex='color', nominal_capacity_mg='nominal_mg')
 CHANGE_KEYS = frozenset(('spool_uuid', 'fields', 'expected', 'create', 'remaining_mg',
-                         'expected_remaining_mg', 'quality', 'material_profile', 'expected_profile_sha256'))
+                         'expected_remaining_mg', 'quality', 'material_profile', 'expected_profile_sha256', 'profile_context'))
 
 
 def validate_fields(fields):
@@ -118,7 +118,8 @@ class ExplicitSync:
                 create = change.get('create', False)
                 if type(create) is not bool: raise ValueError('Create must be boolean')
                 stock_selected = 'remaining_mg' in change
-                if not fields and not stock_selected: raise ValueError('No fields or stock selected')
+                variant_selected = 'profile_context' in change
+                if not fields and not stock_selected and not variant_selected: raise ValueError('No fields or stock selected')
                 if stock_selected:
                     amount = weight(change['remaining_mg'])
                     if change.get('quality') not in ('measured', 'estimated'):
@@ -160,7 +161,10 @@ class ExplicitSync:
                         amount = old_amount
                     if 'status' in fields and fields['status'] != native['status']:
                         self._assert_unreserved(db, ident)
-                native.update(fields)
+                # Variant association belongs to the context envelope, not the legacy preset field.
+                selected_fields = {name: value for name, value in fields.items()
+                                   if not (variant_selected and name == 'filament_preset_id')}
+                native.update(selected_fields)
                 if stock_selected and 'status' not in fields:
                     native['status'] = 'active' if amount else 'empty'
                 lifecycle_changed = create or stock_selected or bool({'status', 'nominal_capacity_mg'} & set(fields))
@@ -171,9 +175,9 @@ class ExplicitSync:
                 # Native percent thresholds use basis points: 2000 means 20%.
                 if native.get('warning_mode') == 'percent' and native.get('warning_value', 0) > 10000:
                     raise ValueError('Percent warning must be between zero and 10000 basis points')
-                native['updated_at'] = stamp()
+                if create or selected_fields or stock_selected: native['updated_at'] = stamp()
                 # Only selected canonical fields are written for existing records.
-                selected = native if create else fields
+                selected = native if create else selected_fields
                 for name, value in selected.items():
                     if name in FIELDS: metadata[CANONICAL.get(name, name)] = value
                 if stock_selected:
@@ -181,7 +185,7 @@ class ExplicitSync:
                 if create or 'material_type' in fields:
                     material = native['material_type']
                     metadata['bambu_material'] = 'Bambu ' + material if material in ('PLA', 'PETG') else None
-                if create or 'filament_preset_id' in fields:
+                if create or 'filament_preset_id' in selected_fields:
                     metadata['profile_unresolved'] = not bool(native['filament_preset_id'].strip())
                 db.execute('INSERT INTO spools VALUES (?,?,?) ON CONFLICT(uuid) DO UPDATE SET data=excluded.data,remaining_mg=excluded.remaining_mg',
                     (ident, json.dumps(metadata), amount))
@@ -190,7 +194,7 @@ class ExplicitSync:
                     tables['spools'].append(native)
                     tables['spool_identifiers'].append(dict(kind='quack_ndef_uuid', value=ident,
                         spool_id=ident, created_at=native['created_at']))
-                elif fields or stock_selected:
+                elif selected_fields or stock_selected:
                     if native['status'] in ('archived', 'empty'):
                         db.execute('UPDATE slots SET spool_uuid=NULL,revision=revision+1 WHERE spool_uuid=?', (ident,))
                     else:

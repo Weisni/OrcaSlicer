@@ -44,6 +44,113 @@ TEST_CASE("HA print preflight resolves UUID to the actual current HT slot", "[Ha
     CHECK(result[0].estimated_mg==1200);
 }
 
+TEST_CASE("ASA plus physical rolls pass preflight with ASA slicing and ASA printer family", "[HaMaterialBinding]")
+{
+    auto snapshot = binding_snapshot();
+    snapshot["spools"][0]["material_type"] = "ASA+";
+    auto live = live_slots();
+    live[0].material_type = "ASA";
+    const auto result = preflight(bindings(), {{0,"ASA",1200}}, snapshot, source, "P2S", "P2S", live);
+    REQUIRE(result.size() == 1);
+    CHECK(result[0].spool_uuid == roll_a);
+    CHECK(snapshot["spools"][0]["material_type"] == "ASA+");
+    CHECK_THROWS(preflight(bindings(), {{0,"ABS",1200}}, snapshot, source, "P2S", "P2S", live));
+}
+
+TEST_CASE("Profile baselines round trip alongside legacy physical bindings", "[HaMaterialBinding]")
+{
+    DynamicPrintConfig config;
+    const Binding baseline{roll_a, source, "duck-poop-demo", "Bambu Lab P2S|0.8|high_flow", "ASA profile", std::string(64, 'a')};
+    write(config, {baseline, {roll_b, source, "duck-poop-demo"}});
+    const auto restored = read(config, 2);
+    CHECK(restored[0].profile_context == baseline.profile_context);
+    CHECK(restored[0].profile_sha256 == baseline.profile_sha256);
+    CHECK(restored[1].profile_context.empty());
+    CHECK(restored[1].spool_uuid == roll_b);
+    remap(config, {1, 0}, 2);
+    CHECK(read(config, 2)[1].profile_name == baseline.profile_name);
+}
+
+TEST_CASE("Nozzle changes preserve unsynchronized profile choices and settings", "[HaMaterialBinding]")
+{
+    PresetBundle bundle;
+    auto original = bundle.filaments.get_edited_preset();
+    original.name = "ASA standard";
+    original.config.set_key_value("filament_type", new ConfigOptionStrings{"ASA"});
+    const Binding baseline{roll_a, source, "duck-poop-demo", "Bambu Lab P2S|0.4|standard", original.name,
+        HaMaterialProfile::digest(HaMaterialProfile::capture(original))};
+    CHECK_FALSE(preserves_override(baseline, &original));
+    auto changed = original;
+    changed.name = "Local ASA experiment";
+    CHECK(preserves_override(baseline, &changed));
+    changed = original;
+    changed.config.set_key_value("filament_flow_ratio", new ConfigOptionFloats{0.91});
+    CHECK(preserves_override(baseline, &changed));
+    CHECK(preserves_override({roll_a, source, "duck-poop-demo"}, &original));
+    CHECK(preserves_override(baseline, nullptr));
+}
+
+TEST_CASE("Native printer compatibility changes preserve HA bound local overrides and truthful incompatibility", "[HaMaterialBinding][Regression]")
+{
+    for (const bool dirty : {false, true}) {
+        PresetBundle bundle;
+        auto printer_config = bundle.printers.default_preset().config;
+        printer_config.set_key_value("printer_model", new ConfigOptionString("Bambu Lab P2S"));
+        printer_config.set_key_value("nozzle_diameter", new ConfigOptionFloats{0.4});
+        bundle.printers.load_preset("", "P2S 0.4 nozzle", printer_config, true);
+        printer_config.set_key_value("nozzle_diameter", new ConfigOptionFloats{0.8});
+        bundle.printers.load_preset("", "P2S 0.8 nozzle", printer_config, false);
+        auto filament_config = bundle.filaments.default_preset().config;
+        filament_config.set_key_value("filament_type", new ConfigOptionStrings{"ASA"});
+        filament_config.set_key_value("compatible_printers", new ConfigOptionStrings{"P2S 0.8 nozzle"});
+        bundle.filaments.load_preset("", "Generic ASA 0.8", filament_config, false);
+        filament_config.set_key_value("compatible_printers", new ConfigOptionStrings{"P2S 0.4 nozzle"});
+        bundle.filaments.load_preset("", "Local ASA experiment 0.4", filament_config, true);
+        bundle.filament_presets = {"Local ASA experiment 0.4"};
+        const auto baseline = HaMaterialProfile::digest(HaMaterialProfile::capture(bundle.filaments.get_edited_preset()));
+        write(bundle.project_config, {{roll_a, source, "duck-poop-demo", "Bambu Lab P2S|0.4|standard",
+            dirty ? "Local ASA experiment 0.4" : "Central ASA 0.4", baseline}});
+        if (dirty) bundle.filaments.get_edited_preset().config.set_key_value("filament_flow_ratio", new ConfigOptionFloats{0.91});
+        const auto original_config = bundle.filaments.get_edited_preset().config;
+        bundle.update_compatible(PresetSelectCompatibleType::Never);
+        REQUIRE(bundle.filaments.get_edited_preset().is_compatible);
+        bundle.printers.select_preset_by_name("P2S 0.8 nozzle", true);
+        bundle.update_compatible(PresetSelectCompatibleType::Always);
+        CHECK(bundle.filament_presets[0] == "Local ASA experiment 0.4");
+        CHECK(bundle.filaments.get_edited_preset().name == "Local ASA experiment 0.4");
+        CHECK(bundle.filaments.get_edited_preset().config == original_config);
+        CHECK_FALSE(bundle.filaments.get_edited_preset().is_compatible);
+        CHECK_FALSE(bundle.filaments.find_preset("Local ASA experiment 0.4")->is_compatible);
+        CHECK(bundle.filaments.find_preset("Generic ASA 0.8")->is_compatible);
+        CHECK(read(bundle.project_config, 1)[0].spool_uuid == roll_a);
+    }
+}
+
+TEST_CASE("Print profile checks allow compatible local ASA overrides and reject wrong nozzles and changed contexts", "[HaMaterialBinding][Regression]")
+{
+    PresetBundle bundle;
+    auto printer = bundle.printers.get_edited_preset();
+    printer.name = "P2S 0.8 nozzle";
+    printer.config.set_key_value("printer_model", new ConfigOptionString("Bambu Lab P2S"));
+    printer.config.set_key_value("nozzle_diameter", new ConfigOptionFloats{0.8});
+    const auto active = HaMaterialContext::make("Bambu Lab P2S", 0.8, "high_flow");
+    const auto prepared = HaMaterialContext::key(active);
+    auto local_config = bundle.filaments.default_preset().config;
+    local_config.set_key_value("filament_type", new ConfigOptionStrings{"ASA"});
+    local_config.set_key_value("filament_flow_ratio", new ConfigOptionFloats{0.91});
+    local_config.set_key_value("compatible_printers", new ConfigOptionStrings{"P2S 0.8 nozzle"});
+    // Load a real user preset. A renamed copy of the default sentinel retains
+    // is_default=true and deliberately bypasses native compatibility restrictions.
+    auto &local = bundle.filaments.load_preset("", "Local ASA settings", local_config, true);
+    REQUIRE_FALSE(local.is_default);
+    CHECK_NOTHROW(HaMaterialSource::validate_print_profile({local, nullptr}, {printer, nullptr}, "ASA+", prepared, active));
+    CHECK_THROWS(HaMaterialSource::validate_print_profile({local, nullptr}, {printer, nullptr}, "ABS", prepared, active));
+    CHECK_THROWS(HaMaterialSource::validate_print_profile({local, nullptr}, {printer, nullptr}, "ASA", prepared,
+        HaMaterialContext::make("Bambu Lab P2S", 0.8, "standard")));
+    local.config.set_key_value("compatible_printers", new ConfigOptionStrings{"P2S 0.4 nozzle"});
+    CHECK_THROWS(HaMaterialSource::validate_print_profile({local, nullptr}, {printer, nullptr}, "ASA", prepared, active));
+}
+
 TEST_CASE("HA print preflight rejects another printer or source", "[HaMaterialBinding]")
 {
     CHECK_THROWS(preflight(bindings(),{{0,"PLA",1}},binding_snapshot(),source,"P2S","Other",live_slots()));

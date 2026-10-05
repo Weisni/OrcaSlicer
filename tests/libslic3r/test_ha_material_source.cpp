@@ -2,8 +2,50 @@
 #include <chrono>
 #include "libslic3r/HaMaterialSource.hpp"
 #include "libslic3r/HaMaterialCatalog.hpp"
+#include "libslic3r/PresetBundle.hpp"
 
 using namespace Slic3r::HaMaterialSource;
+namespace HaMaterialContext = Slic3r::HaMaterialContext;
+
+TEST_CASE("ASA plus rolls use ASA filament profiles without changing their physical type", "[HaMaterialSource]")
+{
+    CHECK(material_family("ASA+") == "ASA");
+    CHECK(same_material_family("ASA+", "ASA"));
+    CHECK_FALSE(same_material_family("ASA+", "ABS"));
+    CHECK_FALSE(same_material_family("PLA+", "PLA"));
+}
+
+TEST_CASE("Nozzle profile contexts distinguish diameter and flow with canonical keys", "[HaMaterialSource]")
+{
+    CHECK(HaMaterialContext::key(HaMaterialContext::make("Bambu Lab P2S", 0.4, "standard")) == "Bambu Lab P2S|0.4|standard");
+    CHECK(HaMaterialContext::key(HaMaterialContext::make("Bambu Lab P2S", 0.8, "high_flow")) == "Bambu Lab P2S|0.8|high_flow");
+    CHECK_THROWS(HaMaterialContext::make("P2S|bad", 0.4, "standard"));
+    CHECK_THROWS(HaMaterialContext::make("P2S", 0.4, "hybrid"));
+    CHECK_THROWS(HaMaterialContext::make("P2S", 0.0, "standard"));
+}
+
+TEST_CASE("Active project nozzle flow takes precedence over the printer preset default", "[HaMaterialSource]")
+{
+    Slic3r::DynamicPrintConfig printer, project;
+    printer.set_key_value("printer_model", new Slic3r::ConfigOptionString("Bambu Lab P2S"));
+    printer.set_key_value("nozzle_diameter", new Slic3r::ConfigOptionFloats{0.8});
+    printer.set_key_value("nozzle_volume_type", new Slic3r::ConfigOptionEnumsGeneric{0});
+    project.set_key_value("nozzle_volume_type", new Slic3r::ConfigOptionEnumsGeneric{1});
+    CHECK(HaMaterialContext::key(profile_context(printer, project)) == "Bambu Lab P2S|0.8|high_flow");
+    project.set_key_value("nozzle_volume_type", new Slic3r::ConfigOptionEnumsGeneric{2});
+    CHECK_THROWS(profile_context(printer, project));
+}
+
+TEST_CASE("Nozzle profile support is read from the actual provider capability envelope", "[HaMaterialSource]")
+{
+    nlohmann::json wire = {{"provider_api_version", 1}, {"capabilities", {
+        {"native_apply_fields", true}, {"material_profiles_v1", true}, {"material_profile_variants_v1", true}}}};
+    CHECK(supports_profile_variants(wire));
+    wire["capabilities"].erase("material_profile_variants_v1");
+    CHECK_FALSE(supports_profile_variants(wire));
+    wire["material_profile_variants_v1"] = true;
+    CHECK_FALSE(supports_profile_variants(wire));
+}
 
 static nlohmann::json snapshot()
 {
@@ -14,6 +56,44 @@ static nlohmann::json snapshot()
             {"material_type", "PLA"}, {"color", "#367AF5"},
             {"material_preset", "Actual PLA @P2S"}, {"bambu_material", "Bambu PLA"}}}},
         {"slots", {{{"id", "A1"}, {"spool_uuid", "1d1aa340-8c40-42a1-832f-87a6a7dcf94f"}, {"revision", 1}}}}};
+}
+
+TEST_CASE("ASA plus roll resolution uses compatible ASA profiles at standard and high flow diameters", "[HaMaterialSource]")
+{
+    for (const auto &nozzle : {std::string("0.4 standard"), std::string("0.8 high flow")}) {
+        Slic3r::PresetBundle bundle;
+        auto &filaments = bundle.filaments;
+        Slic3r::DynamicPrintConfig config(filaments.default_preset().config);
+        config.set_key_value("filament_type", new Slic3r::ConfigOptionStrings{"ASA"});
+        auto &preset = filaments.load_preset(std::string(), "Generic ASA - No Warp " + nozzle, config, false);
+        preset.is_compatible = true;
+        const auto *resolved = resolve_preset(filaments, preset.name, "ASA+");
+        REQUIRE(resolved != nullptr);
+        CHECK(resolved->name == preset.name);
+        CHECK(resolve_preset(filaments, preset.name, "ABS") == nullptr);
+        preset.is_compatible = false;
+        CHECK(resolve_preset(filaments, preset.name, "ASA+") == nullptr);
+    }
+}
+
+TEST_CASE("Nozzle variants preserve legacy profiles and use only the requested association", "[HaMaterialSource]")
+{
+    auto data = snapshot();
+    auto &spool = data["spools"][0];
+    const nlohmann::json summary = {{"schema_version", 1}, {"name", "PLA HF"}, {"material_type", "PLA"},
+        {"dependencies", {{"inherits", ""}, {"filament_id", ""}, {"vendor", ""}}}, {"sha256", std::string(64, 'a')}};
+    const auto hf = HaMaterialContext::make("Bambu Lab P2S", 0.8, "high_flow");
+    spool["material_profile_variants"] = {{HaMaterialContext::key(hf), summary}};
+    const auto original = assignment_from_spool(spool, "A1", 1);
+    const auto variant = with_context(original, hf);
+    CHECK(variant.material_preset == "PLA HF");
+    CHECK(variant.material_profile == summary);
+    CHECK(original.material_preset == "Actual PLA @P2S");
+    const auto other = with_context(original, HaMaterialContext::make("Bambu Lab P2S", 0.4, "standard"));
+    CHECK(other.material_preset == original.material_preset);
+    CHECK(variant_profile(other).is_null());
+    spool["material_profile_variants"][HaMaterialContext::key(hf)]["material_type"] = "ABS";
+    CHECK_THROWS(assignment_from_spool(spool, "A1", 1));
 }
 
 TEST_CASE("HA materials preserve exact presets and physical roll identity", "[HaMaterialSource]")

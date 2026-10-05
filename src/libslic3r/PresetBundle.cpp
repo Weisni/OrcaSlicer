@@ -5747,6 +5747,28 @@ void PresetBundle::update_compatible(PresetSelectCompatibleType select_other_pri
 	switch (printer_preset.printer_technology()) {
     case ptFFF:
     {
+
+        // Native compatibility refresh must keep a physical roll's project-local
+        // overrides. Mark their compatibility normally, but leave their names
+        // and edited settings until the user explicitly selects/synchronizes.
+        std::vector<bool> preserve_ha_override(this->filament_presets.size(), false);
+        bool preserve_ha_editor = false;
+        const auto &edited_filament = this->filaments.get_edited_preset();
+        try {
+            const auto bindings = HaMaterialBinding::read(this->project_config, this->filament_presets.size());
+            for (size_t index = 0; index < bindings.size(); ++index) {
+                if (bindings[index].spool_uuid.empty()) continue;
+                const auto &name = this->filament_presets[index];
+                const auto *effective = edited_filament.name == name ? &edited_filament : this->filaments.find_preset(name);
+                preserve_ha_override[index] = HaMaterialBinding::preserves_override(bindings[index], effective);
+                preserve_ha_editor = preserve_ha_editor || (preserve_ha_override[index] && edited_filament.name == name);
+            }
+        } catch (const std::exception &error) {
+            // A malformed saved binding cannot justify discarding user materials.
+            std::fill(preserve_ha_override.begin(), preserve_ha_override.end(), true);
+            preserve_ha_editor = true;
+            BOOST_LOG_TRIVIAL(warning) << "Preserving filament overrides during HA binding validation: " << error.what();
+        }
 		assert(printer_preset.config.has("default_print_profile"));
 		assert(printer_preset.config.has("default_filament_profile"));
         const std::vector<std::string> &prefered_filament_profiles = printer_preset.config.option<ConfigOptionStrings>("default_filament_profile")->values;
@@ -5768,17 +5790,19 @@ void PresetBundle::update_compatible(PresetSelectCompatibleType select_other_pri
         for (size_t idx = 0; idx < prefered_filament_profiles.size(); ++idx) {
             BOOST_LOG_TRIVIAL(info) << boost::format("prefered filament： %1%") % prefered_filament_profiles[idx];
         }
-        this->filaments.update_compatible(printer_preset_with_vendor_profile, &print_preset_with_vendor_profile, select_other_filament_if_incompatible,
+        this->filaments.update_compatible(printer_preset_with_vendor_profile, &print_preset_with_vendor_profile,
+            preserve_ha_editor ? PresetSelectCompatibleType::Never : select_other_filament_if_incompatible,
             PreferedFilamentsProfileMatch(this->filaments.get_selected_idx() == size_t(-1) ? nullptr : &this->filaments.get_edited_preset(), prefered_filament_profiles));
         if (select_other_filament_if_incompatible != PresetSelectCompatibleType::Never) {
             // Verify validity of the current filament presets.
             const std::string prefered_filament_profile = prefered_filament_profiles.empty() ? std::string() : prefered_filament_profiles.front();
             if (this->filament_presets.size() == 1) {
                 // The compatible profile should have been already selected for the preset editor. Just use it.
-            	if (select_other_filament_if_incompatible == PresetSelectCompatibleType::Always || filament_preset_was_compatible.front())
+                if (!preserve_ha_override.front() && (select_other_filament_if_incompatible == PresetSelectCompatibleType::Always || filament_preset_was_compatible.front()))
                 	this->filament_presets.front() = this->filaments.get_edited_preset().name;
             } else {
                 for (size_t idx = 0; idx < this->filament_presets.size(); ++ idx) {
+                    if (preserve_ha_override[idx]) continue;
                     std::string &filament_name = this->filament_presets[idx];
                     Preset      *preset = this->filaments.find_preset(filament_name, false);
                     if (preset == nullptr || (! preset->is_compatible && (select_other_filament_if_incompatible == PresetSelectCompatibleType::Always || filament_preset_was_compatible[idx])))

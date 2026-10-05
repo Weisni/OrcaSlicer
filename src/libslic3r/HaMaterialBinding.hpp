@@ -1,6 +1,7 @@
 #pragma once
 
 #include "HaMaterialSource.hpp"
+#include "HaMaterialProfile.hpp"
 #include "PrintConfig.hpp"
 #include <cstdint>
 #include <cctype>
@@ -11,7 +12,14 @@ inline constexpr const char *config_key = "ha_material_bindings";
 
 struct Binding {
     std::string spool_uuid, source, printer_id;
+    std::string profile_context, profile_name, profile_sha256;
 };
+
+inline bool preserves_override(const Binding &binding, const Preset *effective)
+{
+    return binding.profile_context.empty() || !effective || effective->name != binding.profile_name ||
+        HaMaterialProfile::digest(HaMaterialProfile::capture(*effective)) != binding.profile_sha256;
+}
 struct Usage {
     size_t project_index;
     std::string material_type;
@@ -34,7 +42,8 @@ struct Resolved {
 
 inline void validate(const Binding &binding)
 {
-    if (binding.spool_uuid.empty() && binding.source.empty() && binding.printer_id.empty()) return;
+    if (binding.spool_uuid.empty() && binding.source.empty() && binding.printer_id.empty() &&
+        binding.profile_context.empty() && binding.profile_name.empty() && binding.profile_sha256.empty()) return;
     const auto &id = binding.spool_uuid;
     if (id.size() != 36 || binding.source.empty() || binding.source.size() > 2048 ||
         binding.printer_id.empty() || binding.printer_id.size() > 128)
@@ -44,6 +53,12 @@ inline void validate(const Binding &binding)
         if (separator ? id[i] != '-' : std::string("0123456789abcdef").find(id[i]) == std::string::npos)
             throw std::runtime_error("Invalid HA roll UUID");
     }
+    if (!binding.profile_context.empty() && (binding.profile_context.size() > 192 ||
+        binding.profile_name.empty() || binding.profile_name.size() > 256 ||
+        !HaMaterialProfile::is_sha256(binding.profile_sha256)))
+        throw std::runtime_error("Invalid HA project profile baseline");
+    if (binding.profile_context.empty() && (!binding.profile_name.empty() || !binding.profile_sha256.empty()))
+        throw std::runtime_error("Incomplete HA project profile baseline");
 }
 
 inline std::vector<Binding> read(const DynamicPrintConfig &config, size_t count)
@@ -56,8 +71,13 @@ inline std::vector<Binding> read(const DynamicPrintConfig &config, size_t count)
         if (option->values[i].empty()) continue;
         if (option->values[i].size() > 4096) throw std::runtime_error("Invalid HA material binding size");
         const auto value = nlohmann::json::parse(option->values[i]);
-        if (!value.is_object() || value.size() != 3) throw std::runtime_error("Invalid HA material binding fields");
+        if (!value.is_object() || (value.size() != 3 && value.size() != 6)) throw std::runtime_error("Invalid HA material binding fields");
         bindings[i] = {value.at("spool_uuid"), value.at("source"), value.at("printer_id")};
+        if (value.size() == 6) {
+            bindings[i].profile_context = value.at("profile_context");
+            bindings[i].profile_name = value.at("profile_name");
+            bindings[i].profile_sha256 = value.at("profile_sha256");
+        }
         validate(bindings[i]);
     }
     return bindings;
@@ -68,8 +88,13 @@ inline void write(DynamicPrintConfig &config, const std::vector<Binding> &bindin
     std::vector<std::string> values;
     for (const auto &binding : bindings) {
         validate(binding);
-        values.push_back(binding.spool_uuid.empty() ? std::string() : nlohmann::json{
-            {"spool_uuid", binding.spool_uuid}, {"source", binding.source}, {"printer_id", binding.printer_id}}.dump());
+        nlohmann::json value = {{"spool_uuid", binding.spool_uuid}, {"source", binding.source}, {"printer_id", binding.printer_id}};
+        if (!binding.profile_context.empty()) {
+            value["profile_context"] = binding.profile_context;
+            value["profile_name"] = binding.profile_name;
+            value["profile_sha256"] = binding.profile_sha256;
+        }
+        values.push_back(binding.spool_uuid.empty() ? std::string() : value.dump());
     }
     config.set_key_value(config_key, new ConfigOptionStrings(std::move(values)));
 }
@@ -162,7 +187,8 @@ inline std::vector<Resolved> preflight(const std::vector<Binding> &bindings, con
         const auto device = std::find_if(live.begin(), live.end(), [&](const auto &item) { return item.slot == slot->slot; });
         if (device == live.end() || !device->present || device->tray_id < 0 || device->ams_id.empty() || device->slot_id.empty())
             throw std::runtime_error("The assigned HA slot is not available on the selected printer");
-        if (usage.material_type.empty() || usage.material_type != slot->material_type || device->material_type != slot->material_type)
+        if (!HaMaterialSource::same_material_family(usage.material_type, slot->material_type) ||
+            !HaMaterialSource::same_material_family(device->material_type, slot->material_type))
             throw std::runtime_error("Sliced material, physical slot and HA roll types do not match");
         // The printer may report an approximation of the real color. Identity
         // comes from the fresh HA UUID-to-slot assignment, not that RGB value.

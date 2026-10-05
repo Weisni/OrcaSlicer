@@ -1158,10 +1158,9 @@ void PlaterPresetComboBox::add_ha_rolls(const std::string &selected)
         const auto bindings = HaMaterialBinding::read(m_preset_bundle->project_config, m_preset_bundle->filament_presets.size());
         const auto binding = m_filament_idx >= 0 && size_t(m_filament_idx) < bindings.size() ? bindings[m_filament_idx] : HaMaterialBinding::Binding{};
         const auto add = [&](const HaMaterialCatalog::Roll &row, bool inventory) {
-            const auto &a = row.assignment;
+            const auto a = HaMaterialProvider::for_printer(*m_preset_bundle, row.assignment);
             const auto *preset = HaMaterialProvider::resolve(*m_preset_bundle, a);
             const bool has_remote_profile = !a.material_profile.is_null();
-            const bool selectable = preset || has_remote_profile;
             const auto profile_name = preset ? preset->name : has_remote_profile ?
                 HaMaterialProfile::managed_name(a.material_profile) : std::string();
             const wxString slot = a.slot.empty() ? _L("Not mounted") : from_u8(a.slot);
@@ -1171,10 +1170,9 @@ void PlaterPresetComboBox::add_ha_rolls(const std::string &selected)
                 " | " + from_u8(a.material_type) + wxString::Format(" | %.1f g", row.remaining_mg / 1000.0) +
                 (inventory ? " | " + slot : wxString()) + " | " + from_u8(a.spool_uuid.substr(0, 8));
             const auto icon = create_scaled_bitmap("filament_green", this, 24, false, a.color);
-            const int style = selectable ? 0 : DD_ITEM_STYLE_DISABLED;
+            const int style = 0;
             const int index = inventory ? Append(label, icon, _L("Inventory"), nullptr, style) : Append(label, icon, style);
-            if (!selectable) set_label_marker(index, LABEL_ITEM_DISABLED);
-            else {
+            {
                 m_ha_roll_items.emplace(index, a.spool_uuid);
                 SetItemAlias(index, from_u8(profile_name));
                 if (!inventory && binding.spool_uuid == a.spool_uuid && binding.source == HaMaterialProvider::endpoint() &&
@@ -1184,7 +1182,7 @@ void PlaterPresetComboBox::add_ha_rolls(const std::string &selected)
             SetItemTooltip(index, from_u8(a.manufacturer + " / " + a.product + "\n" + a.color + "\n" + a.spool_uuid + "\n") +
                 (preset ? from_u8(profile_name) : has_remote_profile ?
                     from_u8(profile_name) + "\n" + _L("Download and check compatibility when selected") :
-                    _L("No compatible material profile for this printer/nozzle")));
+                    _L("Choose a compatible filament profile when selected")));
         };
         for (const auto &slot : data.at("slots")) {
             const auto name = slot.at("id").get<std::string>();

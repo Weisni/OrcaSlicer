@@ -10,7 +10,7 @@ from .store import Store
 from .topology import validate_deactivation
 
 CORE_TABLES = ('spools','slots','jobs','events','observations','joblinks','bridge',
-               'receipts','origins','provider_dispatch','material_profiles')
+               'receipts','origins','provider_dispatch','material_profiles','material_profile_variants')
 EXTRA_SCHEMAS = {
     'printer_assignments': 'CREATE TABLE printer_assignments (request_key TEXT PRIMARY KEY, request TEXT NOT NULL, operation TEXT NOT NULL)',
     'printer_metadata_sync': 'CREATE TABLE printer_metadata_sync (slot TEXT PRIMARY KEY, operation TEXT NOT NULL)',
@@ -55,7 +55,7 @@ def restore_recovery(bundle, destination, settings=None):
     if len(canonical(bundle))>MAX_BYTES or not isinstance(bundle['tables'],dict):
         raise ValueError('Invalid recovery size or tables')
     tables=bundle['tables']
-    if not set(CORE_TABLES)-{'material_profiles'} <= set(tables) or set(tables)-set(CORE_TABLES)-set(EXTRA_SCHEMAS):
+    if not set(CORE_TABLES)-{'material_profiles','material_profile_variants'} <= set(tables) or set(tables)-set(CORE_TABLES)-set(EXTRA_SCHEMAS):
         raise ValueError('Unsupported recovery tables')
     if checksum(tables)!=bundle['sha256']:raise ValueError('Recovery checksum mismatch')
     destination.parent.mkdir(parents=True,exist_ok=True)

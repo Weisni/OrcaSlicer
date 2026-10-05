@@ -10,6 +10,24 @@
 
 namespace Slic3r::GUI::HaMaterialProvider {
 using Json = nlohmann::json;
+inline Json profile_context(const PresetBundle &bundle) {
+    return HaMaterialSource::profile_context(bundle.printers.get_edited_preset().config, bundle.project_config);
+}
+inline HaMaterialSource::Assignment for_printer(const PresetBundle &bundle, const HaMaterialSource::Assignment &assignment) {
+    return HaMaterialSource::with_context(assignment, profile_context(bundle));
+}
+inline bool compatible(const PresetBundle &bundle, const Preset &preset, const std::string &material_type) {
+    return HaMaterialSource::same_material_family(preset.config.opt_string("filament_type", 0u), material_type) &&
+        is_compatible_with_printer(bundle.filaments.get_preset_with_vendor_profile(preset),
+                                  bundle.printers.get_edited_preset_with_vendor_profile());
+}
+inline bool preserves_override(const PresetBundle &bundle, size_t index, const HaMaterialBinding::Binding &binding) {
+    if (index >= bundle.filament_presets.size() || binding.profile_context.empty()) return true;
+    const auto &name = bundle.filament_presets[index];
+    const auto &edited = bundle.filaments.get_edited_preset();
+    const auto *preset = edited.name == name ? &edited : bundle.filaments.find_preset(name);
+    return HaMaterialBinding::preserves_override(binding, preset);
+}
 inline bool enabled() { return wxGetApp().app_config->get_bool("ha_material_provider_enabled"); }
 inline std::string endpoint() { return wxGetApp().app_config->get("ha_material_demo_endpoint"); }
 inline std::string physical_device_id() { return wxGetApp().app_config->get("ha_material_provider_device_id"); }
@@ -74,11 +92,12 @@ inline Json profile_payload(const HaMaterialSource::Assignment &assignment) {
     const auto source = endpoint();
     HaMaterialBinding::validate({assignment.spool_uuid, source, "profile-download"});
     const auto expected = HaMaterialProfile::digest(assignment.material_profile);
-    if (assignment.material_profile.at("material_type") != assignment.material_type)
+    if (!HaMaterialSource::same_material_family(assignment.material_profile.at("material_type"), assignment.material_type))
         throw std::runtime_error("The HA material profile belongs to another material type");
     static std::mutex mutex;
     static std::map<std::string, Json> payloads;
-    const auto key = source + "\n" + assignment.spool_uuid + "\n" + expected;
+    const bool variant = !HaMaterialSource::variant_profile(assignment).is_null() && !assignment.profile_context_key.empty();
+    const auto key = source + "\n" + assignment.spool_uuid + "\n" + assignment.profile_context_key + "\n" + expected;
     {
         std::lock_guard<std::mutex> lock(mutex);
         const auto found = payloads.find(key);
@@ -89,7 +108,8 @@ inline Json profile_payload(const HaMaterialSource::Assignment &assignment) {
         throw std::runtime_error("Configure a valid HA materials endpoint");
     auto payload = assignment.material_profile.contains("settings") ? assignment.material_profile :
         ha_inventory_request_raw(source.substr(0, source.size() - suffix.size()) + "/profile?spool_uuid=" +
-            assignment.spool_uuid + "&sha256=" + expected, nullptr, 2 * 1024 * 1024);
+            assignment.spool_uuid + "&sha256=" + expected + (variant ? "&context=" + Http::url_encode(assignment.profile_context_key) : ""),
+            nullptr, 2 * 1024 * 1024);
     HaMaterialProfile::validate(payload);
     if (source != endpoint() || HaMaterialProfile::digest(payload) != expected ||
         HaMaterialProfile::profile_summary(payload) != (assignment.material_profile.contains("settings") ?
@@ -148,19 +168,19 @@ inline std::string install_profile(PresetBundle &bundle, const HaMaterialSource:
     return name;
 }
 
-inline const Preset *resolve(const PresetBundle &bundle, const HaMaterialSource::Assignment &assignment) {
+inline const Preset *resolve(const PresetBundle &bundle, const HaMaterialSource::Assignment &source_assignment) {
+    const auto assignment = for_printer(bundle, source_assignment);
     const Preset *preset = nullptr;
     if (!assignment.material_profile.is_null()) {
         const auto name = HaMaterialProfile::managed_name(assignment.material_profile);
         preset = bundle.filaments.find_preset(name);
-        if (preset && (preset->config.opt_string("filament_type", 0u) != assignment.material_type ||
+        if (preset && (!HaMaterialSource::same_material_family(preset->config.opt_string("filament_type", 0u), assignment.material_type) ||
             HaMaterialProfile::digest(HaMaterialProfile::capture(*preset, assignment.material_profile)) !=
                 HaMaterialProfile::digest(assignment.material_profile))) return nullptr;
     } else {
         preset = HaMaterialSource::resolve_preset(bundle.filaments, assignment.material_preset, assignment.material_type);
     }
-    if (preset && !is_compatible_with_printer(bundle.filaments.get_preset_with_vendor_profile(*preset),
-                                             bundle.printers.get_edited_preset_with_vendor_profile())) return nullptr;
+    if (preset && !compatible(bundle, *preset, assignment.material_type)) return nullptr;
     return preset;
 }
 }
