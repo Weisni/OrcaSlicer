@@ -28,8 +28,14 @@ void BoostThreadWorker::WorkerMessage::deliver(BoostThreadWorker &runner)
     }
     case MainThreadCall: {
         auto &calldata = boost::get<MainThreadCallData >(m_data);
-        calldata.fn();
-        calldata.promise.set_value();
+        // Deliver callback failures to the waiting job, whose finalizer owns
+        // cleanup and error reporting. They must not escape the UI event loop.
+        try {
+            calldata.fn();
+            calldata.promise.set_value();
+        } catch (...) {
+            calldata.promise.set_exception(std::current_exception());
+        }
 
         break;
     }

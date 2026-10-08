@@ -304,7 +304,7 @@ void PrintJob::process(Ctl &ctl)
     }
 
     ctl.update_status(0, msg);
-    ctl.call_on_main_thread([this] { prepare(); }).wait();
+    ctl.call_on_main_thread([this] { prepare(); }).get();
 
     int result = -1;
     std::string http_body;

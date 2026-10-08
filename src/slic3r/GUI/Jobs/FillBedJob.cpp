@@ -218,7 +218,7 @@ void FillBedJob::prepare()
 void FillBedJob::process(Ctl &ctl)
 {
     auto statustxt = _u8L("Filling");
-    ctl.call_on_main_thread([this] { prepare(); }).wait();
+    ctl.call_on_main_thread([this] { prepare(); }).get();
     ctl.update_status(0, statustxt);
 
     if (m_object_idx == -1 || m_selected.empty()) return;
