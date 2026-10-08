@@ -119,7 +119,7 @@ void SendJob::process(Ctl &ctl)
         msg = _u8L("Sending print job through cloud service");
     }
 
-    ctl.call_on_main_thread([this] { prepare(); }).wait();
+    ctl.call_on_main_thread([this] { prepare(); }).get();
     ctl.update_status(0, msg);
 
     // In check mode (InputIpAddressDialog / lan-mode send) verify the connection with a dummy

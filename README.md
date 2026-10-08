@@ -74,6 +74,27 @@ separate maintainers and release channels.
 
 ## Development progress and open tasks
 
+### QuackSlicer 2.5.21
+
+Main-thread job callbacks now deliver failures to the job finalizer through
+their futures. An HA rejection such as `Another dispatch requires completion
+or review` is reported by the existing print-dialog error handler instead of
+escaping into the UI event loop. Preparation failures also stop the job before
+further work begins. See the [release notes](docs/releases/2.5.21.md).
+
+- [x] Preserve the original callback exception and verify a subsequent job can run.
+- [x] Retrieve preparation futures for print, send, arrange, orient and fill-bed jobs.
+- [x] Reproduce both worker regressions before the correction; pass all 18 assertions
+  with the correction, the GUI utility suite and HA/inventory regressions.
+- [x] Verify the local Windows repair starts with an isolated data directory and
+  preserve existing user configuration and profiles during installation.
+- [ ] Verify an actual accepted HA print dispatch and physical printer behavior.
+- [ ] Diagnose the separately reported missing nozzle-match indicator.
+
+Cross-platform builds, unit tests and matching final artifacts gate release
+publication. Managed `HA ... [digest]` filament presets remain the effective
+local copies used by the HA profile integration.
+
 ### QuackSlicer 2.5.20
 
 The optional Home Assistant material source supplies real roll UUIDs, current

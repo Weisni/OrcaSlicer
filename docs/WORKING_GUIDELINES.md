@@ -45,3 +45,8 @@ Consider them before every command, together with the applicable `AGENTS.md`.
   Actions for the other supported platforms and publication artifacts.
 
 Source: user instructions and the root `AGENTS.md`, recorded 2026-09-24.
+
+- For the requested 2.5.21 release, merge the scoped HA callback repair through
+  reviewed, passing cross-platform CI; publish only artifacts matching the final
+  main commit. Preserve unrelated arrangement work and user profiles. Physical
+  print dispatch and the nozzle-match indicator remain separate validation.

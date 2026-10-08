@@ -20,7 +20,7 @@ class PlaterWorker: public Worker {
     class PlaterJob : public Job {
         std::shared_ptr<Job> m_job;
         wxWindow *m_plater;
-        long long m_process_duration; // [ms]
+        long long m_process_duration = 0; // [ms], including jobs that fail before timing completes
 
     public:
         void process(Ctl &c) override
