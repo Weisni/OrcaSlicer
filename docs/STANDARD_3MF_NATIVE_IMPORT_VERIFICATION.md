@@ -90,5 +90,7 @@ folder in PATH and run:
 - [x] Observe mapping/reset regressions failing before their respective fixes.
 - [x] Verify corrected object defaults, volume bases, painted-facet remapping
   and unchanged original archive hash.
-- [ ] Include Model.cpp in the assembled native test runtime and verify the GUI.
+- [x] Include Model.cpp in the assembled native test runtime; verify native DLL
+  loading and the actual launcher entry with an isolated `--help` run.
+- [ ] Verify the rendered import dialog and object-list result with the test input.
 - [ ] Run release CI and publish through the normal reviewed release flow.
