@@ -71,6 +71,26 @@ TEST_CASE("HA profile decoding rejects process settings and incomplete material 
     CHECK_THROWS(HaMaterialProfile::decode_config(payload));
 }
 
+TEST_CASE("Stored HA profile validation and bootstrap do not consume temporary edits", "[HaMaterialProfile]")
+{
+    const auto original = HaMaterialProfile::capture(exact_material());
+    const auto name = HaMaterialProfile::managed_name(original);
+    PresetBundle bundle;
+    auto &installed = bundle.filaments.load_preset({}, name, HaMaterialProfile::decode_config(original), false);
+    installed.filament_id = original.at("dependencies").at("filament_id");
+    bundle.filaments.select_preset_by_name(name,true);
+    bundle.filaments.get_edited_preset().config.set_key_value("filament_flow_ratio", new ConfigOptionFloats{1.03});
+    const auto* stored = HaMaterialProfile::stored_preset(bundle.filaments,name);
+    REQUIRE(stored != nullptr);
+    CHECK(HaMaterialProfile::capture(*stored,original) == original);
+    CHECK(HaMaterialProfile::capture(*bundle.filaments.find_preset(name),original) != original);
+    CHECK(bundle.filaments.get_edited_preset().config.opt_serialize("filament_flow_ratio") == "1.03");
+    CHECK(HaMaterialProfile::stored_preset(bundle.filaments,"Missing profile") == nullptr);
+    bundle.filaments.find_preset(name,false,true)->config.set_key_value("filament_flow_ratio",new ConfigOptionFloats{1.07});
+    CHECK(HaMaterialProfile::content_identity(HaMaterialProfile::capture(
+        *HaMaterialProfile::stored_preset(bundle.filaments,name),original)) != HaMaterialProfile::content_identity(original));
+}
+
 TEST_CASE("Uploading a managed project's edits does not rename its profile on the next comparison", "[HaMaterialProfile]")
 {
     const auto original = HaMaterialProfile::capture(exact_material());
@@ -178,6 +198,57 @@ TEST_CASE("An unmodified downloaded HA profile has no upload difference", "[HaMa
     const auto result = HaProjectMaterialDifferences::compare(project, {profile_row(profile)},
         {{profile_roll, profile_source, "printer"}}, profile_source, "printer");
     CHECK(result.empty());
+}
+
+TEST_CASE("An unchanged HA base profile is not a change when its nozzle variant is absent", "[HaMaterialProfileSync]")
+{
+    const auto profile = HaMaterialProfile::capture(exact_material());
+    auto row = profile_row(profile);
+    const nlohmann::json context = {{"printer_model", "Bambu Lab P2S"}, {"nozzle_diameter", "0.4"}, {"flow_type", "high_flow"}};
+    row.assignment = HaMaterialSource::with_context(row.assignment, context);
+    REQUIRE(HaMaterialSource::variant_profile(row.assignment).is_null());
+    const HaProjectMaterialSync::Project project{{HaMaterialProfile::managed_name(profile)}, {"#FFFFFF"}, {profile}};
+    CHECK(HaProjectMaterialDifferences::compare(project, {row},
+        {{profile_roll, profile_source, "printer"}}, profile_source, "printer").empty());
+
+    auto changed = profile;
+    changed["settings"]["filament_flow_ratio"] = "1.03";
+    changed = HaMaterialProfile::seal(changed);
+    const auto differences = HaProjectMaterialDifferences::compare(
+        {{HaMaterialProfile::managed_name(profile)}, {"#FFFFFF"}, {changed}}, {row},
+        {{profile_roll, profile_source, "printer"}}, profile_source, "printer");
+    REQUIRE(differences.size() == 1);
+    CHECK(differences[0].before_profile_sha256.empty());
+    CHECK(differences[0].after_profile_sha256 == HaMaterialProfile::digest(changed));
+    CHECK_NOTHROW(HaProjectMaterialDifferences::selected_rolls(differences, {true}, {row}));
+    auto selections = HaProjectMaterialDifferences::selected_rolls(differences, {true}, {row});
+    REQUIRE(selections.size() == 1);
+    CHECK(selections[0].expected_profile_sha256.empty());
+    selections[0].profile_context = context;
+    const nlohmann::json remote = {{"schema_version", 8}, {"tables", {
+        {"spools", nlohmann::json::array({{{"id", profile_roll}, {"status", "active"},
+          {"nominal_capacity_mg", 1000000}, {"filament_preset_id", profile.at("name")}, {"color_hex", "#FFFFFF"}}})},
+        {"stock_events", nlohmann::json::array({{{"spool_id", profile_roll}, {"delta_mg", 600000}}})}}}};
+    const auto changes = HaProjectRollPublish::publish_roll_changes(
+        {{HaMaterialProfile::managed_name(profile)}, {"#FFFFFF"}, {changed}}, remote, selections);
+    REQUIRE(changes.size() == 1);
+    CHECK(changes[0].at("expected_profile_sha256").is_null());
+    CHECK(changes[0].at("profile_context") == context);
+    CHECK(changes[0].at("material_profile") == changed);
+}
+
+TEST_CASE("A name-only HA association offers initial storage without claiming different settings", "[HaMaterialProfileSync]")
+{
+    const auto profile = HaMaterialProfile::capture(exact_material());
+    auto row = profile_row(profile);
+    row.assignment.material_profile = nullptr;
+    const auto differences = HaProjectMaterialDifferences::compare(
+        {{profile.at("name")}, {"#FFFFFF"}, {profile}}, {row},
+        {{profile_roll, profile_source, "printer"}}, profile_source, "printer");
+    REQUIRE(differences.size() == 1);
+    CHECK(differences[0].before == differences[0].after);
+    CHECK(differences[0].before_profile_sha256.empty());
+    CHECK_FALSE(differences[0].after_profile_sha256.empty());
 }
 
 TEST_CASE("A roll used with conflicting same-name material settings cannot be uploaded", "[HaMaterialProfileSync]")

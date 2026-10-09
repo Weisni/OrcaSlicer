@@ -166,7 +166,7 @@ inline std::string install_payload(PresetBundle &bundle, const Json& payload, bo
         if (!selection) return {};
         throw std::runtime_error("The HA material profile is not compatible with this printer and nozzle");
     }
-    if (const auto *existing = bundle.filaments.find_preset(name)) {
+    if (const auto *existing = HaMaterialProfile::stored_preset(bundle.filaments, name)) {
         if (existing->is_system || existing->is_default ||
             HaMaterialProfile::content_identity(HaMaterialProfile::capture(*existing, payload)) != expected)
             throw std::runtime_error("The downloaded HA profile name is already used by different local settings; save those settings under another name first");
@@ -317,7 +317,7 @@ inline const Preset *resolve(const PresetBundle &bundle, const HaMaterialSource:
         const auto payload = profile_cache().find(endpoint(), assignment.material_profile);
         if (payload.is_null()) return nullptr;
         const auto name = HaMaterialProfile::managed_name(payload);
-        preset = bundle.filaments.find_preset(name);
+        preset = HaMaterialProfile::stored_preset(bundle.filaments, name);
         if (preset && (!HaMaterialSource::same_material_family(preset->config.opt_string("filament_type", 0u), assignment.material_type) ||
             HaMaterialProfile::content_identity(HaMaterialProfile::capture(*preset, payload)) !=
                 HaMaterialProfile::content_identity(payload))) return nullptr;

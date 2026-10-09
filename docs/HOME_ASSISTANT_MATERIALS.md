@@ -45,17 +45,26 @@ or publishing to HA. Background refresh preserves them. When explicitly loading
 a new HA base for the edited material, Quack overlays the settings changed from
 the previous base, while unchanged settings follow the new base. Those changes
 stay local until an explicit publication. Selecting a local profile for a roll
-without a compatible HA variant uploads its effective settings first, waits for
+without a compatible HA variant uploads its saved baseline first, waits for
 the committed HA association, and then uses the acknowledged HA-managed copy.
 Closing the settings dialog does not discard those temporary settings. If
 several project filaments share one edited preset, loading a new base must use
 the same replacement for all of them; conflicting replacements preserve the
 project and report the ambiguity.
 
-For older name-only associations, Quack uses the exact compatible installed
-profile. If it is absent, a compatible installed Generic profile of the same
-material type is used. That derived fallback is not silently published as a
-new authoritative association. Filament/material profiles are separate from
+Stored profile identity checks use the saved preset rather than its selected
+edit buffer. Temporary changes therefore do not make a downloaded HA profile
+appear missing or modified. Project-to-HA publication still captures effective
+settings, including temporary changes, when explicitly selected.
+
+For older name-only associations, Quack resolves the compatible local profile
+as a suggestion. Explicit HA roll selection offers initial full-profile storage
+before adopting the acknowledged HA copy. Matching names alone do not prove
+matching settings. Initial storage is labeled separately in the synchronization
+dialog and unchecked by default. An unchanged complete HA base profile is not
+an upload difference merely because its nozzle variant is absent. Changed
+settings can create that variant using a null variant concurrency baseline.
+Filament/material profiles are separate from
 print/process profiles.
 
 The synchronization dialog supports selected HA slots or all occupied slots.

@@ -3,6 +3,14 @@
 #include "Preset.hpp"
 
 namespace Slic3r::HaMaterialProfile {
+inline const Preset* stored_preset(const PresetCollection& presets, const std::string& name)
+{
+    // find_preset normally returns the selected edit buffer. HA identity and
+    // initial uploads must use the saved baseline without consuming local edits.
+    for (const auto& preset : presets.get_presets())
+        if (preset.name == name) return &preset;
+    return nullptr;
+}
 inline std::set<std::string> setting_keys()
 {
     const auto& options = Preset::filament_options();

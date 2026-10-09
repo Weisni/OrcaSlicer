@@ -49,7 +49,8 @@ Source: user instructions and the root `AGENTS.md`, recorded 2026-09-24.
 - HA owns committed filament/material profiles and associations. Keep temporary
   local setting adjustments possible without project saves or HA writes.
   Background synchronization must preserve those overrides; publish effective
-  settings only through an explicit saved profile association.
+  settings only through explicit Project-to-HA publication. Initial HA profile
+  association uploads the saved baseline and retains unsaved adjustments locally.
 - Use generation/revision checks and stable-key deltas for HA reads. Preserve
   the last complete cache on failure; existing online print checks still apply.
 

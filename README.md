@@ -84,13 +84,18 @@ profile regardless of roll or display label.
 
 Local unsaved material adjustments remain editable. Background refresh preserves
 them; selecting a new HA base retains the changed settings over that base.
-Explicit profile association uploads the effective settings first and adopts
-only the acknowledged HA profile. Ordinary edits do not upload or save a project.
+Initial profile association uploads the saved baseline first and adopts only
+the acknowledged HA profile. Temporary edits remain local; explicit
+Project-to-HA publication includes them. Ordinary edits do not save a project.
 
 - [x] Implement authenticated incremental reads, immutable content and legacy API fallback.
 - [x] Preserve atomic import, receipts, conflict checks and temporary local overrides.
 - [x] Verify focused native contracts, profile integration and the component suite.
 - [x] Compile the changed GUI translation units and independently review the flow.
+- [x] Correct saved-profile identity checks and unchanged base-profile comparisons;
+  verify 303 assertions in 30 native profile/binding tests.
+- [x] Label missing full profiles as optional initial storage, unchecked by default.
+- [ ] Validate the isolated Windows runtime for the profile comparison correction.
 - [ ] Verify rendered selection, offline restart and refresh with no connected printer.
 - [ ] Run complete cross-platform release builds before installation/publication.
 

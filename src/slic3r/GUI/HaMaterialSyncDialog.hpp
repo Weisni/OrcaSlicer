@@ -81,12 +81,15 @@ public:
         auto *change_layout = new wxBoxSizer(wxVERTICAL);
         for (const auto &difference : m_differences) {
             const auto &assignment = m_rows.at(difference.source_index).assignment;
-            const auto field = difference.field == HaProjectMaterialDifferences::Field::Profile ? _L("Profile") : _L("Color");
+            const bool missing_profile = difference.field == HaProjectMaterialDifferences::Field::Profile &&
+                difference.before_profile_sha256.empty() && !difference.after_profile_sha256.empty();
+            const auto field = difference.field == HaProjectMaterialDifferences::Field::Profile ?
+                (missing_profile ? _L("Save full HA profile") : _L("Profile")) : _L("Color");
             const auto location = assignment.slot.empty() ? _L("Inventory") : from_u8(assignment.slot);
             auto *check = new wxCheckBox(changes, wxID_ANY,
                 wxString::Format(_L("Filament %d"), int(difference.project_index + 1)) + " / " + location + " / " +
                 from_u8(assignment.product) + " - " + field);
-            check->SetValue(difference.problem.empty());
+            check->SetValue(difference.problem.empty() && !missing_profile);
             check->Enable(difference.problem.empty());
             check->SetToolTip(from_u8(assignment.spool_uuid));
             change_layout->Add(check, 0, wxEXPAND | wxTOP, FromDIP(8));
@@ -97,7 +100,7 @@ public:
             change_layout->Add(values, 0, wxEXPAND | wxLEFT | wxTOP | wxBOTTOM, FromDIP(7));
             if (difference.field == HaProjectMaterialDifferences::Field::Profile && !difference.after_profile_sha256.empty()) {
                 auto *settings = new wxStaticText(changes, wxID_ANY, difference.before_profile_sha256.empty()
-                    ? _L("The complete material settings will be stored in Home Assistant.")
+                    ? _L("No complete material profile is saved in Home Assistant for this roll and nozzle configuration. Saving creates it; matching profile names alone do not confirm matching settings.")
                     : _L("Material settings differ. The complete project profile will replace the HA profile for this roll and nozzle configuration."));
                 settings->Wrap(FromDIP(650));
                 change_layout->Add(settings, 0, wxEXPAND | wxLEFT | wxBOTTOM, FromDIP(7));

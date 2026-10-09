@@ -4845,7 +4845,7 @@ bool Sidebar::sync_ha_material_demo(bool report_error, const std::string &select
         if (provider_mode) for (const auto &selection : selections) {
             if (selection.color_only) continue;
             auto &row = reviewed.at(selection.source_index);
-            if (HaMaterialProvider::resolve(*bundle, row.assignment)) continue;
+            if (!row.assignment.material_profile.is_null() && HaMaterialProvider::resolve(*bundle, row.assignment)) continue;
             // An explicit roll selection may download the linked variant. A
             // failed/incompatible association still permits a local same-family choice.
             if (!row.assignment.material_profile.is_null()) {
@@ -4861,11 +4861,15 @@ bool Sidebar::sync_ha_material_demo(bool report_error, const std::string &select
             if (choices.empty()) throw std::runtime_error("Install a compatible filament profile of this roll's material type first");
             wxSingleChoiceDialog picker(this,
                 from_u8(row.assignment.product) + " / " + from_u8(row.assignment.material_type) + "\n" +
-                _L("Choose a compatible filament profile for this nozzle. The selected settings are saved to Home Assistant before use."),
+                _L("Choose a compatible filament profile for this nozzle. The saved profile is uploaded to Home Assistant before use. Temporary edits remain local."),
                 _L("Choose filament profile"), choices);
+            if (const auto *local = HaMaterialProvider::resolve(*bundle, row.assignment)) {
+                const int selected = choices.Index(from_u8(local->name));
+                if (selected != wxNOT_FOUND) picker.SetSelection(selected);
+            }
             wxGetApp().UpdateDlgDarkUI(&picker);
             if (picker.ShowModal() != wxID_OK) return std::nullopt;
-            const auto *selected_profile = effective_preset(into_u8(picker.GetStringSelection()));
+            const auto *selected_profile = HaMaterialProfile::stored_preset(bundle->filaments, into_u8(picker.GetStringSelection()));
             if (!selected_profile) throw std::runtime_error("The selected filament profile is no longer available");
             const auto payload = HaMaterialProfile::capture(*selected_profile);
             const auto fresh = read_rows();
@@ -4953,7 +4957,7 @@ bool Sidebar::sync_ha_material_demo(bool report_error, const std::string &select
                 const auto &source = reviewed.at(selection.source_index).assignment;
                 auto binding = HaMaterialBinding::Binding{source.spool_uuid, endpoint, "duck-poop-demo"};
                 if (!selection.color_only) {
-                    const auto *preset = staged_bundle.filaments.find_preset(staged.presets[index]);
+                    const auto *preset = HaMaterialProfile::stored_preset(staged_bundle.filaments, staged.presets[index]);
                     if (!preset) throw std::runtime_error("The selected filament profile is no longer installed");
                     binding.profile_context = source.profile_context_key;
                     binding.profile_name = preset->name;
