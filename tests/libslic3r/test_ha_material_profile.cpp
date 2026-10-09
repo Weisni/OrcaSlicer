@@ -2,6 +2,7 @@
 #include "libslic3r/HaMaterialProfile.hpp"
 #include "libslic3r/PresetBundle.hpp"
 #include "libslic3r/HaProjectMaterialDifferences.hpp"
+#include "libslic3r/HaMaterialLocalOverride.hpp"
 #include <boost/filesystem.hpp>
 
 using namespace Slic3r;
@@ -44,6 +45,35 @@ TEST_CASE("An unchanged HA-managed preset does not create a false upload differe
     const auto changed = HaMaterialProfile::capture(downloaded, summary);
     CHECK(changed.at("name") == original.at("name"));
     CHECK(changed.at("sha256") != original.at("sha256"));
+}
+
+TEST_CASE("One HA profile replacement preserves effective edits on unchanged shared materials", "[HaMaterialProfile][Regression]")
+{
+    PresetBundle bundle;
+    const auto local = exact_material();
+    bundle.filaments.load_preset({}, local.name, local.config, false);
+    auto remote = local;
+    remote.name = "HA committed PLA";
+    remote.config.set_key_value("filament_flow_ratio", new ConfigOptionFloats{0.97});
+    remote.config.set_key_value("nozzle_temperature", new ConfigOptionInts{215});
+    bundle.filaments.load_preset({}, remote.name, remote.config, false);
+    bundle.filaments.select_preset_by_name(local.name, true);
+    bundle.filaments.get_edited_preset().config.set_key_value("filament_flow_ratio", new ConfigOptionFloats{1.03});
+    bundle.filaments.get_edited_preset().config.set_key_value("nozzle_temperature", new ConfigOptionInts{230});
+    bundle.set_num_filaments(3, std::vector<std::string>{"#112233", "#445566", "#778899"});
+    bundle.filament_presets = {local.name, local.name, local.name};
+    const auto original = bundle.filament_presets;
+    const auto settings = bundle.filaments.get_edited_preset().config;
+    bundle.set_filament_preset(0, remote.name);
+    const auto replacement = HaMaterialLocalOverride::replacement_index(original, bundle.filament_presets, local.name);
+    REQUIRE_FALSE(replacement.has_value());
+    CHECK(bundle.filaments.get_edited_preset().config == settings);
+    const auto full = bundle.full_config();
+    CHECK(full.opt_serialize("filament_flow_ratio") == "0.97,1.03,1.03");
+    CHECK(full.opt_serialize("nozzle_temperature") == "215,230,230");
+    REQUIRE(HaMaterialProfile::stored_preset(bundle.filaments, local.name) != nullptr);
+    CHECK(HaMaterialProfile::stored_preset(bundle.filaments, local.name)->config.opt_serialize("filament_flow_ratio") == "0.98");
+    CHECK(HaMaterialProfile::stored_preset(bundle.filaments, remote.name)->config.opt_serialize("filament_flow_ratio") == "0.97");
 }
 
 TEST_CASE("One managed profile recaptures distinct HA publication labels without preset duplication", "[HaMaterialProfile]")

@@ -3264,6 +3264,12 @@ bool Model::obj_import_color_deal(const std::vector<unsigned char>& filament_ids
             else
                 success |= obj_import_vertex_color_deal(filament_ids, first_extruder_id, volume, get_filament_id_callback);
         }
+        // Single-part objects have no volume row in the object list, which reads
+        // the object's default filament. Keep it aligned with the mapped base.
+        if (!first_extruder_id.has_value() && obj->volumes.size() == 1 && obj->volumes.front() != nullptr &&
+            obj->volumes.front()->is_model_part() &&
+            obj->volumes.front()->config.has("extruder") && obj->volumes.front()->config.extruder() > 0)
+            obj->config.set("extruder", obj->volumes.front()->config.extruder());
     }
     return success;
 }
@@ -3748,6 +3754,7 @@ void FacetsAnnotation::reset()
 {
     m_data.triangles_to_split.clear();
     m_data.bitstream.clear();
+    m_data.reset_used_states();
     this->touch();
 }
 

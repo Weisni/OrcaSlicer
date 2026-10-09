@@ -7,7 +7,7 @@
 #include "HaProjectMaterialPublish.hpp"
 #include "HaMaterialProvider.hpp"
 #include "libslic3r/HaMaterialLocalOverride.hpp"
-#include <wx/choicdlg.h>
+#include "HaFilamentProfileDialog.hpp"
 #include "HaMaterialSyncDialog.hpp"
 #include <wx/checkbox.h>
 #include <wx/textctrl.h>
@@ -4842,6 +4842,7 @@ bool Sidebar::sync_ha_material_demo(bool report_error, const std::string &select
         const auto temporary_edited = preserve_material_edits ? HaMaterialProfile::capture(bundle->filaments.get_edited_preset()).at("settings") : nlohmann::json();
         if (profiles_changed && !provider_mode && tab->get_presets()->current_is_dirty())
             throw std::runtime_error("Save or discard the edited material preset before applying HA profiles. Color-only synchronization preserves material edits.");
+        std::map<size_t, nlohmann::json> profile_associations;
         if (provider_mode) for (const auto &selection : selections) {
             if (selection.color_only) continue;
             auto &row = reviewed.at(selection.source_index);
@@ -4859,7 +4860,7 @@ bool Sidebar::sync_ha_material_demo(bool report_error, const std::string &select
                 if (!preset.is_default && HaMaterialProvider::compatible(*bundle, preset, row.assignment.material_type))
                     choices.Add(from_u8(preset.name));
             if (choices.empty()) throw std::runtime_error("Install a compatible filament profile of this roll's material type first");
-            wxSingleChoiceDialog picker(this,
+            HaFilamentProfileDialog picker(this,
                 from_u8(row.assignment.product) + " / " + from_u8(row.assignment.material_type) + "\n" +
                 _L("Choose a compatible filament profile for this nozzle. The saved profile is uploaded to Home Assistant before use. Temporary edits remain local."),
                 _L("Choose filament profile"), choices);
@@ -4872,33 +4873,69 @@ bool Sidebar::sync_ha_material_demo(bool report_error, const std::string &select
             const auto *selected_profile = HaMaterialProfile::stored_preset(bundle->filaments, into_u8(picker.GetStringSelection()));
             if (!selected_profile) throw std::runtime_error("The selected filament profile is no longer available");
             const auto payload = HaMaterialProfile::capture(*selected_profile);
+            profile_associations.emplace(selection.source_index, payload);
+            row.resolved_preset = HaMaterialProfile::managed_name(payload);
+        }
+        if (provider_mode) {
+            // Resolve all choices and shared edit-buffer conflicts before any
+            // association write. Cancelling a later picker publishes nothing.
+            const auto planned = HaProjectMaterialSync::stage(original, reviewed, reviewed, selections);
+            if (preserve_material_edits && profiles_changed)
+                HaMaterialLocalOverride::replacement_index(original.presets, planned.presets,
+                    bundle->filaments.get_edited_preset().name);
+        }
+        if (!profile_associations.empty()) {
             const auto fresh = read_rows();
-            const auto chosen = std::find_if(fresh.begin(), fresh.end(), [&](const auto &r) {
-                return r.assignment.spool_uuid == row.assignment.spool_uuid;
-            });
-            if (chosen == fresh.end()) throw std::runtime_error("The roll became unavailable while choosing its profile");
-            if (HaMaterialProfile::digest(chosen->assignment.material_profile) != HaMaterialProfile::digest(row.assignment.material_profile) ||
-                chosen->assignment.revision != row.assignment.revision || chosen->assignment.color != row.assignment.color ||
-                chosen->assignment.material_type != row.assignment.material_type || chosen->assignment.slot != row.assignment.slot)
-                throw std::runtime_error("The HA roll changed while choosing its profile; select it again");
+            auto changes = nlohmann::json::array();
+            std::vector<std::string> affected;
+            for (const auto &selection : selections) {
+                const auto &row = reviewed.at(selection.source_index);
+                const auto chosen = std::find_if(fresh.begin(), fresh.end(), [&](const auto &r) {
+                    return r.assignment.spool_uuid == row.assignment.spool_uuid;
+                });
+                if (chosen == fresh.end()) throw std::runtime_error("The roll became unavailable while choosing its profile");
+                if (HaMaterialProfile::digest(chosen->assignment.material_profile) != HaMaterialProfile::digest(row.assignment.material_profile) ||
+                    chosen->assignment.revision != row.assignment.revision || chosen->assignment.color != row.assignment.color ||
+                    chosen->assignment.material_type != row.assignment.material_type || chosen->assignment.slot != row.assignment.slot ||
+                    chosen->assignment.material_preset != row.assignment.material_preset ||
+                    chosen->assignment.manufacturer != row.assignment.manufacturer || chosen->assignment.product != row.assignment.product)
+                    throw std::runtime_error("The HA roll changed while choosing its profile; select it again");
+                const auto association = profile_associations.find(selection.source_index);
+                if (association == profile_associations.end()) continue;
+                const auto previous_profile = HaMaterialSource::variant_profile(chosen->assignment);
+                changes.push_back({{"spool_uuid", row.assignment.spool_uuid},
+                    {"fields", nlohmann::json::object()}, {"expected", nlohmann::json::object()},
+                    {"material_profile", association->second}, {"profile_context", HaMaterialProvider::profile_context(*bundle)},
+                    {"expected_profile_sha256", previous_profile.is_null() ? nlohmann::json(nullptr) : previous_profile.at("sha256")}});
+                affected.push_back(row.assignment.spool_uuid);
+            }
             const auto current = HaMaterialProvider::fresh_snapshot();
-            const auto previous_profile = HaMaterialSource::variant_profile(chosen->assignment);
-            const nlohmann::json change = {{"spool_uuid", row.assignment.spool_uuid},
-                {"fields", nlohmann::json::object()}, {"expected", nlohmann::json::object()},
-                {"material_profile", payload}, {"profile_context", HaMaterialProvider::profile_context(*bundle)},
-                {"expected_profile_sha256", previous_profile.is_null() ? nlohmann::json(nullptr) : previous_profile.at("sha256")}};
-            if (!publish_ha_project_materials(this, endpoint, current, nlohmann::json::array({change}),
-                    [&] { validate_project(original); }, {row.assignment.spool_uuid}, true))
+            if (!publish_ha_project_materials(this, endpoint, current, changes,
+                    [&] { validate_project(original); }, affected, true))
                 return std::nullopt;
             // Use only the acknowledged HA content, never the candidate local preset.
             const auto confirmed = read_rows();
-            const auto installed = std::find_if(confirmed.begin(), confirmed.end(), [&](const auto &candidate) {
-                return candidate.assignment.spool_uuid == row.assignment.spool_uuid;
-            });
-            if (installed == confirmed.end() || HaMaterialProfile::digest(installed->assignment.material_profile) != HaMaterialProfile::digest(payload))
-                throw std::runtime_error("The saved HA profile association changed; refresh before selecting it");
-            HaMaterialProvider::install_profile(*bundle, installed->assignment);
-            row = *installed;
+            for (const auto &selection : selections) {
+                auto &row = reviewed.at(selection.source_index);
+                const auto installed = std::find_if(confirmed.begin(), confirmed.end(), [&](const auto &candidate) {
+                    return candidate.assignment.spool_uuid == row.assignment.spool_uuid;
+                });
+                const auto association = profile_associations.find(selection.source_index);
+                const auto &expected_profile = association == profile_associations.end()
+                    ? row.assignment.material_profile : association->second;
+                const auto expected_preset = association == profile_associations.end()
+                    ? row.assignment.material_preset : association->second.at("name").get<std::string>();
+                if (installed == confirmed.end() || installed->assignment.slot != row.assignment.slot ||
+                    installed->assignment.color != row.assignment.color || installed->assignment.material_type != row.assignment.material_type ||
+                    installed->assignment.material_preset != expected_preset ||
+                    installed->assignment.manufacturer != row.assignment.manufacturer || installed->assignment.product != row.assignment.product ||
+                    HaMaterialProfile::digest(installed->assignment.material_profile) != HaMaterialProfile::digest(expected_profile))
+                    throw std::runtime_error("The saved HA profile association changed; refresh before selecting it");
+                if (association != profile_associations.end()) HaMaterialProvider::install_profile(*bundle, installed->assignment);
+                // The single acknowledged batch advances the global HA revision.
+                // Keep unchanged selected rows current only after identity checks.
+                row = *installed;
+            }
         }
         if (p->plater->is_background_process_slicing() ||
             !(wxGetApp().app_config->get_bool("ha_material_demo_enabled") || HaMaterialProvider::enabled()) ||
@@ -4943,7 +4980,9 @@ bool Sidebar::sync_ha_material_demo(bool report_error, const std::string &select
                                    (original.presets.size() == 1 ? 0 : size_t(-1));
         if (preserve_material_edits && profiles_changed) {
             // Closing the settings dialog clears editing_filament, but the
-            // edited preset still supplies temporary settings to the project.
+            // edited preset still supplies temporary settings to every slot
+            // retaining its name. Keep that buffer when only some slots switch;
+            // migrate it only when its whole shared group adopts one new base.
             const auto replacement = HaMaterialLocalOverride::replacement_index(
                 original.presets, staged.presets, bundle->filaments.get_edited_preset().name);
             active_index = replacement.value_or(size_t(-1));

@@ -93,9 +93,13 @@ Project-to-HA publication includes them. Ordinary edits do not save a project.
 - [x] Verify focused native contracts, profile integration and the component suite.
 - [x] Compile the changed GUI translation units and independently review the flow.
 - [x] Correct saved-profile identity checks and unchanged base-profile comparisons;
-  verify 303 assertions in 30 native profile/binding tests.
+  verify 310 assertions in 31 native profile/binding tests.
 - [x] Label missing full profiles as optional initial storage, unchecked by default.
 - [x] Build the isolated Windows test runtime and verify loading its new DLL.
+- [x] Add profile-name search and preserve shared temporary settings when a single
+  project filament switches to its saved HA profile; preflight before one batch upload.
+- [x] Include the standard-3MF object-default correction in the runtime core and
+  verify all 45 objects in the Whinny Pooh Ears input, including a replaced palette.
 - [ ] Validate the isolated Windows runtime for the profile comparison correction.
 - [ ] Verify rendered selection, offline restart and refresh with no connected printer.
 - [ ] Run complete cross-platform release builds before installation/publication.
@@ -105,6 +109,8 @@ requests; one changed row used about 4 KB in one request and an unchanged read
 used 123 bytes. These measure local transfer volume, not live HA latency.
 See [HA materials](docs/HOME_ASSISTANT_MATERIALS.md) and the
 [implementation record](docs/superpowers/plans/2026-10-09-ha-incremental-sync.md).
+The [native 3MF verification](docs/STANDARD_3MF_NATIVE_IMPORT_VERIFICATION.md)
+records the input, mapping and annotation-reset regressions.
 
 ### QuackSlicer 2.5.21
 

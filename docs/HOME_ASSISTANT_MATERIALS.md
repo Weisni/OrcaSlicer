@@ -48,9 +48,14 @@ stay local until an explicit publication. Selecting a local profile for a roll
 without a compatible HA variant uploads its saved baseline first, waits for
 the committed HA association, and then uses the acknowledged HA-managed copy.
 Closing the settings dialog does not discard those temporary settings. If
-several project filaments share one edited preset, loading a new base must use
-the same replacement for all of them; conflicting replacements preserve the
-project and report the ambiguity.
+several project filaments share one edited preset and only some are replaced,
+the remaining filaments retain that edit buffer. Explicitly replaced slots use
+the saved HA settings. When the entire shared group is replaced, migrating its
+overrides requires one common new base; conflicting replacements preserve the
+project and report the ambiguity before any profile association is uploaded.
+Multiple initial associations are published in one acknowledged batch after
+all profile choices, so cancelling a later choice cannot partially upload them.
+The profile chooser filters full names with a case-insensitive search field.
 
 Stored profile identity checks use the saved preset rather than its selected
 edit buffer. Temporary changes therefore do not make a downloaded HA profile

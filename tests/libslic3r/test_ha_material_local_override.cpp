@@ -14,12 +14,21 @@ TEST_CASE("Temporary edits follow the changed material after its editor is close
 TEST_CASE("Shared temporary material settings require a consistent new HA base", "[HaMaterialLocalOverride]")
 {
     using Slic3r::HaMaterialLocalOverride::replacement_index;
-    CHECK_THROWS(replacement_index({"HA PLA", "HA PLA"}, {"HA PLA new", "HA PLA"}, "HA PLA"));
     CHECK_THROWS(replacement_index({"HA PLA", "HA PLA"}, {"HA PLA new", "HA PLA other"}, "HA PLA"));
     CHECK(replacement_index({"HA PLA", "HA PLA"}, {"HA PLA new", "HA PLA new"}, "HA PLA").has_value());
     CHECK_FALSE(replacement_index({"HA PLA"}, {"HA PLA new"}, "Unassigned profile").has_value());
     CHECK_THROWS(replacement_index({"HA PLA", "HA PETG"}, {"HA PETG", "HA PETG"}, "HA PLA"));
     CHECK_THROWS(replacement_index({"HA PLA"}, {"HA PLA new", "HA PLA new"}, "HA PLA"));
+}
+
+TEST_CASE("Loading one shared material leaves temporary settings on the remaining original profile", "[HaMaterialLocalOverride]")
+{
+    CHECK_FALSE(Slic3r::HaMaterialLocalOverride::replacement_index(
+        {"Local PLA", "Local PLA", "Local PLA"}, {"HA PLA", "Local PLA", "Local PLA"}, "Local PLA").has_value());
+    CHECK_FALSE(Slic3r::HaMaterialLocalOverride::replacement_index(
+        {"Local PLA", "Local PLA", "Local PLA"}, {"HA PLA", "HA PETG", "Local PLA"}, "Local PLA").has_value());
+    CHECK_FALSE(Slic3r::HaMaterialLocalOverride::replacement_index(
+        {"Local PLA"}, {"HA PLA", "Local PLA"}, "Local PLA").has_value());
 }
 
 using Slic3r::HaMaterialLocalOverride::merge_settings;

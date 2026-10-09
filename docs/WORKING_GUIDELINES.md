@@ -53,6 +53,10 @@ Source: user instructions and the root `AGENTS.md`, recorded 2026-09-24.
   association uploads the saved baseline and retains unsaved adjustments locally.
 - Use generation/revision checks and stable-key deltas for HA reads. Preserve
   the last complete cache on failure; existing online print checks still apply.
+- Provide name filtering in the HA profile chooser. Verify standard-3MF Replace
+  mapping with the supplied input while keeping the original file unchanged.
+- The user permits closing the currently running HA test application without
+  saving its project when replacing the test runtime.
 
 - For the requested 2.5.21 release, merge the scoped HA callback repair through
   reviewed, passing cross-platform CI; publish only artifacts matching the final

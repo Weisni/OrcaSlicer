@@ -9,6 +9,12 @@ inline std::optional<size_t> replacement_index(const std::vector<std::string>& b
                                              const std::string& edited_name)
 {
     if (after.size() < before.size()) throw std::runtime_error("Project materials cannot disappear while retaining temporary settings");
+    // The edit buffer belongs to a preset name, not a project slot. If any
+    // resulting slot still uses it, retain that buffer there; explicitly
+    // replaced slots adopt their committed HA settings independently.
+    for (const auto& name : after)
+        if (name == edited_name)
+            return std::nullopt;
     std::optional<size_t> index;
     for (size_t i = 0; i < before.size(); ++i)
         if (before[i] == edited_name && after[i] != edited_name) { index = i; break; }
