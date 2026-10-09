@@ -95,6 +95,7 @@ Project-to-HA publication includes them. Ordinary edits do not save a project.
 - [x] Correct saved-profile identity checks and unchanged base-profile comparisons;
   verify 303 assertions in 30 native profile/binding tests.
 - [x] Label missing full profiles as optional initial storage, unchecked by default.
+- [x] Build the isolated Windows test runtime and verify loading its new DLL.
 - [ ] Validate the isolated Windows runtime for the profile comparison correction.
 - [ ] Verify rendered selection, offline restart and refresh with no connected printer.
 - [ ] Run complete cross-platform release builds before installation/publication.

@@ -34,6 +34,9 @@ preset-linked native suite passes 303 assertions in 30 test cases, including
 saved versus edited identity, absent-variant creation, identical downloaded
 profiles, name-only legacy storage, and actual same-name setting differences.
 
-An isolated Windows runtime is being compiled outside existing installations.
+An isolated Windows runtime was built outside existing installations (19 GUI,
+2 core and 1 application translation unit). Windows successfully loaded its
+fresh DLL and found the application entry export. The runtime retains the old
+generated 2.5.20 version display; it is a scoped test build, not a clean release.
 Rendered GUI behavior and live HA round-trip acceptance remain separate checks.
 No live HA write, printer operation, installation, merge or release is included.
