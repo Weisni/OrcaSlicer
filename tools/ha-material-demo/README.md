@@ -162,9 +162,38 @@ flow. Renewed final-head cross-platform CI and release-asset checks remain requi
 before publication. No physical print was performed for this change.
 
 Selecting a roll applies its saved compatible profile for the active nozzle.
-If none resolves, choose an installed compatible same-family profile; cancelling
-leaves project selection and HA unchanged. A different profile or edited settings
-stay local until **Project to Home Assistant / Synchronize now** is confirmed.
-That explicit save updates only the current printer/nozzle/flow variant. Switching
+If none resolves, choose an installed compatible same-family profile; the picker
+explicitly associates its effective settings with that roll in HA before using
+the acknowledged profile. Cancelling leaves project selection and HA unchanged.
+Subsequent profile edits stay local until **Project to Home Assistant /
+Synchronize now** is confirmed. That explicit save updates only the current
+printer/nozzle/flow variant. Switching
 nozzles loads an existing variant only for an unchanged HA profile baseline;
 local overrides are retained and incompatible profiles block print dispatch.
+
+## Incremental reads and immutable profiles
+
+Authenticated `/sync?generation=...&revision=...` reads return a small marker for
+an unchanged database. A changed result contains one transaction's provider
+metadata and schema-8 stable-key row upserts/deletions. Missing older history or
+server restart produces a complete reset; legacy paged endpoints remain usable.
+The server bounds its retained history to eight baselines and 64 MiB of Python
+objects. Current generation/revision reads stay cheap even if a graph is too
+large to retain as a baseline.
+
+`/profile_content?sha256=...` retrieves immutable published content independently
+of its current roll association. Existing profiles are backfilled and profile
+content/association writes commit together. Recovery preserves historical
+contents. The provider view includes every currently published base/variant
+summary, deduplicated by full envelope digest.
+
+The native client preloads these contents asynchronously, reuses a persistent
+endpoint/schema/digest cache and installs compatible managed copies without
+changing the edited material preset. Cached inventory and complete content can
+restore an offline roster; print-start still requires fresh HA checks.
+
+Local implementation validation: 258 Python component tests, focused native
+transport/import/profile regressions and changed Windows GUI translation units.
+The synthetic 1,000-customer comparison uses 123 bytes for an unchanged read and
+4,066 bytes for one changed row, versus 1,092,156 bytes across 16 legacy requests.
+Release CI, rendered acceptance and deployment remain separate tasks.

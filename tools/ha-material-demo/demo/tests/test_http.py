@@ -31,6 +31,18 @@ class HttpTests(unittest.TestCase):
             {'Content-Type': 'application/json'})
         self.assertFalse(json.load(urllib.request.urlopen(request))['device_command_sent'])
 
+    def test_incremental_sync_and_immutable_profile_routes(self):
+        def get(path):
+            return json.load(urllib.request.urlopen(self.url + '/api/quack_material_demo/' + path))
+        first = get('sync')
+        self.assertTrue(first['reset'])
+        current = get('sync?generation=' + first['generation'] + '&revision=' + str(first['revision']))
+        self.assertTrue(current['unchanged'])
+        self.assertNotIn('snapshot', current)
+        with self.assertRaises(HTTPError) as caught:get('profile_content?sha256=invalid')
+        self.assertEqual(caught.exception.code, 400)
+        caught.exception.close()
+
     def test_second_fixture_server_cannot_share_the_listening_port(self):
         duplicate=None
         try:
@@ -81,6 +93,7 @@ class HttpTests(unittest.TestCase):
                 material_profile=payload,expected_profile_sha256=None)]))
         full=get('profile?spool_uuid='+old['id']+'&sha256='+payload['sha256'])
         self.assertEqual(full,payload)
+        self.assertEqual(get('profile_content?sha256='+payload['sha256']),payload)
         exported=get('recovery')
         self.assertEqual(exported['format'],'quack-ha-recovery')
         self.assertIn('material_profiles',exported['tables'])

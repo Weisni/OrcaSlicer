@@ -5,10 +5,12 @@ import sys
 
 from .native_bridge import TABLES
 from .profiles import profile_summary, read_profile
+from .incremental_sync import sync
 
 CAPABILITIES = dict(native_apply_fields=True, provider_delta=True,
                     native_snapshot_pages=True, provider_materials_view=True, material_profiles_v1=True,
                     material_profile_variants_v1=True)
+CAPABILITIES.update(incremental_sync_v1=True, immutable_profile_content_v1=True)
 PAGE_BYTES = 192 * 1024
 NATIVE_CACHE_BYTES = 64 * 1024 * 1024
 
@@ -45,6 +47,14 @@ def profile(store, query):
         raise ValueError('Select a roll and its expected profile digest')
     with store.connection() as db:
         return read_profile(db, query['spool_uuid'], query['sha256'], query.get('context'))
+
+
+def profile_content(store, query):
+    from .profiles import read_profile_content
+    if set(query) != {'sha256'}:
+        raise ValueError('Select an immutable profile digest')
+    with store.connection() as db:
+        return read_profile_content(db, query['sha256'])
 
 
 def _integer(query, name, default=None):

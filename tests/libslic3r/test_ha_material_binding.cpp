@@ -90,6 +90,23 @@ TEST_CASE("Nozzle changes preserve unsynchronized profile choices and settings",
     CHECK(preserves_override(baseline, nullptr));
 }
 
+TEST_CASE("A managed material baseline distinguishes temporary edits from envelope metadata", "[HaMaterialBinding]")
+{
+    PresetBundle bundle;
+    auto original = bundle.filaments.get_edited_preset();
+    original.name = "Original PLA label";
+    original.config.set_key_value("filament_type", new ConfigOptionStrings{"PLA"});
+    const auto payload = HaMaterialProfile::capture(original);
+    original.name = HaMaterialProfile::managed_name(payload);
+    const Binding baseline{roll_a, source, "duck-poop-demo", "Bambu Lab P2S|0.4|standard", original.name,
+        HaMaterialProfile::digest(payload)};
+    CHECK_FALSE(preserves_override(baseline,&original));
+    auto changed = original;
+    changed.config.set_key_value("filament_flow_ratio", new ConfigOptionFloats{0.91});
+    CHECK(preserves_override(baseline,&changed));
+    CHECK(original.name == changed.name);
+}
+
 TEST_CASE("Native printer compatibility changes preserve HA bound local overrides and truthful incompatibility", "[HaMaterialBinding][Regression]")
 {
     for (const bool dirty : {false, true}) {

@@ -46,6 +46,21 @@ TEST_CASE("An unchanged HA-managed preset does not create a false upload differe
     CHECK(changed.at("sha256") != original.at("sha256"));
 }
 
+TEST_CASE("One managed profile recaptures distinct HA publication labels without preset duplication", "[HaMaterialProfile]")
+{
+    const auto first = HaMaterialProfile::capture(exact_material());
+    auto second = first;
+    second["name"] = "Another roll label";
+    second["dependencies"]["inherits"] = "Another equivalent parent";
+    second = HaMaterialProfile::seal(second);
+    REQUIRE(HaMaterialProfile::managed_name(first) == HaMaterialProfile::managed_name(second));
+    Preset installed(Preset::TYPE_FILAMENT,HaMaterialProfile::managed_name(first));
+    installed.config = HaMaterialProfile::decode_config(first);
+    installed.filament_id = first.at("dependencies").at("filament_id");
+    CHECK(HaMaterialProfile::capture(installed,HaMaterialProfile::profile_summary(first)) == first);
+    CHECK(HaMaterialProfile::capture(installed,HaMaterialProfile::profile_summary(second)) == second);
+}
+
 TEST_CASE("HA profile decoding rejects process settings and incomplete material data", "[HaMaterialProfile]")
 {
     auto payload = HaMaterialProfile::capture(exact_material());

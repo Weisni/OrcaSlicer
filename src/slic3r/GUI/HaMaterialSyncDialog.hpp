@@ -136,7 +136,7 @@ public:
         options->Add(new wxStaticText(this, wxID_ANY, _L("Synchronize:")), 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(8));
         options->Add(scope); layout->Add(options, 0, wxALL, FromDIP(20));
         auto *note = new wxStaticText(this, wxID_ANY,
-            _L("Choose slots and project filaments. Local profile overrides stay in the project until you send them to Home Assistant."));
+            _L("Choose slots and project filaments. Temporary local material edits are preserved without saving a project or sending them to Home Assistant."));
         note->Wrap(FromDIP(680)); layout->Add(note, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(20));
         auto *buttons = new wxBoxSizer(wxHORIZONTAL);
         auto *apply = new Button(this, _L("Synchronize now")); apply->SetStyle(ButtonStyle::Confirm, ButtonType::Window);
@@ -154,7 +154,7 @@ public:
             uploads->Show(sending);
             note->SetLabel(sending ?
                 _L("Selected profiles include their current material settings, including project edits. Stock and slot assignments stay unchanged.") :
-                _L("Choose slots and project filaments. Local profile overrides stay in the project until you send them to Home Assistant."));
+                _L("Choose slots and project filaments. Temporary local material edits are preserved without saving a project or sending them to Home Assistant."));
             note->Wrap(FromDIP(690));
             update_apply();
             Layout(); Fit(); CentreOnParent();

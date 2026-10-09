@@ -832,6 +832,7 @@ PlaterPresetComboBox::PlaterPresetComboBox(wxWindow *parent, Preset::Type preset
     GetDropDown().SetUseContentWidth(true,true);
     const auto refresh_ha = [this]() {
         if (m_type == Preset::TYPE_FILAMENT && HaMaterialProvider::enabled() && !is_drop_down()) {
+            HaMaterialProvider::complete_refresh(*wxGetApp().preset_bundle);
             HaMaterialProvider::refresh_if_due();
             update();
         }
@@ -1162,7 +1163,7 @@ void PlaterPresetComboBox::add_ha_rolls(const std::string &selected)
             const auto *preset = HaMaterialProvider::resolve(*m_preset_bundle, a);
             const bool has_remote_profile = !a.material_profile.is_null();
             const auto profile_name = preset ? preset->name : has_remote_profile ?
-                HaMaterialProfile::managed_name(a.material_profile) : std::string();
+                HaMaterialProvider::profile_name(a) : std::string();
             const wxString slot = a.slot.empty() ? _L("Not mounted") : from_u8(a.slot);
             const auto roll_name = a.manufacturer.empty() || boost::icontains(a.product, a.manufacturer) ?
                 a.product : a.manufacturer + " " + a.product;

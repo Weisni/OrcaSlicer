@@ -24,7 +24,7 @@ public:
             if (snapshot.contains("spools")) for (const auto &spool : snapshot.at("spools")) {
                 Json item = Json::object();
                 for (const auto *key : {"uuid", "manufacturer", "product", "material_type", "color",
-                                       "material_preset", "status", "remaining_mg"})
+                                       "material_preset", "material_profile", "material_profile_variants", "status", "remaining_mg"})
                     if (spool.contains(key)) item[key] = spool.at(key);
                 view["spools"][spool.at("uuid").get<std::string>()] = std::move(item);
             }

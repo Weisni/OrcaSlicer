@@ -64,6 +64,17 @@ TEST_CASE("Managed material names survive filename-based user preset loading", "
     CHECK(name.find_first_of("<>:\"/\\|?*@\n\r\t") == std::string::npos);
     CHECK(name.size() <= 122);
     CHECK_NOTHROW(Json(name).dump());
-    CHECK(name.substr(name.size() - 18) == "[" + digest(profile).substr(0, 16) + "]");
+    CHECK(name.size() == 78);
     CHECK(profile.at("name") == value.at("name"));
+}
+
+TEST_CASE("Identical effective material settings reuse one managed profile regardless of label", "[HaMaterialProfilePayload]")
+{
+    const auto first = seal(profile_content());
+    auto renamed = profile_content();
+    renamed["name"] = "Another roll's label";
+    renamed["dependencies"]["inherits"] = "Another equivalent parent";
+    const auto second = seal(renamed);
+    CHECK(digest(first) != digest(second));
+    CHECK(managed_name(first) == managed_name(second));
 }

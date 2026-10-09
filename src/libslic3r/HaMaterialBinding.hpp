@@ -17,6 +17,9 @@ struct Binding {
 
 inline bool preserves_override(const Binding &binding, const Preset *effective)
 {
+    if (effective && HaMaterialProfile::is_managed_name(binding.profile_name))
+        return binding.profile_context.empty() || effective->name != binding.profile_name ||
+            HaMaterialProfile::managed_name(HaMaterialProfile::capture(*effective)) != binding.profile_name;
     return binding.profile_context.empty() || !effective || effective->name != binding.profile_name ||
         HaMaterialProfile::digest(HaMaterialProfile::capture(*effective)) != binding.profile_sha256;
 }

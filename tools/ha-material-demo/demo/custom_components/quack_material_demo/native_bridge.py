@@ -140,10 +140,14 @@ class NativeBridge:
                         bookings.append((key,None,event_data['delta_mg'],event['created_at'],'HA '+event_data['quality']+' '+event['kind'],'initial' if event['kind']=='create' else 'adjustment'))
             target=s['remaining_mg']-sum(b[2] for b in bookings)
             if balance!=target:
-                key=f'ha-stock:{ident}:{revision}'
-                latest=db.execute('SELECT created_at FROM events ORDER BY id DESC LIMIT 1').fetchone()
+                # Global revisions include metadata/profile edits. A projected
+                # reconciliation must retain its identity and creation time when
+                # the underlying stock ledger and target quantity are unchanged.
+                ledger=sorted((e['id'],e['delta_mg']) for e in t['stock_events'] if e['spool_id']==ident)
+                content=json.dumps([ledger,target],separators=(',',':'),ensure_ascii=False)
+                key=f'ha-stock:{ident}:'+hashlib.sha256(content.encode()).hexdigest()
                 t['stock_events'].append(dict(id=uid(key),spool_id=ident,job_id=None,allocation_id=None,event_type='adjustment',delta_mg=target-balance,
-                    balance_after_mg=target,operation_key=key,note='HA authoritative stock reconciliation; quantity provenance unknown',created_at=latest['created_at'] if latest else s.get('created_at',ts)))
+                    balance_after_mg=target,operation_key=key,note='HA authoritative stock reconciliation; quantity provenance unknown',created_at=s.get('created_at',ts)))
                 balance=target
             for key,job,delta,created,note,event_type in bookings:
                 balance+=delta

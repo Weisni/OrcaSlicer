@@ -74,6 +74,32 @@ separate maintainers and release channels.
 
 ## Development progress and open tasks
 
+### HA incremental synchronization (implementation checkout)
+
+HA owns committed material profiles and roll associations. Generation/revision
+checks skip unchanged inventories; stable-key row deltas update only changed
+SQLite rows. Immutable profile contents are cached persistently by digest and
+preloaded in a background worker. Equal effective settings reuse one managed
+profile regardless of roll or display label.
+
+Local unsaved material adjustments remain editable. Background refresh preserves
+them; selecting a new HA base retains the changed settings over that base.
+Explicit profile association uploads the effective settings first and adopts
+only the acknowledged HA profile. Ordinary edits do not upload or save a project.
+
+- [x] Implement authenticated incremental reads, immutable content and legacy API fallback.
+- [x] Preserve atomic import, receipts, conflict checks and temporary local overrides.
+- [x] Verify focused native contracts, profile integration and the component suite.
+- [x] Compile the changed GUI translation units and independently review the flow.
+- [ ] Verify rendered selection, offline restart and refresh with no connected printer.
+- [ ] Run complete cross-platform release builds before installation/publication.
+
+Synthetic 1,000-customer data transferred about 1.09 MB through 16 legacy
+requests; one changed row used about 4 KB in one request and an unchanged read
+used 123 bytes. These measure local transfer volume, not live HA latency.
+See [HA materials](docs/HOME_ASSISTANT_MATERIALS.md) and the
+[implementation record](docs/superpowers/plans/2026-10-09-ha-incremental-sync.md).
+
 ### QuackSlicer 2.5.21
 
 Main-thread job callbacks now deliver failures to the job finalizer through

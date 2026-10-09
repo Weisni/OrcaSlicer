@@ -3,6 +3,15 @@
 
 using namespace Slic3r::HaInventoryTransport;
 
+static Json reset_reply(const Json &bundle, const std::string &generation = "generation-one", std::int64_t revision = 1)
+{
+    Json delta = {{"schema_version", 8}, {"tables", Json::object()}};
+    for (const auto &table : tables)
+        delta["tables"][table] = {{"upserts", bundle.at("tables").at(table)}, {"deletes", Json::array()}};
+    return {{"sync_version", 1}, {"generation", generation}, {"revision", revision},
+        {"unchanged", false}, {"reset", true}, {"snapshot", {{"revision", revision}}}, {"native_delta", delta}};
+}
+
 static Json transport_inventory()
 {
     return {{"schema_version", 8}, {"tables", {
@@ -21,6 +30,83 @@ static Json page(const Json &bundle, const std::string &table, size_t cursor, st
     const Json next = end == all.size() ? Json(nullptr) : Json(end);
     return {{"schema_version", 8}, {"revision", revision}, {"table", table},
         {"rows", Json(all.begin() + cursor, all.begin() + end)}, {"total", all.size()}, {"next_cursor", next}};
+}
+
+TEST_CASE("Incremental reads reset and apply stable row updates and tombstones", "[HaInventoryTransport]")
+{
+    const auto initial = merge_sync(Json(), reset_reply(transport_inventory()));
+    CHECK(initial["native_bundle"] == transport_inventory());
+    auto reply = reset_reply(transport_inventory(), "generation-one", 2);
+    reply["reset"] = false;
+    reply["native_delta"]["tables"] = {{"spools", {{"upserts", Json::array({{{"id", "roll"}, {"name", "Updated"}}})}, {"deletes", Json::array()}}}};
+    const auto updated = merge_sync(initial, reply);
+    CHECK(updated["native_bundle"]["tables"]["spools"][0]["name"] == "Updated");
+    reply["revision"] = 3; reply["snapshot"]["revision"] = 3;
+    reply["native_delta"]["tables"]["spools"] = {{"upserts", Json::array()}, {"deletes", Json::array({"[\"roll\"]"})}};
+    CHECK(merge_sync(updated, reply)["native_bundle"]["tables"]["spools"].empty());
+    CHECK(initial["native_bundle"] == transport_inventory());
+}
+
+TEST_CASE("Unchanged reads require the exact acknowledged generation and revision", "[HaInventoryTransport]")
+{
+    const auto initial = merge_sync(Json(), reset_reply(transport_inventory()));
+    Json unchanged = {{"sync_version", 1}, {"generation", "generation-one"}, {"revision", 1}, {"unchanged", true}, {"reset", false}};
+    CHECK(merge_sync(initial, unchanged) == initial);
+    CHECK_THROWS(merge_sync(Json(), unchanged));
+    unchanged["generation"] = "restored";
+    CHECK_THROWS(merge_sync(initial, unchanged));
+    CHECK(merge_sync(initial, reset_reply(transport_inventory(), "restored", 0))["_sync_generation"] == "restored");
+}
+
+TEST_CASE("Malformed incremental reads preserve the acknowledged graph", "[HaInventoryTransport]")
+{
+    const auto initial = merge_sync(Json(), reset_reply(transport_inventory()));
+    auto reply = reset_reply(transport_inventory(), "generation-one", 2);
+    reply["reset"] = false;
+    reply["native_delta"]["tables"]["spools"]["upserts"].push_back(reply["native_delta"]["tables"]["spools"]["upserts"][0]);
+    CHECK_THROWS(merge_sync(initial, reply));
+    reply = reset_reply(transport_inventory(), "different", 2); reply["reset"] = false;
+    CHECK_THROWS(merge_sync(initial, reply));
+    reply = reset_reply(transport_inventory(), "generation-one", 2); reply["reset"] = false;
+    reply["native_delta"]["tables"]["spools"]["deletes"] = Json::array({"[ \"roll\" ]"});
+    CHECK_THROWS(merge_sync(initial, reply));
+    reply = reset_reply(transport_inventory()); reply["native_delta"]["tables"].erase("stock_events");
+    CHECK_THROWS(merge_sync(initial, reply));
+    CHECK(initial["native_bundle"] == transport_inventory());
+}
+
+TEST_CASE("Incremental cache identity is independent of storage row order", "[HaInventoryTransport]")
+{
+    auto source = transport_inventory();
+    source["tables"]["spools"].push_back({{"id","second"},{"name","Another"}});
+    auto reordered = source;
+    std::reverse(reordered["tables"]["spools"].begin(),reordered["tables"]["spools"].end());
+    CHECK(canonical_bundle(source) == canonical_bundle(reordered));
+    reordered["tables"]["spools"][0]["name"] = "Edited while offline";
+    CHECK(canonical_bundle(source) != canonical_bundle(reordered));
+}
+
+TEST_CASE("Incremental reads reject ambiguous compound deletions and oversized rows", "[HaInventoryTransport]")
+{
+    auto source = transport_inventory();
+    source["tables"]["spool_identifiers"].push_back({{"kind","rfid"},{"value","\xC3\xA9"},{"spool_id","roll"}});
+    const auto initial = merge_sync(Json(),reset_reply(source));
+    auto reply = reset_reply(source,"generation-one",2); reply["reset"] = false;
+    reply["native_delta"]["tables"] = {{"spool_identifiers",{{"upserts",Json::array()},{"deletes",Json::array({"[\"rfid\",\"\xC3\xA9\"]"})}}}};
+    CHECK(merge_sync(initial,reply)["native_bundle"]["tables"]["spool_identifiers"].empty());
+    reply["native_delta"]["tables"]["spool_identifiers"]["deletes"].push_back("[\"rfid\",\"\xC3\xA9\"]");
+    CHECK_THROWS(merge_sync(initial,reply));
+    reply = reset_reply(source,"generation-one",2);
+    reply["native_delta"]["tables"]["spools"]["upserts"][0]["notes"] = std::string(256*1024,'x');
+    CHECK_THROWS(merge_sync(initial,reply));
+    reply = reset_reply(source,"generation-one",2);
+    reply["native_delta"]["tables"]["spools"]["upserts"][0]["id"] = std::string("bad\0id",6);
+    CHECK_THROWS(merge_sync(initial,reply));
+    reply = reset_reply(source,"generation-one",0);
+    CHECK_THROWS(merge_sync(initial,reply));
+    reply = reset_reply(source,"generation-one",2);
+    reply["snapshot"]["unexpected"] = std::string(4*1024*1024,'x');
+    CHECK_THROWS(merge_sync(initial,reply));
 }
 
 TEST_CASE("Paged authority snapshots retain history larger than the former mirror limits", "[HaInventoryTransport]")

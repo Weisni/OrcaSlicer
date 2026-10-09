@@ -29,8 +29,11 @@ add_executable(${_TEST_NAME}_tests
     test_ha_material_preset.cpp
     test_ha_material_profile_payload.cpp
     test_ha_material_profile.cpp
+    test_ha_material_profile_cache.cpp
+    test_ha_material_local_override.cpp
     test_ha_inventory_selection.cpp
     test_ha_inventory_transport.cpp
+    test_ha_inventory_import.cpp
     test_ha_credential_policy.cpp
     test_ha_project_material_sync.cpp
     test_ha_project_roll_publish.cpp

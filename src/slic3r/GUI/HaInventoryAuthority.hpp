@@ -4,6 +4,7 @@
 #include <wx/filefn.h>
 #include <mutex>
 #include <map>
+#include "libslic3r/HaMaterialProfilePayload.hpp"
 
 namespace Slic3r::GUI::HaInventoryAuthority {
 using Json = nlohmann::json;
@@ -17,6 +18,9 @@ struct State {
     bool refreshing = false;
     std::string endpoint, local_baseline;
     Json snapshot;
+    std::string restored_endpoint;
+    std::int64_t acknowledged_revision = -1;
+    std::string acknowledged_generation;
 };
 inline State &state() { static State value; return value; }
 inline std::string journal(const std::string &kind) { return data_dir() + "/ha-authority-" + kind + "-pending.json"; }
@@ -69,6 +73,10 @@ inline Json send(const std::string &url, const std::string &action, const Json &
     const auto response = ha_inventory_request(action_url(url, action), &request);
     if (action == "provider_delta") validate_ha_inventory_receipt(response, request);
     else validate_ha_material_snapshot(response);
+    if(state().endpoint == url && state().snapshot.is_object()) {
+        state().acknowledged_revision = std::max(state().acknowledged_revision,response.at("revision").get<std::int64_t>());
+        state().acknowledged_generation = state().snapshot.value("_sync_generation",std::string());
+    }
     return response;
 }
 
@@ -123,6 +131,43 @@ inline Json recover_pending_locked(const std::string &url)
 
 inline void refresh_current();
 
+// Safe for the provider worker: no GUI, AppConfig or native store access. A
+// result remains private until refresh() accepts it on the GUI thread.
+inline Json fetch_refresh(const std::string &url, const std::string &token)
+{
+    const std::string suffix = "/materials";
+    if (!boost::algorithm::ends_with(url, suffix)) throw std::runtime_error("Configure the HA materials endpoint first");
+    Json previous;
+    { std::lock_guard<std::mutex> lock(state().mutex); if (state().endpoint == url) previous = state().snapshot; }
+    auto sync_url = url.substr(0,url.size()-suffix.size()) + "/sync";
+    if(previous.is_object() && previous.contains("_sync_generation"))
+        sync_url += "?generation=" + Http::url_encode(previous.at("_sync_generation").get<std::string>()) +
+            "&revision=" + previous.at("revision").dump();
+    try {
+        const auto reply = ha_inventory_request_raw_with_token(sync_url,token,nullptr,HaInventoryTransport::max_bundle_bytes);
+        auto result = HaInventoryTransport::merge_sync(previous,reply);
+        validate_ha_inventory_snapshot(result);
+        result["_sync_base_generation"] = previous.is_object() ? previous.value("_sync_generation",std::string()) : std::string();
+        result["_sync_endpoint"] = url;
+        return result;
+    } catch(const HaInventoryRequestError &error) {
+        if(error.status != 404 && error.status != 405) throw;
+    }
+    // Only a missing endpoint enables the old bounded paged protocol.
+    auto legacy = HaInventoryTransport::read_snapshot([&]() {
+        auto metadata = ha_inventory_request_raw_with_token(url+"?view=provider",token,nullptr,4*1024*1024);
+        validate_ha_material_snapshot(metadata);
+        return metadata;
+    }, [&](const std::string &table,size_t cursor,std::int64_t revision) {
+        const auto page_url=url.substr(0,url.size()-suffix.size())+"/native_snapshot?table="+table+
+            "&revision="+std::to_string(revision)+"&cursor="+std::to_string(cursor)+"&limit=200";
+        try { return ha_inventory_request_raw_with_token(page_url,token,nullptr,256*1024); }
+        catch(const HaInventoryRequestError &error) { if(error.status==409) throw HaInventoryTransport::RevisionChanged(); throw; }
+    });
+    legacy["_sync_endpoint"] = url;
+    return legacy;
+}
+
 inline void attach()
 {
     auto &service = wxGetApp().filament_inventory();
@@ -130,7 +175,31 @@ inline void attach()
     if (!enabled()) {
         store.set_authority_handler({});
         service.set_authority_refresher({});
+        std::lock_guard<std::mutex> lock(state().mutex);
+        state().snapshot = Json(); state().endpoint.clear(); state().restored_endpoint.clear(); state().local_baseline.clear();
+        state().acknowledged_revision = -1; state().acknowledged_generation.clear();
         return;
+    }
+    const auto url = endpoint();
+    bool restore = false;
+    { std::lock_guard<std::mutex> lock(state().mutex); restore = state().restored_endpoint != url; state().restored_endpoint = url; }
+    if(restore) {
+        const auto saved = Json::parse(store.ha_demo_sync_state());
+        if(saved.is_object() && saved.value("endpoint",std::string())==url && saved.contains("generation") && saved.contains("provider_snapshot") && saved.contains("native_sha256")) {
+            auto snapshot = saved.at("provider_snapshot");
+            const auto baseline = store.export_ha_demo_bundle();
+            snapshot["native_bundle"] = Json::parse(baseline);
+            if(HaMaterialProfile::content_sha256(HaInventoryTransport::canonical_bundle(snapshot.at("native_bundle"))) != saved.at("native_sha256"))
+                snapshot = Json();
+            if(snapshot.is_object()) {
+                snapshot["_sync_generation"] = saved.at("generation");
+                validate_ha_inventory_snapshot(snapshot);
+                std::lock_guard<std::mutex> lock(state().mutex);
+                if(!state().snapshot.is_object() || state().endpoint!=url) {
+                    state().endpoint=url; state().snapshot=std::move(snapshot); state().local_baseline=baseline;
+                }
+            }
+        }
     }
     store.set_authority_handler([](const std::string &before, const std::string &after) {
         auto &shared = state();
@@ -158,17 +227,29 @@ inline void attach()
     service.set_authority_refresher([] { refresh_current(); });
 }
 
-inline Json refresh(const Json &supplied)
+inline Json refresh(const Json &supplied, bool allow_network = true)
 {
     std::lock_guard<std::recursive_mutex> serialize(state().refresh_mutex);
     attach();
     if (!enabled()) return supplied;
     validate_ha_material_snapshot(supplied);
+    if(supplied.value("_sync_endpoint",endpoint()) != endpoint())
+        throw std::runtime_error("The HA authority changed during refresh; inventory preserved");
+    {
+        std::lock_guard<std::mutex> lock(state().mutex);
+        if(state().endpoint==endpoint() && supplied.contains("_sync_generation") && state().snapshot.is_object() &&
+            state().snapshot.value("_sync_generation",std::string())==supplied.at("_sync_generation") &&
+            state().snapshot.at("revision")==supplied.at("revision") &&
+            !wxFileExists(from_u8(journal("inventory"))) && !wxFileExists(from_u8(journal("job"))))
+            return state().snapshot;
+    }
     auto &store = wxGetApp().filament_inventory().store();
     const auto before = store.export_ha_demo_bundle();
     const auto url = endpoint();
     Json snapshot = supplied;
     std::map<std::string, Json> recovered;
+    Json job_result;
+    bool fetch_after_recovery = false;
     {
         std::lock_guard<std::mutex> lock(state().mutex);
         state().refreshing = true;
@@ -178,34 +259,56 @@ inline Json refresh(const Json &supplied)
         std::lock_guard<std::mutex> lock(state().mutex);
         // A GUI GET may have started before a native transaction received its
         // acknowledgement. Never replace that committed cache with older data.
-        if (state().endpoint == url && state().snapshot.is_object() &&
-            snapshot.at("revision") < state().snapshot.at("revision")) {
-            snapshot = ha_inventory_material_snapshot(url, false);
-            validate_ha_material_snapshot(snapshot);
-            if (snapshot.at("revision") < state().snapshot.at("revision"))
-                throw std::runtime_error("HA returned an older revision than the acknowledged inventory");
+        if (state().endpoint == url && state().snapshot.is_object()) {
+            const auto generation = state().snapshot.value("_sync_generation",std::string());
+            const auto supplied_generation = snapshot.value("_sync_generation",generation);
+            if(snapshot.contains("_sync_base_generation") && supplied_generation != generation &&
+                snapshot.at("_sync_base_generation") != generation)
+                throw std::runtime_error("A newer HA generation was already imported; refresh again");
+            if(supplied_generation == generation && (snapshot.at("revision") < state().snapshot.at("revision") ||
+                (state().acknowledged_generation == generation && snapshot.at("revision") < state().acknowledged_revision)))
+                fetch_after_recovery = true;
         }
         const bool pending = wxFileExists(from_u8(journal("inventory"))) || wxFileExists(from_u8(journal("job")));
+        if(!allow_network && (pending || fetch_after_recovery))
+            throw std::runtime_error("Reconcile the pending HA operation before publishing a background refresh");
         if (pending) {
             for (const auto &kind : {std::string("inventory"), std::string("job")}) {
                 const auto path = journal(kind);
                 if (wxFileExists(from_u8(path))) { std::ifstream file(path); file >> recovered[path]; }
             }
-            const auto job_result = recover_pending_locked(url);
-            snapshot = ha_inventory_material_snapshot(url);
-            validate_ha_inventory_snapshot(snapshot);
-            if (!job_result.is_null()) snapshot["provider_job"] = job_result;
+            job_result = recover_pending_locked(url);
+            fetch_after_recovery = true;
         } else if (!snapshot.contains("native_bundle") || snapshot.at("native_bundle").is_null()) {
             if (state().endpoint == url && state().snapshot.is_object() &&
                 state().snapshot.at("revision") == snapshot.at("revision") && state().local_baseline == before)
                 snapshot["native_bundle"] = state().snapshot.at("native_bundle");
-            else snapshot = ha_inventory_material_snapshot(url, true, &snapshot);
+            else {
+                if(!allow_network) throw std::runtime_error("The background inventory snapshot is incomplete");
+                snapshot = ha_inventory_material_snapshot(url, true, &snapshot);
+            }
         }
+    }
+    if(fetch_after_recovery) {
+        snapshot = fetch_refresh(url,ha_inventory_token(url));
+        validate_ha_inventory_snapshot(snapshot);
+        if(!job_result.is_null()) snapshot["provider_job"] = job_result;
+        std::lock_guard<std::mutex> lock(state().mutex);
+        if(snapshot.value("_sync_generation",std::string()) == state().acknowledged_generation &&
+            snapshot.at("revision") < state().acknowledged_revision)
+            throw std::runtime_error("HA returned an older revision than the acknowledged inventory");
     }
     // Never hold the network/state mutex while acquiring the native Store lock:
     // native pre-commit callbacks acquire these locks in the opposite order.
     Json acknowledgement = {{"explicit_sync", true}, {"endpoint", url}, {"revision", snapshot.at("revision")},
         {"_expected_local", Json::parse(before)}};
+    if(snapshot.contains("_sync_generation")) {
+        acknowledgement["generation"] = snapshot.at("_sync_generation");
+        acknowledgement["native_sha256"] = HaMaterialProfile::content_sha256(HaInventoryTransport::canonical_bundle(snapshot.at("native_bundle")));
+        auto provider = snapshot; provider.erase("native_bundle"); provider.erase("_sync_generation");
+        provider.erase("_sync_base_generation");
+        acknowledgement["provider_snapshot"] = std::move(provider);
+    }
     if (endpoint() != url || !enabled()) throw std::runtime_error("The HA authority changed during refresh; inventory preserved");
     validate_ha_inventory_snapshot(snapshot);
     if (snapshot.at("native_bundle") != acknowledgement.at("_expected_local")) {
@@ -220,6 +323,8 @@ inline Json refresh(const Json &supplied)
         std::lock_guard<std::mutex> lock(state().mutex);
         state().endpoint = url;
         state().snapshot = snapshot;
+        state().acknowledged_revision = snapshot.at("revision").get<std::int64_t>();
+        state().acknowledged_generation = snapshot.value("_sync_generation",std::string());
         state().local_baseline = imported;
         for (const auto &[path, value] : recovered) {
             Json current; { std::ifstream file(path); file >> current; }
@@ -238,7 +343,7 @@ inline void refresh_current()
     attach();
     if (!enabled()) return;
     Json current;
-    { std::lock_guard<std::mutex> lock(state().mutex); current = ha_inventory_material_snapshot(endpoint(), false); }
+    current = fetch_refresh(endpoint(),ha_inventory_token(endpoint()));
     refresh(current);
 }
 

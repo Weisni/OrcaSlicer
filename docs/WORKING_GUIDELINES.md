@@ -46,6 +46,13 @@ Consider them before every command, together with the applicable `AGENTS.md`.
 
 Source: user instructions and the root `AGENTS.md`, recorded 2026-09-24.
 
+- HA owns committed filament/material profiles and associations. Keep temporary
+  local setting adjustments possible without project saves or HA writes.
+  Background synchronization must preserve those overrides; publish effective
+  settings only through an explicit saved profile association.
+- Use generation/revision checks and stable-key deltas for HA reads. Preserve
+  the last complete cache on failure; existing online print checks still apply.
+
 - For the requested 2.5.21 release, merge the scoped HA callback repair through
   reviewed, passing cross-platform CI; publish only artifacts matching the final
   main commit. Preserve unrelated arrangement work and user profiles. Physical

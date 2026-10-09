@@ -109,9 +109,27 @@ inline std::string digest(const Json& value)
     return value.at("sha256");
 }
 
+inline std::string content_identity(const Json& value)
+{
+    validate(value);
+    // Envelope hashes retain labels and provenance for publication. Installation
+    // identity follows effective settings, shared independently of roll or label.
+    return content_sha256({{"schema_version", value.at("schema_version")},
+        {"material_type", value.at("material_type")}, {"settings", value.at("settings")},
+        {"filament_id", value.at("dependencies").at("filament_id")}});
+}
+
+inline bool is_managed_name(const std::string& name)
+{
+    constexpr size_t prefix_size = 13; // "HA material ["
+    return name.size() == prefix_size + 65 && name.compare(0, prefix_size, "HA material [") == 0 &&
+        name.back() == ']' && is_sha256(name.substr(prefix_size, 64));
+}
+
 inline std::string managed_name(const Json& value)
 {
     const auto sha = digest(value);
+    if (value.contains("settings")) return "HA material [" + content_identity(value) + "]";
     std::string label = value.at("name");
     // User presets recover their name from the filename at startup. '@' also
     // triggers legacy printer-name inference, so keep it out of this cache name.

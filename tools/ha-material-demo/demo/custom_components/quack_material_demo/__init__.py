@@ -13,7 +13,7 @@ async def async_setup(hass, config):
     from datetime import timedelta
     from .store import Store, Conflict
     from .access import may_read, may_write
-    from .read_api import materials, native_page, profile
+    from .read_api import materials, native_page, profile, sync, profile_content
     from .recovery import export_recovery
     from .accounting import accounting
     from .receipts import compact_legacy_receipts
@@ -100,16 +100,22 @@ async def async_setup(hass, config):
         url = '/api/quack_material_demo/native_snapshot'
         name = 'api:quack_material_demo:native_snapshot'
         requires_auth = True
+        reader = staticmethod(native_page)
 
         async def get(self, request):
             if not may_read(request.get('hass_user'), allowed):
                 return self.json({'error': 'Inventory access denied'}, status_code=403)
             try:
-                return self.json(await hass.async_add_executor_job(native_page, store, dict(getattr(request, 'query', {}))))
+                return self.json(await hass.async_add_executor_job(self.reader, store, dict(getattr(request, 'query', {}))))
             except Conflict as error:
                 return self.json({'error': str(error)}, status_code=409)
             except (ValueError, KeyError, TypeError):
                 return self.json({'error': 'Invalid native snapshot query'}, status_code=400)
+
+    class IncrementalSyncView(NativeSnapshotView):
+        url = '/api/quack_material_demo/sync'
+        name = 'api:quack_material_demo:sync'
+        reader = staticmethod(sync)
 
     class ActionView(HomeAssistantView):
         url = '/api/quack_material_demo/action/{action}'
@@ -165,16 +171,22 @@ async def async_setup(hass, config):
         url = '/api/quack_material_demo/profile'
         name = 'api:quack_material_demo:profile'
         requires_auth = True
+        reader = staticmethod(profile)
 
         async def get(self, request):
             if not may_read(request.get('hass_user'), allowed):
                 return self.json({'error': 'Inventory access denied'}, status_code=403)
             try:
-                return self.json(await hass.async_add_executor_job(profile, store, dict(getattr(request, 'query', {}))))
+                return self.json(await hass.async_add_executor_job(self.reader, store, dict(getattr(request, 'query', {}))))
             except Conflict as error:
                 return self.json({'error': str(error)}, status_code=409)
             except (ValueError, KeyError, TypeError):
                 return self.json({'error': 'Invalid material profile query'}, status_code=400)
+
+    class ProfileContentView(ProfileView):
+        url = '/api/quack_material_demo/profile_content'
+        name = 'api:quack_material_demo:profile_content'
+        reader = staticmethod(profile_content)
 
     class AccountingView(HomeAssistantView):
         url = '/api/quack_material_demo/accounting'
@@ -240,6 +252,8 @@ async def async_setup(hass, config):
     hass.http.register_view(ProfileView())
     hass.http.register_view(RecoveryView())
     hass.http.register_view(AccountingView())
+    hass.http.register_view(IncrementalSyncView())
+    hass.http.register_view(ProfileContentView())
     await hass.http.async_register_static_paths([
         StaticPathConfig('/quack-material-demo/card.js', str(Path(__file__).with_name('card.js')), False),
         StaticPathConfig('/quack-material-demo/inventory.js', str(Path(__file__).with_name('inventory.js')), False),

@@ -19,11 +19,11 @@ public:
     HaInventoryRequestError(unsigned code,const std::string &message):std::runtime_error(message),status(code){}
 };
 inline bool ha_inventory_demo_enabled() { return wxGetApp().app_config->get("ha_material_demo_enabled")=="1" || wxGetApp().app_config->get("ha_material_provider_enabled")=="1"; }
-inline nlohmann::json ha_inventory_request_raw(const std::string &endpoint, const nlohmann::json *payload = nullptr,
-                                              size_t maximum_bytes = 1024 * 1024) {
+// Worker callers capture credentials on the GUI thread before scheduling work.
+inline nlohmann::json ha_inventory_request_raw_with_token(const std::string &endpoint, const std::string &token,
+                                              const nlohmann::json *payload = nullptr, size_t maximum_bytes = 1024 * 1024) {
     std::string response; unsigned status=0;
     auto http=payload ? Http::post(endpoint) : Http::get(endpoint);
-    const auto token = ha_inventory_token(endpoint);
     if (!token.empty()) http.header("Authorization", "Bearer " + token);
     if(payload) http.header("Content-Type","application/json").set_post_body(payload->dump());
     // Local HA names may need several seconds for the first Windows DNS/mDNS lookup.
@@ -37,6 +37,11 @@ inline nlohmann::json ha_inventory_request_raw(const std::string &endpoint, cons
         throw HaInventoryRequestError(status,detail);
     }
     return nlohmann::json::parse(response);
+}
+
+inline nlohmann::json ha_inventory_request_raw(const std::string &endpoint, const nlohmann::json *payload = nullptr,
+                                              size_t maximum_bytes = 1024 * 1024) {
+    return ha_inventory_request_raw_with_token(endpoint, ha_inventory_token(endpoint), payload, maximum_bytes);
 }
 
 inline void validate_ha_material_snapshot(const nlohmann::json &snapshot) {
