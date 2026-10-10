@@ -27,7 +27,7 @@ inline bool pending() { return wxIsMainThread() && depth() != 0; }
 // wx YieldFor(TIMER excluded) is insufficient: wxMSW drops one-shot timers.
 class ForegroundEvents final : public wxEventFilter {
 public:
-    explicit ForegroundEvents(wxWindow& dialog) : m_dialog(dialog)
+    explicit ForegroundEvents(wxWindow& dialog) : m_dialog(&dialog)
     {
         wxTheApp->SuspendProcessingOfPendingEvents();
         wxEvtHandler::AddFilter(this);
@@ -57,7 +57,7 @@ public:
         auto* window = wxDynamicCast(event.GetEventObject(), wxWindow);
         bool from_dialog = false;
         for (auto* ancestor = window; ancestor; ancestor = ancestor->GetParent())
-            if (ancestor == &m_dialog) { from_dialog = true; break; }
+            if (ancestor == m_dialog.get()) { from_dialog = true; break; }
         const auto type = event.GetEventType();
         if (!from_dialog && (event.IsCommandEvent() || type == wxEVT_ACTIVATE ||
                              type == wxEVT_SET_FOCUS || type == wxEVT_KILL_FOCUS || type == wxEVT_CLOSE_WINDOW)) {
@@ -85,7 +85,7 @@ private:
         int interval;
         bool one_shot;
     };
-    wxWindow& m_dialog;
+    wxWeakRef<wxWindow> m_dialog;
     std::vector<DeferredTimer> m_timers;
 };
 
@@ -115,7 +115,11 @@ public:
     ~Sequence()
     {
         if (!m_dialog) return;
+        // Native destruction can synchronously activate the parent after run()
+        // has removed its filter, while the caller still owns Store locks.
+        ForegroundEvents cleanup_events(*m_dialog);
         m_dialog->Hide();
+        m_dialog.reset();
         active() = nullptr;
     }
     // Only a real user-decision dialog interrupts the loading window. The next
