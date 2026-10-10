@@ -273,3 +273,23 @@ TEST_CASE("Authenticated unchanged reads renew cached material freshness", "[HaI
     wrong_revision["revision"] = 2;
     CHECK_THROWS(merge_sync(initial, wrong_revision));
 }
+TEST_CASE("Authenticated full and delta reads renew material observation age", "[HaInventoryTransport][Regression]")
+{
+    const auto now = std::time(nullptr);
+    auto reply = reset_reply(transport_inventory());
+    reply["snapshot"]["captured_unix"] = now - 600;
+    const auto original = reply;
+    const auto initial = merge_sync(Json(), reply);
+    CHECK(initial.at("captured_unix").get<std::time_t>() >= now);
+    CHECK(initial.at("native_bundle") == transport_inventory());
+    CHECK(reply == original);
+    reply["reset"] = false;
+    reply["revision"] = 2;
+    reply["snapshot"]["revision"] = 2;
+    reply["native_delta"]["tables"] = Json::object();
+    const auto updated = merge_sync(initial, reply);
+    CHECK(updated.at("captured_unix").get<std::time_t>() >= now);
+    CHECK(updated.at("native_bundle") == initial.at("native_bundle"));
+    reply["snapshot"]["revision"] = 3;
+    CHECK_THROWS(merge_sync(initial, reply));
+}

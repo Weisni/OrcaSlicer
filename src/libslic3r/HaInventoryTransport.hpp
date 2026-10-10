@@ -223,6 +223,9 @@ inline Json merge_sync(const Json &previous, const Json &reply)
     validate_bundle(bundle);
     result["native_bundle"] = std::move(bundle);
     result["_sync_generation"] = reply.at("generation");
+    // A valid authenticated reset/delta also observes the current graph; the
+    // server can reuse metadata captured when its inventory cache was built.
+    if (result.contains("captured_unix")) result["captured_unix"] = std::time(nullptr);
     return result;
 }
 
