@@ -157,6 +157,14 @@ inline std::string profile_name(const HaMaterialSource::Assignment& assignment) 
 inline std::string install_payload(PresetBundle &bundle, const Json& payload, bool selection = true) {
     const auto name = HaMaterialProfile::managed_name(payload);
     const auto expected = HaMaterialProfile::content_identity(payload);
+    const auto display_name = payload.at("name").get<std::string>();
+    const auto restore_display_name = [&] {
+        // Restore presentation metadata even for an already downloaded preset.
+        // Keep the content-addressed identity and any unsaved settings intact.
+        bundle.filaments.find_preset(name, false, true)->alias = display_name;
+        auto &edited = bundle.filaments.get_edited_preset();
+        if (edited.name == name) edited.alias = display_name;
+    };
     Preset candidate(Preset::TYPE_FILAMENT, name, false);
     candidate.config = HaMaterialProfile::decode_config(payload);
     candidate.filament_id = payload.at("dependencies").at("filament_id").get<std::string>();
@@ -170,10 +178,11 @@ inline std::string install_payload(PresetBundle &bundle, const Json& payload, bo
         if (existing->is_system || existing->is_default ||
             HaMaterialProfile::content_identity(HaMaterialProfile::capture(*existing, payload)) != expected)
             throw std::runtime_error("The downloaded HA profile name is already used by different local settings; save those settings under another name first");
+        restore_display_name();
         return name;
     }
-    // managed_name sanitizes and bounds the display prefix. The normal loader
-    // derives user profile identity from the filename, so both must agree.
+    // The normal loader derives identity from the filename. Keep the internal
+    // content key there; the original profile name is presentation metadata.
     const auto path = bundle.filaments.path_from_name(name);
     candidate.file = path;
     if (boost::filesystem::exists(path)) {
@@ -197,7 +206,7 @@ inline std::string install_payload(PresetBundle &bundle, const Json& payload, bo
     }
     auto &installed = bundle.filaments.load_preset(path, name, candidate.config, false, candidate.version);
     installed.filament_id = candidate.filament_id;
-    installed.alias = "HA " + payload.at("name").get<std::string>();
+    restore_display_name();
     installed.is_compatible = true;
     return name;
 }
@@ -209,8 +218,7 @@ inline void preload_cached(PresetBundle& bundle, const std::string& source, cons
     for (const auto& profile : HaMaterialProfile::published_contents(result)) {
         const auto payload = profile_cache().find(source,profile.summary);
         if (payload.is_null()) throw std::runtime_error("The downloaded HA profile cache is incomplete");
-        const auto name = HaMaterialProfile::managed_name(payload);
-        if (!bundle.filaments.find_preset(name)) install_payload(bundle,payload,false);
+        install_payload(bundle,payload,false);
     }
 }
 

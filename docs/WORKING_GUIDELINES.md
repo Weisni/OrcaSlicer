@@ -53,6 +53,9 @@ Source: user instructions and the root `AGENTS.md`, recorded 2026-09-24.
   association uploads the saved baseline and retains unsaved adjustments locally.
 - Use generation/revision checks and stable-key deltas for HA reads. Preserve
   the last complete cache on failure; existing online print checks still apply.
+- Preserve the original human-readable material profile name in HA preset
+  lists, selected filament labels and editors. Hashes are internal identities;
+  restoring display metadata must not discard unsaved material settings.
 - Provide name filtering in the HA profile chooser. Verify standard-3MF Replace
   mapping with the supplied input while keeping the original file unchanged.
 - The user permits closing the currently running HA test application without

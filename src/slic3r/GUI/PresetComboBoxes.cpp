@@ -1597,7 +1597,8 @@ void PlaterPresetComboBox::update()
                         const auto slot = roll.slot.empty() ? _L("Inventory") : from_u8(roll.slot);
                         // Keep the effective project profile visible, including local
                         // overrides, instead of replacing it with only the physical roll.
-                        const auto project_profile = from_u8(selected_filament_preset->label(true));
+                        const auto project_profile = from_u8(selected_filament_preset->label(
+                            !HaMaterialProfile::is_managed_name(selected_filament_preset->name)));
                         auto compact_profile = project_profile.BeforeFirst('@').Trim();
                         if (compact_profile.IsEmpty()) compact_profile = project_profile;
                         SetTextLabel(compact_profile + " | " + slot + " - " + from_u8(roll.product));
@@ -1784,7 +1785,7 @@ void TabPresetComboBox::OnSelect(wxCommandEvent &evt)
 
 wxString TabPresetComboBox::get_preset_name(const Preset& preset)
 {
-    if (preset.is_from_bundle())
+    if (preset.is_from_bundle() || HaMaterialProfile::is_managed_name(preset.name))
         return from_u8(preset.label(false));
     else
         return from_u8(preset.label(true));
@@ -1912,7 +1913,7 @@ void TabPresetComboBox::update()
     {
         set_label_marker(Append(_L("User presets"), wxNullBitmap, DD_ITEM_STYLE_SPLIT_ITEM));
         for (std::map<wxString, std::pair<wxBitmap*, bool>>::iterator it = nonsys_presets.begin(); it != nonsys_presets.end(); ++it) {
-            int item_id = Append(it->first, *it->second.first);
+            int item_id = Append(from_u8(preset_aliases[it->first]), *it->second.first);
             SetItemAlias(item_id, it->first);
             SetItemTooltip(item_id, preset_descriptions[it->first]);
             bool is_enabled = it->second.second;
@@ -2022,7 +2023,9 @@ void TabPresetComboBox::update_dirty()
             continue;
 
         std::string   old_label = GetString(ui_id).utf8_str().data();
-        std::string   preset_name = Preset::remove_suffix_modified(old_label);
+        const auto stored_name = GetItemAlias(ui_id).utf8_string();
+        std::string   preset_name = Preset::remove_suffix_modified(
+            stored_name.empty() ? old_label : stored_name);
         std::string   ph_printer_name;
 
         if (marker == LABEL_ITEM_PHYSICAL_PRINTER) {
@@ -2032,7 +2035,7 @@ void TabPresetComboBox::update_dirty()
 
         Preset* preset = m_collection->find_preset(preset_name, false);
         if (preset) {
-            std::string new_label = preset->label(true);
+            std::string new_label = get_preset_name(*preset).utf8_string();
 
             if (marker == LABEL_ITEM_PHYSICAL_PRINTER)
                 new_label = ph_printer_name + PhysicalPrinter::separator() + new_label;
