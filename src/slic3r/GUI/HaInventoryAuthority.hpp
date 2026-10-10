@@ -240,8 +240,12 @@ inline Json refresh(const Json &supplied, bool allow_network = true)
         if(state().endpoint==endpoint() && supplied.contains("_sync_generation") && state().snapshot.is_object() &&
             state().snapshot.value("_sync_generation",std::string())==supplied.at("_sync_generation") &&
             state().snapshot.at("revision")==supplied.at("revision") &&
-            !wxFileExists(from_u8(journal("inventory"))) && !wxFileExists(from_u8(journal("job"))))
+            !wxFileExists(from_u8(journal("inventory"))) && !wxFileExists(from_u8(journal("job")))) {
+            // Retain the acknowledged graph, but publish the observation age
+            // renewed by this authenticated fetch rather than the old cache age.
+            state().snapshot["captured_unix"] = supplied.at("captured_unix");
             return state().snapshot;
+        }
     }
     auto &store = wxGetApp().filament_inventory().store();
     const auto before = store.export_ha_demo_bundle();
