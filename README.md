@@ -325,5 +325,15 @@ components.
   and report the concrete transport error while preserving uncertain writes.
 - Local DNS regression failed before the fix and passed afterward. Live reads
   measured 11-12 seconds cold, then 0.24-0.28 seconds with DNS reuse.
-- Remaining: verify the rebuilt EXE's profile upload and empty synchronization
-  comparison; cross-platform runtime validation remains open.
+- Direct-EXE live acceptance: SUNLU PLA Matte @System was published for A1,
+  HA revision 6823 to 6824. All other rolls and physical slots remained unchanged.
+- A1/A3/A1 switching restored correct profile names, settings, and colors with
+  no synchronization errors. Completion snapshots: 2.23 seconds for profile
+  publication and 0.91/0.94 seconds for switching, including automation overhead.
+- A1 and A3 produced no Project-to-HA differences. The existing Filament 2
+  PETG roll genuinely lacks a complete HA profile for this nozzle context;
+  its unchecked save offer and its project binding were preserved.
+- Verified: 1,727 assertions in 131 cases, two configured CTest targets, and
+  27 native network/UI checks. The application remains open with A1 selected.
+- Remaining: cross-platform runtime and release validation; the grouped
+  3MF and local-edit acceptance were not repeated in this DNS follow-up.
