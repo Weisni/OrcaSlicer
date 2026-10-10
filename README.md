@@ -314,5 +314,5 @@ components.
 - Completed: one loading window, readable unique save names/editor labels, and isolated per-filament HA edits in project memory.
 - Verified: scoped Windows runtime rebuild; 1,727 assertions in 131 cases; 27 native network/UI checks, including callback deferral during dialog destruction.
 - Live acceptance: ELEGOO black/SUNLU blue local edits and Save as affect only the selected filament. A2/A3/A2 spool switches restore the correct names and material values; unchanged profiles produce an empty Project-to-HA comparison.
-- Database revision 6811 and all ten table hashes remain unchanged after the direct-EXE live tests. Material completion observations were 1.46-2.34 seconds including native automation/screenshot overhead.
+- Database revision 6811 and all ten table hashes remain unchanged after the direct-EXE live tests. Material completion observations were 1.46-2.73 seconds including native automation/screenshot overhead.
 - Remaining coverage: macOS/Linux, additional DPI/languages, and project save/reopen with HA profile caches absent. The earlier grouped 3MF import acceptance was not repeated in this material-editing follow-up.
