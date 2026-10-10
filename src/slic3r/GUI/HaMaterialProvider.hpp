@@ -247,6 +247,7 @@ inline void restore_if_available(PresetBundle& bundle) {
 }
 
 inline void refresh_if_due(bool force = false) {
+    if (HaNetworkOperation::pending()) return;
     auto &c = cache();
     if (!enabled()) { c.worker.invalidate(); return; }
     const auto source = endpoint();
@@ -288,6 +289,7 @@ inline void refresh_if_due(bool force = false) {
 }
 
 inline void complete_refresh(PresetBundle& bundle) {
+    if (HaNetworkOperation::pending()) return;
     auto& c = cache();
     if (!enabled()) { c.worker.invalidate(); c.worker.take({}); return; }
     restore_if_available(bundle);

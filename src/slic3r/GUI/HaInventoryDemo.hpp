@@ -7,6 +7,7 @@
 #include "nlohmann/json.hpp"
 #include "GUI_App.hpp"
 #include "HaInventoryCredentials.hpp"
+#include "HaNetworkOperation.hpp"
 #include "FilamentInventoryService.hpp"
 #include "slic3r/Utils/Http.hpp"
 #include "libslic3r/PresetBundle.hpp"
@@ -22,13 +23,17 @@ inline bool ha_inventory_demo_enabled() { return wxGetApp().app_config->get("ha_
 // Worker callers capture credentials on the GUI thread before scheduling work.
 inline nlohmann::json ha_inventory_request_raw_with_token(const std::string &endpoint, const std::string &token,
                                               const nlohmann::json *payload = nullptr, size_t maximum_bytes = 1024 * 1024) {
+    const auto body = payload ? payload->dump() : std::string();
+    const bool posting = payload != nullptr;
+    return HaNetworkOperation::run([endpoint, token, body, posting, maximum_bytes](const std::function<bool()>& canceled) {
     std::string response; unsigned status=0;
-    auto http=payload ? Http::post(endpoint) : Http::get(endpoint);
+    auto http=posting ? Http::post(endpoint) : Http::get(endpoint);
     if (!token.empty()) http.header("Authorization", "Bearer " + token);
-    if(payload) http.header("Content-Type","application/json").set_post_body(payload->dump());
+    if(posting) http.header("Content-Type","application/json").set_post_body(body);
     // Local HA names may need several seconds for the first Windows DNS/mDNS lookup.
     // Keep connection and whole-request deadlines bounded without rejecting that lookup.
     http.tls_verify(true).follow_redirects(false).timeout_connect(8).timeout_max(15).size_limit(maximum_bytes)
+        .on_progress([&](Http::Progress, bool& cancel) { cancel = canceled(); })
         .on_complete([&](std::string body,unsigned code){response=std::move(body);status=code;})
         .on_error([&](std::string body,std::string,unsigned code){response=std::move(body);status=code;}).perform_sync();
     if(status!=200) {
@@ -37,6 +42,7 @@ inline nlohmann::json ha_inventory_request_raw_with_token(const std::string &end
         throw HaInventoryRequestError(status,detail);
     }
     return nlohmann::json::parse(response);
+    });
 }
 
 inline nlohmann::json ha_inventory_request_raw(const std::string &endpoint, const nlohmann::json *payload = nullptr,
