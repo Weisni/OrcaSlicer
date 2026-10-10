@@ -45,6 +45,7 @@
 #include "ParamsDialog.hpp"
 #include "FilamentPickerDialog.hpp"
 #include "HaMaterialProvider.hpp"
+#include "libslic3r/HaMaterialEditSlot.hpp"
 #include "wxExtensions.hpp"
 
 #include "DeviceCore/DevManager.h"
@@ -1026,6 +1027,15 @@ bool PlaterPresetComboBox::switch_to_tab()
     const Preset* selected_filament_preset = nullptr;
     if (m_type == Preset::TYPE_FILAMENT)
     {
+        if (HaMaterialProvider::enabled() && m_filament_idx >= 0) {
+            const auto name = HaMaterialLocalOverride::isolate_edit_slot(*m_preset_bundle, size_t(m_filament_idx));
+            if (HaMaterialProfile::is_managed_project_name(name)) {
+                auto* preset = m_preset_bundle->filaments.find_preset(name, false, true);
+                preset->alias = HaMaterialProvider::display_name(*m_preset_bundle, size_t(m_filament_idx), *preset);
+                auto& edited = m_preset_bundle->filaments.get_edited_preset();
+                if (edited.name == name) edited.alias = preset->alias;
+            }
+        }
         const std::string selected_preset = HaMaterialProvider::enabled() && m_filament_idx >= 0 ?
             m_preset_bundle->filament_presets.at(m_filament_idx) : std::string(GetString(GetSelection()).ToUTF8().data());
         if (!boost::algorithm::starts_with(selected_preset, Preset::suffix_modified()))
@@ -1597,8 +1607,10 @@ void PlaterPresetComboBox::update()
                         const auto slot = roll.slot.empty() ? _L("Inventory") : from_u8(roll.slot);
                         // Keep the effective project profile visible, including local
                         // overrides, instead of replacing it with only the physical roll.
-                        const auto project_profile = from_u8(selected_filament_preset->label(
-                            !HaMaterialProfile::is_managed_name(selected_filament_preset->name)));
+                        const bool locally_edited = selected_filament_preset->is_dirty ||
+                            HaMaterialLocalOverride::has_local_edits(*selected_filament_preset);
+                        const auto project_profile = from_u8((locally_edited ? Preset::suffix_modified() : std::string()) +
+                            HaMaterialProvider::display_name(*m_preset_bundle, size_t(m_filament_idx), *selected_filament_preset));
                         auto compact_profile = project_profile.BeforeFirst('@').Trim();
                         if (compact_profile.IsEmpty()) compact_profile = project_profile;
                         SetTextLabel(compact_profile + " | " + slot + " - " + from_u8(roll.product));

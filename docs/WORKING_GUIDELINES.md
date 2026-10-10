@@ -65,3 +65,9 @@ Source: user instructions and the root `AGENTS.md`, recorded 2026-09-24.
   reviewed, passing cross-platform CI; publish only artifacts matching the final
   main commit. Preserve unrelated arrangement work and user profiles. Physical
   print dispatch and the nozzle-match indicator remain separate validation.
+
+- Keep one loading window across a direct HA material selection. Preserve
+  cancellation and defer unrelated UI callbacks during network waits.
+- Editing or saving an HA material for one project filament must not
+  change another filament, including when both share cached settings.
+  Keep temporary edits local and propose readable, available save names.

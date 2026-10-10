@@ -2,6 +2,7 @@
 #include <atomic>
 #include <functional>
 #include <future>
+#include <memory>
 #include <vector>
 #include <wx/app.h>
 #include <wx/button.h>
@@ -88,47 +89,88 @@ private:
     std::vector<DeferredTimer> m_timers;
 };
 
-template<class Work> auto run(Work work, wxWindow* parent = nullptr)
+template<class Work> auto run(Work work, wxWindow* parent = nullptr);
+
+// Group contiguous authority requests into one loading window. Nested scopes
+// reuse the current sequence; hide it before asking for user input.
+class Sequence final {
+public:
+    explicit Sequence(wxWindow* parent = nullptr)
+    {
+        if (!wxIsMainThread() || active()) return;
+        m_dialog = std::make_unique<wxDialog>(parent, wxID_ANY, wxGetTranslation("Home Assistant"));
+        auto* layout = new wxBoxSizer(wxVERTICAL);
+        m_message = new wxStaticText(m_dialog.get(), wxID_ANY, wxGetTranslation("Communicating with Home Assistant..."));
+        m_gauge = new wxGauge(m_dialog.get(), wxID_ANY, 100, wxDefaultPosition, m_dialog->FromDIP(wxSize(300, 8)));
+        m_cancel = new wxButton(m_dialog.get(), wxID_CANCEL, wxGetTranslation("Cancel"));
+        layout->Add(m_message, 0, wxALL, m_dialog->FromDIP(16));
+        layout->Add(m_gauge, 0, wxEXPAND | wxLEFT | wxRIGHT, m_dialog->FromDIP(16));
+        layout->Add(m_cancel, 0, wxALIGN_RIGHT | wxALL, m_dialog->FromDIP(16));
+        m_dialog->SetSizerAndFit(layout);
+        m_dialog->CentreOnParent();
+        m_cancel->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { request_cancel(); });
+        m_dialog->Bind(wxEVT_CLOSE_WINDOW, [this](wxCloseEvent& event) { request_cancel(); event.Veto(); });
+        active() = this;
+    }
+    ~Sequence()
+    {
+        if (!m_dialog) return;
+        m_dialog->Hide();
+        active() = nullptr;
+    }
+    // Only a real user-decision dialog interrupts the loading window. The next
+    // request reopens this same window and retains the sequence cancellation.
+    void hide()
+    {
+        if (wxIsMainThread() && active()) active()->m_dialog->Hide();
+    }
+    Sequence(const Sequence&) = delete;
+    Sequence& operator=(const Sequence&) = delete;
+private:
+    template<class Work> friend auto run(Work work, wxWindow* parent);
+    static Sequence*& active() { static Sequence* value = nullptr; return value; }
+    void request_cancel()
+    {
+        m_canceled.store(true);
+        m_cancel->Disable();
+        m_message->SetLabel(wxGetTranslation("Canceling..."));
+    }
+    std::unique_ptr<wxDialog> m_dialog;
+    wxStaticText* m_message = nullptr;
+    wxGauge* m_gauge = nullptr;
+    wxButton* m_cancel = nullptr;
+    std::atomic<bool> m_canceled{false};
+};
+
+template<class Work> auto run(Work work, wxWindow* parent)
 {
     if (!wxIsMainThread()) return work(std::function<bool()>([] { return false; }));
     struct Scope { Scope() { ++depth(); } ~Scope() { --depth(); } } scope;
-    std::atomic<bool> canceled{false};
     // Construct UI before starting work so an allocation failure cannot leave
     // a future destructor waiting for HTTP on the GUI thread.
-    wxDialog dialog(parent, wxID_ANY, wxGetTranslation("Home Assistant"));
-    auto* layout = new wxBoxSizer(wxVERTICAL);
-    auto* message = new wxStaticText(&dialog, wxID_ANY, wxGetTranslation("Communicating with Home Assistant..."));
-    auto* gauge = new wxGauge(&dialog, wxID_ANY, 100, wxDefaultPosition, dialog.FromDIP(wxSize(300, 8)));
-    auto* cancel = new wxButton(&dialog, wxID_CANCEL, wxGetTranslation("Cancel"));
-    layout->Add(message, 0, wxALL, dialog.FromDIP(16));
-    layout->Add(gauge, 0, wxEXPAND | wxLEFT | wxRIGHT, dialog.FromDIP(16));
-    layout->Add(cancel, 0, wxALIGN_RIGHT | wxALL, dialog.FromDIP(16));
-    dialog.SetSizerAndFit(layout);
-    dialog.CentreOnParent();
-    const auto request_cancel = [&] {
-        canceled.store(true);
-        cancel->Disable();
-        message->SetLabel(wxGetTranslation("Canceling..."));
-    };
-    cancel->Bind(wxEVT_BUTTON, [&](wxCommandEvent&) { request_cancel(); });
-    dialog.Bind(wxEVT_CLOSE_WINDOW, [&](wxCloseEvent& event) { request_cancel(); event.Veto(); });
+    std::unique_ptr<Sequence> standalone;
+    if (!Sequence::active()) standalone = std::make_unique<Sequence>(parent);
+    auto& sequence = *Sequence::active();
+    auto& dialog = *sequence.m_dialog;
     ForegroundEvents foreground_events(dialog);
     wxWindowDisabler disable_other_windows(&dialog);
     wxEventLoop event_loop;
     wxEventLoopActivator activate(&event_loop);
-    auto future = std::async(std::launch::async, [work = std::move(work), &canceled]() mutable {
-        return work(std::function<bool()>([&] { return canceled.load(); }));
+    auto future = std::async(std::launch::async, [work = std::move(work), &sequence]() mutable {
+        return work(std::function<bool()>([&] { return sequence.m_canceled.load(); }));
     });
     if (future.wait_for(std::chrono::seconds(0)) != std::future_status::ready) {
-        dialog.Show();
+        if (!dialog.IsShown()) dialog.Show();
         while (future.wait_for(std::chrono::milliseconds(10)) != std::future_status::ready) {
-            gauge->Pulse();
+            sequence.m_gauge->Pulse();
             // Native dialog input/paint stays responsive. Timer deliveries are
             // captured above; wx pending and idle callbacks cannot run here.
             event_loop.YieldFor(wxEVT_CATEGORY_UI | wxEVT_CATEGORY_USER_INPUT | wxEVT_CATEGORY_TIMER);
         }
-        dialog.Hide();
     }
+    // Standalone cleanup can synchronously activate the parent. Hide while the
+    // foreground filter still defers those callbacks out of Store locks.
+    if (standalone) dialog.Hide();
     // Result/exception publication occurs only after the worker is done,
     // including canceled or uncertain durable HTTP operations.
     return future.get();

@@ -32,6 +32,17 @@ TEST_CASE("Loading one shared material leaves temporary settings on the remainin
 }
 
 using Slic3r::HaMaterialLocalOverride::merge_settings;
+
+TEST_CASE("One HA project instance retains edits when another slot already uses the new committed base", "[HaMaterialLocalOverride][Regression]")
+{
+    const std::string edited = "HA material [" + std::string(64, 'a') + "] [project filament 1]";
+    const std::string updated = "HA material [" + std::string(64, 'b') + "]";
+    std::optional<size_t> index;
+    REQUIRE_NOTHROW(index = Slic3r::HaMaterialLocalOverride::replacement_index(
+        {edited, updated}, {updated, updated}, edited));
+    REQUIRE(index.has_value());
+    CHECK(*index == 0);
+}
 using Json = nlohmann::json;
 
 TEST_CASE("Temporary material edits survive an updated HA base", "[HaMaterialLocalOverride]")

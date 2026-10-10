@@ -306,3 +306,10 @@ The repository contains work inherited from OrcaSlicer and its upstream
 projects as well as QuackSlicer-specific changes. Existing copyright, license,
 and third-party attribution notices remain applicable to their respective
 components.
+
+### HA material editing follow-up (2026-10-10)
+
+- Investigated per-request loading-window flicker and internal hashes in Save preset.
+- Identified broad preset replacement and a shared edit buffer as causes of cross-filament changes.
+- In progress: keep one loading window, offer readable unique save names, and isolate HA edits in project memory.
+- Acceptance pending: rebuilt native runtime and live selection/edit/save/synchronization checks.

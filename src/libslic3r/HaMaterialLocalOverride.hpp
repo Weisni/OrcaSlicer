@@ -2,6 +2,7 @@
 #include <optional>
 #include <vector>
 #include "nlohmann/json.hpp"
+#include "HaMaterialProfilePayload.hpp"
 
 namespace Slic3r::HaMaterialLocalOverride {
 inline std::optional<size_t> replacement_index(const std::vector<std::string>& before,
@@ -25,7 +26,8 @@ inline std::optional<size_t> replacement_index(const std::vector<std::string>& b
             if (before[i] == edited_name && after[i] != after[*index])
                 throw std::runtime_error("These project filaments share temporary material settings. Load the same HA profile for all of them, or keep their current profile.");
         for (size_t i = 0; i < after.size(); ++i)
-            if (after[i] == after[*index] && (i >= before.size() || before[i] != edited_name))
+            if (!HaMaterialProfile::is_managed_project_name(edited_name) &&
+                after[i] == after[*index] && (i >= before.size() || before[i] != edited_name))
                 throw std::runtime_error("The new HA profile is also used by another project filament. Keep distinct profile assignments to preserve temporary settings.");
     }
     return index;

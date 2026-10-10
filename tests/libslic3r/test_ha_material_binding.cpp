@@ -107,6 +107,29 @@ TEST_CASE("A managed material baseline distinguishes temporary edits from envelo
     CHECK(original.name == changed.name);
 }
 
+TEST_CASE("An unchanged HA project instance follows nozzle updates while edited settings stay local", "[HaMaterialBinding][Regression]")
+{
+    PresetBundle bundle;
+    auto original = bundle.filaments.get_edited_preset();
+    original.name = "Original PLA label";
+    original.config.set_key_value("filament_type", new ConfigOptionStrings{"PLA"});
+    original.config.set_key_value("filament_flow_ratio", new ConfigOptionFloats{0.98});
+    const auto payload = HaMaterialProfile::capture(original);
+    const auto canonical = HaMaterialProfile::managed_name(payload);
+    const Binding baseline{roll_a, source, "duck-poop-demo", "Bambu Lab P2S|0.4|standard", canonical,
+        HaMaterialProfile::digest(payload)};
+    original.name = canonical + " [project filament 2]";
+    original.is_project_embedded = true;
+    original.config.set_key_value("inherits", new ConfigOptionString(bundle.filaments.default_preset().name));
+    CHECK_FALSE(preserves_override(baseline, &original));
+    auto changed = original;
+    changed.config.set_key_value("filament_flow_ratio", new ConfigOptionFloats{0.91});
+    CHECK(preserves_override(baseline, &changed));
+    changed = original;
+    changed.name = canonical + " [project filament 2] modified";
+    CHECK(preserves_override(baseline, &changed));
+}
+
 TEST_CASE("Native printer compatibility changes preserve HA bound local overrides and truthful incompatibility", "[HaMaterialBinding][Regression]")
 {
     for (const bool dirty : {false, true}) {

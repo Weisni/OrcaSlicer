@@ -153,6 +153,27 @@ inline std::string cached_name(const Json& summary) {
 inline std::string profile_name(const HaMaterialSource::Assignment& assignment) {
     return assignment.material_profile.is_null() ? assignment.material_preset : cached_name(assignment.material_profile);
 }
+inline std::string display_name(const PresetBundle& bundle, size_t index, const Preset& preset) {
+    const auto fallback = HaMaterialProfile::is_managed_name(preset.name) && !preset.alias.empty() ? preset.alias : preset.name;
+    if (!HaMaterialProfile::is_managed_name(preset.name)) return fallback;
+    const auto bindings = HaMaterialBinding::read(bundle.project_config, bundle.filament_presets.size());
+    if (index >= bindings.size() || bindings[index].source != endpoint()) return fallback;
+    const auto data = snapshot();
+    if (data.is_null()) return fallback;
+    for (const auto& roll : HaMaterialCatalog::available(data)) {
+        if (roll.assignment.spool_uuid != bindings[index].spool_uuid) continue;
+        const auto assignment = for_printer(bundle, roll.assignment);
+        if (assignment.material_profile.is_null()) return fallback;
+        const auto base = profile_name(assignment);
+        // Identical settings may share a cache entry but retain distinct
+        // publication names. Read the selected roll's own display metadata.
+        if (preset.name == base || (HaMaterialProfile::is_managed_project_name(preset.name) &&
+            preset.name.compare(0, base.size(), base) == 0))
+            return assignment.material_profile.at("name");
+        return fallback;
+    }
+    return fallback;
+}
 
 inline std::string install_payload(PresetBundle &bundle, const Json& payload, bool selection = true) {
     const auto name = HaMaterialProfile::managed_name(payload);
