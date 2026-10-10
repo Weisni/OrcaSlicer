@@ -1,4 +1,5 @@
 #include "Http.hpp"
+#include "HttpDnsCache.hpp"
 
 #include <cstdlib>
 #include <functional>
@@ -531,6 +532,13 @@ Http::~Http()
 	}
 }
 
+
+Http& Http::share_dns_cache()
+{
+    static HttpDnsCache cache;
+    if (p) cache.attach(p->curl);
+    return *this;
+}
 
 Http& Http::timeout_connect(long timeout)
 {

@@ -30,3 +30,21 @@ if(WIN32)
 endif()
 enable_testing()
 add_test(NAME ha_material_contract_tests COMMAND ha_material_contract_tests)
+
+# Real HTTP transfers validate that DNS survives independent easy handles.
+option(HA_HTTP_DNS_TESTS "Build the local HTTP DNS-cache integration test" OFF)
+if(HA_HTTP_DNS_TESTS)
+    find_package(Python3 REQUIRED COMPONENTS Interpreter)
+    find_library(HA_CURL_LIBRARY NAMES curl libcurl HINTS "${HA_DEPS}/lib" REQUIRED)
+    find_library(HA_SSL_LIBRARY NAMES ssl libssl HINTS "${HA_DEPS}/lib" REQUIRED)
+    find_library(HA_ZLIB_LIBRARY NAMES z zlib HINTS "${HA_DEPS}/lib" REQUIRED)
+    add_executable(ha_http_dns_tests dns_cache_test.cpp)
+    target_include_directories(ha_http_dns_tests PRIVATE "${REPOSITORY_ROOT}/src" "${HA_DEPS}/include")
+    target_link_libraries(ha_http_dns_tests PRIVATE "${HA_CURL_LIBRARY}" "${HA_SSL_LIBRARY}"
+        "${HA_CRYPTO_LIBRARY}" "${HA_ZLIB_LIBRARY}" Threads::Threads ${CMAKE_DL_LIBS})
+    if(WIN32)
+        target_link_libraries(ha_http_dns_tests PRIVATE ws2_32 crypt32 wldap32 advapi32 normaliz)
+    endif()
+    add_test(NAME ha_http_dns_tests COMMAND "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/run_dns_cache_test.py" "$<TARGET_FILE:ha_http_dns_tests>")
+endif()

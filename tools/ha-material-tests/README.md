@@ -40,3 +40,20 @@ On Linux/macOS omit `-A x64`. The dependency root must provide OpenSSL under
 - Confirm rendered GUI responsiveness and override retention against live HA
   only after deployment is separately authorized. Local tests do not establish
   live HA or physical printer acceptance.
+
+## HA DNS transport regression (2026-10-10)
+
+Configure with `-DHA_HTTP_DNS_TESTS=ON` to include real HTTP transfers against
+a local loopback server. The first request seeds the production DNS cache;
+the next independent handle must reach the server without resolving the
+otherwise nonexistent hostname. No HA credentials or database writes are used.
+Removing shared DNS reuse reproduced a timeout; enabling it passed.
+
+Live diagnosis: Windows name resolution for `homeassistant.local` sometimes
+took about eleven seconds, exceeding the previous eight-second connection
+deadline. HA now opts into thread-safe DNS reuse and allows a 15-second cold
+connection deadline within a cancellable 20-second whole-request deadline.
+Non-HA HTTP callers retain their existing behavior. Transport errors identify
+the actual curl/HTTP failure instead of claiming every failed read has a pending
+write. Initial live probes passed at 11-12 seconds cold and 0.24-0.28 seconds
+for subsequent requests. Full GUI acceptance is recorded separately.
