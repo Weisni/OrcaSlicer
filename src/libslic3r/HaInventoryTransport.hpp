@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <ctime>
 #include <algorithm>
 #include <limits>
 #include <functional>
@@ -166,7 +167,12 @@ inline Json merge_sync(const Json &previous, const Json &reply)
         if (reply.at("reset") == true || !same_generation || previous.at("revision") != reply.at("revision") ||
             reply.contains("native_delta") || reply.contains("snapshot"))
             throw std::runtime_error("HA unchanged response does not match the acknowledged inventory");
-        return previous;
+        // The authenticated reply revalidates this exact cached generation and
+        // revision. Renew observation age without changing material contents;
+        // otherwise an unchanged inventory expires after five minutes forever.
+        Json result = previous;
+        if (result.contains("captured_unix")) result["captured_unix"] = std::time(nullptr);
+        return result;
     }
     const bool reset = reply.at("reset").get<bool>();
     if (!reset && (!same_generation || reply.at("revision") <= previous.at("revision")))

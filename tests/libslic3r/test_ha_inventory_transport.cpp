@@ -1,4 +1,5 @@
 #include <catch2/catch_test_macros.hpp>
+#include <ctime>
 #include "libslic3r/HaInventoryTransport.hpp"
 
 using namespace Slic3r::HaInventoryTransport;
@@ -255,4 +256,20 @@ TEST_CASE("Paged reads restart the whole snapshot after a conflicting revision a
         throw RevisionChanged();
     }), RevisionChanged);
     CHECK(calls == 3);
+}
+
+TEST_CASE("Authenticated unchanged reads renew cached material freshness", "[HaInventoryTransport][Regression]")
+{
+    auto initial = merge_sync(Json(), reset_reply(transport_inventory()));
+    const auto now = std::time(nullptr);
+    initial["captured_unix"] = now - 600;
+    const Json unchanged = {{"sync_version", 1}, {"generation", "generation-one"}, {"revision", 1}, {"unchanged", true}, {"reset", false}};
+    auto refreshed = merge_sync(initial, unchanged);
+    CHECK(refreshed.at("captured_unix").get<std::time_t>() >= now);
+    refreshed["captured_unix"] = initial["captured_unix"];
+    CHECK(refreshed == initial);
+    CHECK(initial["captured_unix"] == now - 600);
+    auto wrong_revision = unchanged;
+    wrong_revision["revision"] = 2;
+    CHECK_THROWS(merge_sync(initial, wrong_revision));
 }
