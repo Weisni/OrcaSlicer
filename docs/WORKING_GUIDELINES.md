@@ -81,3 +81,9 @@ Source: user instructions and the root `AGENTS.md`, recorded 2026-09-24.
   PR (2.5.22 after published 2.5.21). Preserve unrelated arrangement work,
   record incomplete live acceptance, and leave merge/publication for a separate
   authorized step.
+
+- For PR #21 release acceptance, inspect CI at the final revision, repair
+  failures and repeat actual live HA profile uploads with timing evidence.
+  Preserve unrelated rolls/physical slots and discard the test project changes.
+  CI completion and live acceptance precede declaring 2.5.22 release-ready;
+  merge, tags and release publication require their separately authorized step.

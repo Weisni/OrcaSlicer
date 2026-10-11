@@ -118,8 +118,11 @@ public:
         // Native destruction can synchronously activate the parent after run()
         // has removed its filter, while the caller still owns Store locks.
         ForegroundEvents cleanup_events(*m_dialog);
-        m_dialog->Hide();
+        // Restore eligible owners before hiding the active loading window;
+        // otherwise Windows activates another application while all owners
+        // are still disabled. The event filter retains transaction safety.
         m_disabler.reset();
+        m_dialog->Hide();
         m_dialog.reset();
         active() = nullptr;
     }
@@ -130,8 +133,8 @@ public:
         if (!wxIsMainThread() || !active()) return;
         auto& sequence = *active();
         ForegroundEvents cleanup_events(*sequence.m_dialog);
-        sequence.m_dialog->Hide();
         sequence.m_disabler.reset();
+        sequence.m_dialog->Hide();
     }
     Sequence(const Sequence&) = delete;
     Sequence& operator=(const Sequence&) = delete;
@@ -182,9 +185,6 @@ template<class Work> auto run(Work work, wxWindow* parent)
             event_loop.YieldFor(wxEVT_CATEGORY_UI | wxEVT_CATEGORY_USER_INPUT | wxEVT_CATEGORY_TIMER);
         }
     }
-    // Standalone cleanup can synchronously activate the parent. Hide while the
-    // foreground filter still defers those callbacks out of Store locks.
-    if (standalone) dialog.Hide();
     // Result/exception publication occurs only after the worker is done,
     // including canceled or uncertain durable HTTP operations.
     return future.get();

@@ -358,11 +358,13 @@ components.
   incremented the source version to 2.5.22.
 - Scope, upgrade compatibility and open release gates are documented in
   [release preparation](docs/RELEASE_PREPARATION_2.5.22.md).
-- The latest direct-EXE upload test was interrupted after startup did not expose
-  a window. Native regression/build checks passed; live upload acceptance and
-  clean cross-platform release CI remain open. The PR is prepared as a draft.
+- Direct-EXE live tests confirmed profile upload, readable names and empty
+  comparisons after publication; unrelated rolls and physical slots were
+  unchanged. Windows focus restoration now has 34 passing native checks.
+  Final live focus verification and clean CI on the final revision remain
+  release gates. See the PR verification results before publication.
 
 - Release-preparation checks: 258 HA Python tests, bundled browser tests,
-  focused native contract/DNS/transport/inventory/profile suites, 29 loading
+  focused native contract/DNS/transport/inventory/profile suites, 34 loading
   checks and 10 name-search checks passed. Independent review identified and
   corrected internal cache/project presets in the saved-template chooser.

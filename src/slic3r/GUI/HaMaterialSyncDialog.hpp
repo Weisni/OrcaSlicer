@@ -170,15 +170,17 @@ public:
         apply->Bind(wxEVT_BUTTON, [this, upload, scope, load, save](wxCommandEvent &) {
             try {
                 if (upload->GetValue()) {
-                    // Review refresh, publication, read-back and activation
-                    // belong to one visible operation, not separate requests.
-                    HaNetworkOperation::Sequence loading(this);
-                    std::vector<bool> checked;
-                    for (const auto *check : m_difference_checks) checked.push_back(check->IsEnabled() && check->GetValue());
-                    const auto published = m_pending_transfer ? std::vector<HaProjectRollPublish::RollPublish>{} :
-                        HaProjectMaterialDifferences::selected_rolls(m_differences, checked, m_rows);
-                    if (published.empty() && !m_pending_transfer) throw std::runtime_error("Select at least one profile or color change");
-                    m_changed = save(published, m_project, m_rows);
+                    {
+                        // Review refresh, publication, read-back and activation
+                        // belong to one visible operation, not separate requests.
+                        HaNetworkOperation::Sequence loading(this);
+                        std::vector<bool> checked;
+                        for (const auto *check : m_difference_checks) checked.push_back(check->IsEnabled() && check->GetValue());
+                        const auto published = m_pending_transfer ? std::vector<HaProjectRollPublish::RollPublish>{} :
+                            HaProjectMaterialDifferences::selected_rolls(m_differences, checked, m_rows);
+                        if (published.empty() && !m_pending_transfer) throw std::runtime_error("Select at least one profile or color change");
+                        m_changed = save(published, m_project, m_rows);
+                    } // Close loading before ending its modal owner.
                     if (m_changed) EndModal(wxID_OK);
                     return;
                 }

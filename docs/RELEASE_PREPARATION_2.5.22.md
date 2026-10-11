@@ -35,12 +35,20 @@ this PR. Existing project/profile formats remain compatible.
 - Earlier direct-EXE live tests checked grouped Whinny Replace assignments,
   profile names, per-filament local edits, Save as, repeated spool selection and
   HA comparisons. These tests are recorded in README progress entries.
-- Latest upload continuity regression: 29 native checks, including one show and
-  one hide across three requests and no intermediate parent re-enabling.
-- Latest direct-EXE live upload acceptance remains open: the scoped test runtime
-  ended during startup without exposing a targetable window; the retry was
-  stopped by the user's Escape key. Its root cause is not established. The
-  native loader/export check passed, but that does not establish GUI startup.
+- Loading regression: 34 native Windows checks pass, including continuous
+  loading across three requests, background work, responsive paint/cancellation,
+  owner restoration and modal review completion. Both foreground regressions
+  failed before their corrections. Restore owners before hiding loading, and
+  finish loading before ending its modal review owner. Independent review
+  approved both lifetime corrections.
+- Direct-EXE live tests now reach the GUI and confirm a complete PETG profile
+  publication for the P2S 0.4 high-flow context, readable names, an empty
+  comparison after publication, and a reversible price change (30 to 31 and
+  back). HA read-back confirms all unrelated rolls and physical slots unchanged.
+  The foreground corrections still require their final live repetition.
+- GitHub had automatically disabled this fork's workflows. They were re-enabled
+  without changing allowed Actions permissions. HA CI passed at the preceding
+  revision; clean supported-platform checks must pass on the final PR revision.
 - The scoped local runtime retains generated 2.5.20 metadata and baseline
   archives. It is not a clean 2.5.22 release artifact.
 - Keep the PR in draft until clean cross-platform CI and remaining live upload
@@ -60,7 +68,7 @@ this PR. Existing project/profile formats remain compatible.
 - Passed: both configured HA CTest targets; 359 profile/binding assertions in
   37 cases, 71 transport assertions in 16 cases, 1,003 inventory assertions in
   51 cases, and 20 import assertions in one case.
-- Passed: 29 native Windows loading-window checks and 10 profile-search checks.
+- Passed: 34 native Windows loading-window checks and 10 profile-search checks.
 - Independent review found that internal managed HA presets/project copies
   were offered as saved local templates. The fallback picker now excludes them
   using the existing managed-identity validator, so their hashes cannot become
