@@ -71,3 +71,8 @@ Source: user instructions and the root `AGENTS.md`, recorded 2026-09-24.
 - Editing or saving an HA material for one project filament must not
   change another filament, including when both share cached settings.
   Keep temporary edits local and propose readable, available save names.
+
+- Keep Project-to-HA publication in one stable loading window through refresh,
+  upload, response verification and profile activation. Do not re-enable or
+  reactivate parent windows between its network requests. Hide/release loading
+  only when a real user decision is required or the sequence has finished.

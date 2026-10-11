@@ -119,6 +119,7 @@ public:
         // has removed its filter, while the caller still owns Store locks.
         ForegroundEvents cleanup_events(*m_dialog);
         m_dialog->Hide();
+        m_disabler.reset();
         m_dialog.reset();
         active() = nullptr;
     }
@@ -126,7 +127,11 @@ public:
     // request reopens this same window and retains the sequence cancellation.
     void hide()
     {
-        if (wxIsMainThread() && active()) active()->m_dialog->Hide();
+        if (!wxIsMainThread() || !active()) return;
+        auto& sequence = *active();
+        ForegroundEvents cleanup_events(*sequence.m_dialog);
+        sequence.m_dialog->Hide();
+        sequence.m_disabler.reset();
     }
     Sequence(const Sequence&) = delete;
     Sequence& operator=(const Sequence&) = delete;
@@ -140,6 +145,7 @@ private:
         m_message->SetLabel(wxGetTranslation("Canceling..."));
     }
     std::unique_ptr<wxDialog> m_dialog;
+    std::unique_ptr<wxWindowDisabler> m_disabler;
     wxStaticText* m_message = nullptr;
     wxGauge* m_gauge = nullptr;
     wxButton* m_cancel = nullptr;
@@ -157,14 +163,18 @@ template<class Work> auto run(Work work, wxWindow* parent)
     auto& sequence = *Sequence::active();
     auto& dialog = *sequence.m_dialog;
     ForegroundEvents foreground_events(dialog);
-    wxWindowDisabler disable_other_windows(&dialog);
     wxEventLoop event_loop;
     wxEventLoopActivator activate(&event_loop);
     auto future = std::async(std::launch::async, [work = std::move(work), &sequence]() mutable {
         return work(std::function<bool()>([&] { return sequence.m_canceled.load(); }));
     });
     if (future.wait_for(std::chrono::seconds(0)) != std::future_status::ready) {
-        if (!dialog.IsShown()) dialog.Show();
+        if (!dialog.IsShown()) {
+            // Keep the parent disabled for the visible sequence, including
+            // gaps between HTTP calls. Re-enabling per request steals focus.
+            sequence.m_disabler = std::make_unique<wxWindowDisabler>(&dialog);
+            dialog.Show();
+        }
         while (future.wait_for(std::chrono::milliseconds(10)) != std::future_status::ready) {
             sequence.m_gauge->Pulse();
             // Native dialog input/paint stays responsive. Timer deliveries are

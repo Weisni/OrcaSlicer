@@ -337,3 +337,17 @@ components.
   27 native network/UI checks. The application remains open with A1 selected.
 - Remaining: cross-platform runtime and release validation; the grouped
   3MF and local-edit acceptance were not repeated in this DNS follow-up.
+
+### HA upload loading-window continuity (2026-10-11)
+
+- Project-to-HA upload now groups review refresh, publication, read-back and
+  profile activation in one loading sequence. Nested publication reuses it.
+- Parent windows remain disabled between requests for the whole visible
+  sequence; genuine user-choice dialogs release the parent safely.
+- Native regression reproduced premature parent re-enabling before the fix.
+  Afterward, 29 native checks passed, including exactly one show/hide across
+  three requests, parent lifetime, paint, cancellation and callback deferral.
+- Both configured HA CTest targets passed. Scoped Windows runtime build and
+  direct-EXE live upload acceptance are recorded in the local diagnostics.
+- Remaining: macOS/Linux runtime and release acceptance; this follow-up does
+  not repeat grouped 3MF or per-filament Save-as tests.

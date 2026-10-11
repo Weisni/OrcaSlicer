@@ -170,6 +170,9 @@ public:
         apply->Bind(wxEVT_BUTTON, [this, upload, scope, load, save](wxCommandEvent &) {
             try {
                 if (upload->GetValue()) {
+                    // Review refresh, publication, read-back and activation
+                    // belong to one visible operation, not separate requests.
+                    HaNetworkOperation::Sequence loading(this);
                     std::vector<bool> checked;
                     for (const auto *check : m_difference_checks) checked.push_back(check->IsEnabled() && check->GetValue());
                     const auto published = m_pending_transfer ? std::vector<HaProjectRollPublish::RollPublish>{} :
