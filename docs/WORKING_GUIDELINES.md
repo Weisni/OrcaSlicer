@@ -76,3 +76,8 @@ Source: user instructions and the root `AGENTS.md`, recorded 2026-09-24.
   upload, response verification and profile activation. Do not re-enable or
   reactivate parent windows between its network requests. Hide/release loading
   only when a real user decision is required or the sequence has finished.
+
+- Prepare the accumulated HA/profile/import changes as a new-version release
+  PR (2.5.22 after published 2.5.21). Preserve unrelated arrangement work,
+  record incomplete live acceptance, and leave merge/publication for a separate
+  authorized step.

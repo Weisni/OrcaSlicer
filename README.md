@@ -351,3 +351,13 @@ components.
   direct-EXE live upload acceptance are recorded in the local diagnostics.
 - Remaining: macOS/Linux runtime and release acceptance; this follow-up does
   not repeat grouped 3MF or per-filament Save-as tests.
+
+### QuackSlicer 2.5.22 release preparation (2026-10-11)
+
+- Prepared the accumulated HA/profile/import fixes against current main and
+  incremented the source version to 2.5.22.
+- Scope, upgrade compatibility and open release gates are documented in
+  [release preparation](docs/RELEASE_PREPARATION_2.5.22.md).
+- The latest direct-EXE upload test was interrupted after startup did not expose
+  a window. Native regression/build checks passed; live upload acceptance and
+  clean cross-platform release CI remain open. The PR is prepared as a draft.
