@@ -4866,8 +4866,12 @@ bool Sidebar::sync_ha_material_demo(bool report_error, const std::string &select
                 } catch (const std::exception &) { /* Offer installed compatible profiles below. */ }
             }
             wxArrayString choices;
+            // This fallback chooses saved local templates. HA cache entries
+            // and temporary project copies use internal identities; associated
+            // HA profiles are resolved/downloaded above with their authority name.
             for (const auto &preset : bundle->filaments)
-                if (!preset.is_default && HaMaterialProvider::compatible(*bundle, preset, row.assignment.material_type))
+                if (!preset.is_default && !HaMaterialProfile::is_managed_name(preset.name) &&
+                    HaMaterialProvider::compatible(*bundle, preset, row.assignment.material_type))
                     choices.Add(from_u8(preset.name));
             if (choices.empty()) throw std::runtime_error("Install a compatible filament profile of this roll's material type first");
             HaFilamentProfileDialog picker(this,

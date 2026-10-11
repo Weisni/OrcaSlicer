@@ -53,3 +53,19 @@ this PR. Existing project/profile formats remain compatible.
 - Incorporated current main without modifying the dirty primary checkout.
 - Release publication, tags and physical printer dispatch are not performed by
   this preparation.
+
+## Preparation verification
+
+- Passed: 258 Python HA integration tests and all bundled browser CJS tests.
+- Passed: both configured HA CTest targets; 359 profile/binding assertions in
+  37 cases, 71 transport assertions in 16 cases, 1,003 inventory assertions in
+  51 cases, and 20 import assertions in one case.
+- Passed: 29 native Windows loading-window checks and 10 profile-search checks.
+- Independent review found that internal managed HA presets/project copies
+  were offered as saved local templates. The fallback picker now excludes them
+  using the existing managed-identity validator, so their hashes cannot become
+  publication names. Normal saved local profiles remain searchable; linked HA
+  profiles still resolve/download through the existing authority path.
+- The chooser correction is verified by compiling its production GUI consumer
+  and rerunning the native search/profile-binding regressions. Full GUI/live
+  acceptance remains an explicit release gate.

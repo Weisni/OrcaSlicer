@@ -361,3 +361,8 @@ components.
 - The latest direct-EXE upload test was interrupted after startup did not expose
   a window. Native regression/build checks passed; live upload acceptance and
   clean cross-platform release CI remain open. The PR is prepared as a draft.
+
+- Release-preparation checks: 258 HA Python tests, bundled browser tests,
+  focused native contract/DNS/transport/inventory/profile suites, 29 loading
+  checks and 10 name-search checks passed. Independent review identified and
+  corrected internal cache/project presets in the saved-template chooser.
