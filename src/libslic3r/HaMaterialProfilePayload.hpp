@@ -109,9 +109,39 @@ inline std::string digest(const Json& value)
     return value.at("sha256");
 }
 
+inline std::string content_identity(const Json& value)
+{
+    validate(value);
+    // Envelope hashes retain labels and provenance for publication. Installation
+    // identity follows effective settings, shared independently of roll or label.
+    return content_sha256({{"schema_version", value.at("schema_version")},
+        {"material_type", value.at("material_type")}, {"settings", value.at("settings")},
+        {"filament_id", value.at("dependencies").at("filament_id")}});
+}
+
+inline bool is_managed_project_name(const std::string& name)
+{
+    constexpr size_t prefix_size = 13; // "HA material ["
+    constexpr size_t canonical_size = prefix_size + 65;
+    const std::string suffix = " [project filament ";
+    const size_t number = canonical_size + suffix.size();
+    return name.size() > number + 1 && name.compare(0, prefix_size, "HA material [") == 0 &&
+        name[canonical_size - 1] == ']' && is_sha256(name.substr(prefix_size, 64)) &&
+        name.compare(canonical_size, suffix.size(), suffix) == 0 && name.back() == ']' &&
+        name[number] >= '1' && name[number] <= '9' &&
+        name.find_first_not_of("0123456789", number) == name.size() - 1;
+}
+inline bool is_managed_name(const std::string& name)
+{
+    constexpr size_t prefix_size = 13; // "HA material ["
+    return (name.size() == prefix_size + 65 && name.compare(0, prefix_size, "HA material [") == 0 &&
+        name.back() == ']' && is_sha256(name.substr(prefix_size, 64))) || is_managed_project_name(name);
+}
+
 inline std::string managed_name(const Json& value)
 {
     const auto sha = digest(value);
+    if (value.contains("settings")) return "HA material [" + content_identity(value) + "]";
     std::string label = value.at("name");
     // User presets recover their name from the filename at startup. '@' also
     // triggers legacy printer-name inference, so keep it out of this cache name.

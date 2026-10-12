@@ -1,5 +1,8 @@
 #include <catch2/catch_test_macros.hpp>
 #include "libslic3r/HaMaterialRefresh.hpp"
+#include "libslic3r/HaMaterialAsyncRefresh.hpp"
+#include <future>
+#include <thread>
 
 using namespace Slic3r;
 using Json = nlohmann::json;
@@ -55,4 +58,45 @@ TEST_CASE("Open material pickers defer changes until a later refresh", "[HaMater
     REQUIRE_FALSE(HaMaterialRefresh::should_rebuild(2, 1, true));
     REQUIRE(HaMaterialRefresh::should_rebuild(2, 1, false));
     REQUIRE_FALSE(HaMaterialRefresh::should_rebuild(2, 2, false));
+}
+
+TEST_CASE("A changed profile digest refreshes the list even when its label stays unchanged", "[HaMaterialRefresh]")
+{
+    HaMaterialRefresh::DisplayRevision state;
+    auto snapshot = material_snapshot();
+    snapshot["spools"][0]["material_profile"] = {{"sha256", "first"}};
+    REQUIRE(state.update("source", snapshot, ""));
+    snapshot["spools"][0]["material_profile"]["sha256"] = "second";
+    CHECK(state.update("source", snapshot, ""));
+}
+
+TEST_CASE("Background refresh is single flight and discards invalidated completions", "[HaMaterialRefresh]")
+{
+    HaMaterialRefresh::AsyncRefresh worker;
+    std::promise<void> gate;
+    auto released = gate.get_future().share();
+    const bool started = worker.start("source", [released](const auto&) { released.wait(); return Json{{"revision",1}}; });
+    CHECK(started);
+    CHECK_FALSE(worker.start("source", [](const auto&) { return Json(); }));
+    worker.invalidate();
+    gate.set_value();
+    if (started) while (!worker.ready()) std::this_thread::yield();
+    CHECK_FALSE(worker.take("source").has_value());
+    const bool next = worker.start("source", [](const auto&) { return Json{{"revision",2}}; });
+    CHECK(next);
+    if (next) while (!worker.ready()) std::this_thread::yield();
+    const auto result = worker.take("source");
+    REQUIRE(result.has_value());
+    CHECK(result->data.at("revision") == 2);
+}
+
+TEST_CASE("Background results cannot publish to another endpoint", "[HaMaterialRefresh]")
+{
+    HaMaterialRefresh::AsyncRefresh worker;
+    const bool started = worker.start("old", [](const auto&) { return Json{{"revision",1}}; });
+    REQUIRE(started);
+    while (!worker.ready()) std::this_thread::yield();
+    CHECK_FALSE(worker.take("new").has_value());
+    worker.shutdown();
+    CHECK_FALSE(worker.start("new", [](const auto&) { return Json(); }));
 }

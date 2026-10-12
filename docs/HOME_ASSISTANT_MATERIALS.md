@@ -32,15 +32,44 @@ local profile does not silently update the HA roll or remove its identity.
 
 A profile published to HA contains the complete effective filament settings,
 including compatibility conditions and material G-code, with a content digest.
-An explicit selection downloads that exact revision and installs a distinct
-content-addressed user profile. An unrelated local profile with the same name
-is preserved. Background refreshes only read summaries. Profiles with a
-different settings schema or incompatible printer/nozzle are rejected.
+The first refresh downloads all published profiles and nozzle variants into a
+persistent content cache. Later refreshes reuse those digests and download only
+missing contents. Compatible profiles are installed without changing the active
+or edited preset. Equal effective settings share one managed profile regardless
+of roll or display name; unrelated local profiles remain available. A profile
+with a different settings schema is rejected, and an incompatible variant cannot
+be selected for the current printer/nozzle.
 
-For older name-only associations, Quack uses the exact compatible installed
-profile. If it is absent, a compatible installed Generic profile of the same
-material type is used. That derived fallback is not silently published as a
-new authoritative association. Filament/material profiles are separate from
+Temporary local material adjustments remain possible without saving the project
+or publishing to HA. Background refresh preserves them. When explicitly loading
+a new HA base for the edited material, Quack overlays the settings changed from
+the previous base, while unchanged settings follow the new base. Those changes
+stay local until an explicit publication. Selecting a local profile for a roll
+without a compatible HA variant uploads its saved baseline first, waits for
+the committed HA association, and then uses the acknowledged HA-managed copy.
+Closing the settings dialog does not discard those temporary settings. If
+several project filaments share one edited preset and only some are replaced,
+the remaining filaments retain that edit buffer. Explicitly replaced slots use
+the saved HA settings. When the entire shared group is replaced, migrating its
+overrides requires one common new base; conflicting replacements preserve the
+project and report the ambiguity before any profile association is uploaded.
+Multiple initial associations are published in one acknowledged batch after
+all profile choices, so cancelling a later choice cannot partially upload them.
+The profile chooser filters full names with a case-insensitive search field.
+
+Stored profile identity checks use the saved preset rather than its selected
+edit buffer. Temporary changes therefore do not make a downloaded HA profile
+appear missing or modified. Project-to-HA publication still captures effective
+settings, including temporary changes, when explicitly selected.
+
+For older name-only associations, Quack resolves the compatible local profile
+as a suggestion. Explicit HA roll selection offers initial full-profile storage
+before adopting the acknowledged HA copy. Matching names alone do not prove
+matching settings. Initial storage is labeled separately in the synchronization
+dialog and unchecked by default. An unchanged complete HA base profile is not
+an upload difference merely because its nozzle variant is absent. Changed
+settings can create that variant using a null variant concurrency baseline.
+Filament/material profiles are separate from
 print/process profiles.
 
 The synchronization dialog supports selected HA slots or all occupied slots.
@@ -82,10 +111,26 @@ the inventory's actual color remains authoritative.
 
 HA commits shared inventory edits before the native cache changes. Same-row or
 selected-field conflicts preserve newer data, while unrelated edits can merge.
-Paged snapshots are imported only when every table belongs to the same server
-revision. Interrupted or stale reads leave the previous local graph intact.
-Current client budgets are 64 MiB and 250,000 rows per complete graph; this is
-not an unlimited-memory import.
+Current components return a generation/revision marker from `/sync`. An
+unchanged read does not scan or export the inventory. A changed read captures
+one SQLite transaction and sends stable-key row upserts/deletions; Quack merges
+and imports the complete result atomically, writing only changed local rows.
+Server restart, generation mismatch or missing older delta history triggers a
+full resynchronization. Components without `/sync` retain the earlier bounded
+page protocol, which requires one revision across all pages.
+
+Background HTTP runs outside the GUI thread with one request flow in flight.
+Endpoint changes or explicit refreshes invalidate older results. A GUI timer
+completes ready results even when no printer telemetry arrives; an open material
+picker delays its list rebuild. An interrupted or stale read leaves the previous
+local graph and temporary edits intact. Cached inventory and complete profile
+contents can restore the roll list after an offline restart; printing still
+requires the existing fresh HA checks and acknowledged reservations.
+
+The graph budget is 64 MiB and 250,000 rows; provider metadata is limited to
+4 MiB and a native row/profile payload to 256 KiB. The server retains at most
+eight delta baselines and 64 MiB of Python objects. The profile memory cache
+holds at most 64 payloads, with the remaining contents available on disk.
 
 An uncertain network result keeps its durable request for reconciliation. A
 retry resolves that request instead of starting another physical print. HA
@@ -114,8 +159,12 @@ before resuming printing. Never publish these recovery files or access tokens.
 ## Validation and remaining checks
 
 Automated coverage includes UUID persistence, stock reservations, slot mapping,
-profile digest/compatibility checks, stale reads, large ledgers, selective
-updates and idempotent receipts. Native GUI and hardware behavior still depend
+profile digest/compatibility checks, immutable downloads, asynchronous result
+invalidation, unsaved local overrides, stale reads, large ledgers, selective
+updates and idempotent receipts. Focused Windows compilation covers the changed
+GUI translation units, rather than a complete linked application. Rendered
+profile selection, offline restart and telemetry-independent refresh remain
+acceptance checks. Native GUI and hardware behavior still depend
 on the target OS, printer firmware and Companion app. Release CI, supported
 platform builds, user-data migration and physical NFC acceptance remain
 separate checks; passing unit tests does not establish those outcomes.

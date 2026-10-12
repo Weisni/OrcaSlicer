@@ -92,9 +92,12 @@ inline bool publish_ha_project_materials(wxWindow *parent, const std::string &en
                     "Setting stock to zero marks that roll empty and clears its HA slot. No printer command is sent.";
     // The compact dialog already shows and confirms the selected differences.
     // Recovery still reviews the frozen request, which may differ from today's selection.
-    if ((!reviewed_in_dialog || retry || cache_only) &&
-        wxMessageBox(from_u8(preview), _L("Save project materials to HA"),
-                     wxYES_NO | wxNO_DEFAULT | wxICON_QUESTION, parent) != wxYES) return false;
+    HaNetworkOperation::Sequence loading(parent);
+    if (!reviewed_in_dialog || retry || cache_only) {
+        loading.hide(); // A real confirmation must be able to receive input.
+        if (wxMessageBox(from_u8(preview), _L("Save project materials to HA"),
+                         wxYES_NO | wxNO_DEFAULT | wxICON_QUESTION, parent) != wxYES) return false;
+    }
     validate_project();
     if (!retry && !cache_only) {
         const auto temporary = journal + ".tmp";

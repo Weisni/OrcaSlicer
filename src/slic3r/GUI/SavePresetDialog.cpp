@@ -11,6 +11,7 @@
 #include <wx/wupdlock.h>
 
 #include "libslic3r/PresetBundle.hpp"
+#include "libslic3r/HaMaterialProfilePayload.hpp"
 
 #include "GUI.hpp"
 #include "GUI_App.hpp"
@@ -36,12 +37,24 @@ SavePresetDialog::Item::Item(Preset::Type type, const std::string &suffix, wxBox
     m_presets = tab->get_presets();
 
     const Preset &sel_preset  = m_presets->get_selected_preset();
-    std::string   preset_name = sel_preset.is_default ? "Untitled" : sel_preset.is_system ? (boost::format(("%1% - %2%")) % sel_preset.name % suffix).str() : sel_preset.is_from_bundle() && !sel_preset.alias.empty() ? sel_preset.alias : sel_preset.name;
+    const bool is_ha_material = m_type == Preset::TYPE_FILAMENT && HaMaterialProfile::is_managed_name(sel_preset.name) && !sel_preset.alias.empty();
+    std::string   preset_name = sel_preset.is_default ? "Untitled" : sel_preset.is_system ? (boost::format(("%1% - %2%")) % sel_preset.name % suffix).str() : (sel_preset.is_from_bundle() || is_ha_material) && !sel_preset.alias.empty() ? sel_preset.alias : sel_preset.name;
 
     // if name contains extension
     if (boost::iends_with(preset_name, ".ini")) {
         size_t len = preset_name.length() - 4;
         preset_name.resize(len);
+    }
+
+    if (is_ha_material) {
+        // HA hashes are internal identities. Propose a readable local copy that
+        // cannot overwrite the original material or conflict with a preset alias.
+        const std::string base_name = preset_name;
+        size_t copy_index = 0;
+        while (m_presets->find_preset(preset_name, false) || m_presets->get_preset_name_by_alias(preset_name) != preset_name) {
+            preset_name = base_name + " - " + suffix;
+            if (++copy_index > 1) preset_name += " " + std::to_string(copy_index);
+        }
     }
 
     std::vector<std::string> values;

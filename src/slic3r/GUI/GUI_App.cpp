@@ -4,6 +4,7 @@
 #include "libslic3r/Platform.hpp"
 #include "GUI_App.hpp"
 #include "FilamentInventoryService.hpp"
+#include "HaMaterialProvider.hpp"
 #include "GUI_Init.hpp"
 #include "GUI_ObjectList.hpp"
 #include "slic3r/GUI/UserManager.hpp"
@@ -2751,6 +2752,7 @@ bool GUI_App::OnInit()
 
 int GUI_App::OnExit()
 {
+    HaMaterialProvider::shutdown_refresh();
     stop_http_server();
     stop_sync_user_preset();
 

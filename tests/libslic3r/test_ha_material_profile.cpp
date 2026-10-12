@@ -2,6 +2,8 @@
 #include "libslic3r/HaMaterialProfile.hpp"
 #include "libslic3r/PresetBundle.hpp"
 #include "libslic3r/HaProjectMaterialDifferences.hpp"
+#include "libslic3r/HaMaterialLocalOverride.hpp"
+#include "libslic3r/HaMaterialEditSlot.hpp"
 #include <boost/filesystem.hpp>
 
 using namespace Slic3r;
@@ -46,6 +48,50 @@ TEST_CASE("An unchanged HA-managed preset does not create a false upload differe
     CHECK(changed.at("sha256") != original.at("sha256"));
 }
 
+TEST_CASE("One HA profile replacement preserves effective edits on unchanged shared materials", "[HaMaterialProfile][Regression]")
+{
+    PresetBundle bundle;
+    const auto local = exact_material();
+    bundle.filaments.load_preset({}, local.name, local.config, false);
+    auto remote = local;
+    remote.name = "HA committed PLA";
+    remote.config.set_key_value("filament_flow_ratio", new ConfigOptionFloats{0.97});
+    remote.config.set_key_value("nozzle_temperature", new ConfigOptionInts{215});
+    bundle.filaments.load_preset({}, remote.name, remote.config, false);
+    bundle.filaments.select_preset_by_name(local.name, true);
+    bundle.filaments.get_edited_preset().config.set_key_value("filament_flow_ratio", new ConfigOptionFloats{1.03});
+    bundle.filaments.get_edited_preset().config.set_key_value("nozzle_temperature", new ConfigOptionInts{230});
+    bundle.set_num_filaments(3, std::vector<std::string>{"#112233", "#445566", "#778899"});
+    bundle.filament_presets = {local.name, local.name, local.name};
+    const auto original = bundle.filament_presets;
+    const auto settings = bundle.filaments.get_edited_preset().config;
+    bundle.set_filament_preset(0, remote.name);
+    const auto replacement = HaMaterialLocalOverride::replacement_index(original, bundle.filament_presets, local.name);
+    REQUIRE_FALSE(replacement.has_value());
+    CHECK(bundle.filaments.get_edited_preset().config == settings);
+    const auto full = bundle.full_config();
+    CHECK(full.opt_serialize("filament_flow_ratio") == "0.97,1.03,1.03");
+    CHECK(full.opt_serialize("nozzle_temperature") == "215,230,230");
+    REQUIRE(HaMaterialProfile::stored_preset(bundle.filaments, local.name) != nullptr);
+    CHECK(HaMaterialProfile::stored_preset(bundle.filaments, local.name)->config.opt_serialize("filament_flow_ratio") == "0.98");
+    CHECK(HaMaterialProfile::stored_preset(bundle.filaments, remote.name)->config.opt_serialize("filament_flow_ratio") == "0.97");
+}
+
+TEST_CASE("One managed profile recaptures distinct HA publication labels without preset duplication", "[HaMaterialProfile]")
+{
+    const auto first = HaMaterialProfile::capture(exact_material());
+    auto second = first;
+    second["name"] = "Another roll label";
+    second["dependencies"]["inherits"] = "Another equivalent parent";
+    second = HaMaterialProfile::seal(second);
+    REQUIRE(HaMaterialProfile::managed_name(first) == HaMaterialProfile::managed_name(second));
+    Preset installed(Preset::TYPE_FILAMENT,HaMaterialProfile::managed_name(first));
+    installed.config = HaMaterialProfile::decode_config(first);
+    installed.filament_id = first.at("dependencies").at("filament_id");
+    CHECK(HaMaterialProfile::capture(installed,HaMaterialProfile::profile_summary(first)) == first);
+    CHECK(HaMaterialProfile::capture(installed,HaMaterialProfile::profile_summary(second)) == second);
+}
+
 TEST_CASE("HA profile decoding rejects process settings and incomplete material data", "[HaMaterialProfile]")
 {
     auto payload = HaMaterialProfile::capture(exact_material());
@@ -54,6 +100,26 @@ TEST_CASE("HA profile decoding rejects process settings and incomplete material 
     SECTION("Missing settings do not silently pick local defaults") { payload["settings"].erase("filament_flow_ratio"); }
     payload = HaMaterialProfile::seal(payload);
     CHECK_THROWS(HaMaterialProfile::decode_config(payload));
+}
+
+TEST_CASE("Stored HA profile validation and bootstrap do not consume temporary edits", "[HaMaterialProfile]")
+{
+    const auto original = HaMaterialProfile::capture(exact_material());
+    const auto name = HaMaterialProfile::managed_name(original);
+    PresetBundle bundle;
+    auto &installed = bundle.filaments.load_preset({}, name, HaMaterialProfile::decode_config(original), false);
+    installed.filament_id = original.at("dependencies").at("filament_id");
+    bundle.filaments.select_preset_by_name(name,true);
+    bundle.filaments.get_edited_preset().config.set_key_value("filament_flow_ratio", new ConfigOptionFloats{1.03});
+    const auto* stored = HaMaterialProfile::stored_preset(bundle.filaments,name);
+    REQUIRE(stored != nullptr);
+    CHECK(HaMaterialProfile::capture(*stored,original) == original);
+    CHECK(HaMaterialProfile::capture(*bundle.filaments.find_preset(name),original) != original);
+    CHECK(bundle.filaments.get_edited_preset().config.opt_serialize("filament_flow_ratio") == "1.03");
+    CHECK(HaMaterialProfile::stored_preset(bundle.filaments,"Missing profile") == nullptr);
+    bundle.filaments.find_preset(name,false,true)->config.set_key_value("filament_flow_ratio",new ConfigOptionFloats{1.07});
+    CHECK(HaMaterialProfile::content_identity(HaMaterialProfile::capture(
+        *HaMaterialProfile::stored_preset(bundle.filaments,name),original)) != HaMaterialProfile::content_identity(original));
 }
 
 TEST_CASE("Uploading a managed project's edits does not rename its profile on the next comparison", "[HaMaterialProfile]")
@@ -106,6 +172,142 @@ TEST_CASE("A downloaded material retains its identity and settings after user pr
 
 static const std::string profile_roll = "641c70ee-6b92-44dc-b1c1-ddc1c86ce001";
 static const std::string profile_source = "http://ha/api/materials";
+
+TEST_CASE("Editing one HA roll keeps another roll sharing its committed profile unchanged", "[HaMaterialProfile][Regression]")
+{
+    PresetBundle bundle;
+    auto material = exact_material();
+    material.config.set_key_value("nozzle_temperature", new ConfigOptionInts{220});
+    const auto profile = HaMaterialProfile::capture(material);
+    const auto name = HaMaterialProfile::managed_name(profile);
+    bundle.filaments.load_preset({}, name, HaMaterialProfile::decode_config(profile), false).filament_id = material.filament_id;
+    bundle.set_num_filaments(2, std::vector<std::string>{"#112233", "#445566"});
+    bundle.filament_presets = {name, name};
+    HaMaterialBinding::write(bundle.project_config, {
+        {profile_roll, profile_source, "printer"},
+        {"641c70ee-6b92-44dc-b1c1-ddc1c86ce002", profile_source, "printer"}});
+    const auto local_name = HaMaterialLocalOverride::isolate_edit_slot(bundle, 1);
+    bundle.filaments.select_preset_by_name(local_name, true);
+    bundle.filaments.get_edited_preset().config.set_key_value("filament_flow_ratio", new ConfigOptionFloats{1.03});
+    bundle.filaments.get_edited_preset().config.set_key_value("nozzle_temperature", new ConfigOptionInts{230});
+    const auto full = bundle.full_config();
+    CHECK(full.opt_serialize("filament_flow_ratio") == "0.98,1.03");
+    CHECK(full.opt_serialize("nozzle_temperature") == "220,230");
+    CHECK(bundle.filament_presets[0] == name);
+    CHECK(HaMaterialProfile::stored_preset(bundle.filaments, name)->config.opt_serialize("filament_flow_ratio") == "0.98");
+}
+
+TEST_CASE("HA slot edits survive switching among twenty slots with identical committed settings", "[HaMaterialProfile][Regression]")
+{
+    PresetBundle bundle;
+    auto material = exact_material();
+    material.config.set_key_value("nozzle_temperature", new ConfigOptionInts{220});
+    const auto profile = HaMaterialProfile::capture(material);
+    const auto name = HaMaterialProfile::managed_name(profile);
+    bundle.filaments.load_preset({}, name, HaMaterialProfile::decode_config(profile), false).filament_id = material.filament_id;
+    bundle.set_num_filaments(20, std::vector<std::string>(20, "#112233"));
+    bundle.filament_presets.assign(20, name);
+    HaMaterialBinding::write(bundle.project_config,
+        std::vector<HaMaterialBinding::Binding>(20, {profile_roll, profile_source, "printer"}));
+    for (size_t index = 0; index < 20; ++index) {
+        const auto local_name = HaMaterialLocalOverride::isolate_edit_slot(bundle, index);
+        bundle.filaments.select_preset_by_name(local_name, true);
+        CHECK(HaMaterialProfile::capture(bundle.filaments.get_edited_preset(), profile) == profile);
+        bundle.filaments.get_edited_preset().config.set_key_value("nozzle_temperature", new ConfigOptionInts{230 + int(index)});
+    }
+    const auto full = bundle.full_config();
+    CHECK(full.opt_serialize("nozzle_temperature") == "230,231,232,233,234,235,236,237,238,239,240,241,242,243,244,245,246,247,248,249");
+    CHECK(std::set<std::string>(bundle.filament_presets.begin(), bundle.filament_presets.end()).size() == 20);
+    const auto reopened_name = HaMaterialLocalOverride::isolate_edit_slot(bundle, 0);
+    bundle.filaments.select_preset_by_name(reopened_name, true);
+    CHECK(bundle.filaments.get_edited_preset().config.opt_serialize("nozzle_temperature") == "230");
+    bundle.filaments.get_edited_preset().config.set_key_value("nozzle_temperature", new ConfigOptionInts{251});
+    CHECK(HaMaterialLocalOverride::isolate_edit_slot(bundle, 0) == reopened_name);
+    CHECK(bundle.filaments.get_edited_preset().config.opt_serialize("nozzle_temperature") == "251");
+    CHECK(HaMaterialProfile::stored_preset(bundle.filaments, name)->config.opt_serialize("nozzle_temperature") == "220");
+}
+
+TEST_CASE("HA slot isolation keeps ordinary preset assignments unchanged", "[HaMaterialProfile]")
+{
+    PresetBundle bundle;
+    const auto material = exact_material();
+    bundle.filaments.load_preset({}, material.name, material.config, false);
+    bundle.filament_presets = {material.name};
+    CHECK(HaMaterialLocalOverride::isolate_edit_slot(bundle, 0) == material.name);
+    CHECK(bundle.filament_presets[0] == material.name);
+}
+
+TEST_CASE("Retained HA slot edits stay pending against their committed baseline after reopening the editor", "[HaMaterialProfile][Regression]")
+{
+    PresetBundle bundle;
+    const auto profile = HaMaterialProfile::capture(exact_material());
+    const auto name = HaMaterialProfile::managed_name(profile);
+    bundle.filaments.load_preset({}, name, HaMaterialProfile::decode_config(profile), false).filament_id = "GFA00";
+    bundle.set_num_filaments(2, std::vector<std::string>(2, "#112233"));
+    bundle.filament_presets = {name, name};
+    HaMaterialBinding::write(bundle.project_config,
+        std::vector<HaMaterialBinding::Binding>(2, {profile_roll, profile_source, "printer"}));
+    const auto first = HaMaterialLocalOverride::isolate_edit_slot(bundle, 0);
+    bundle.filaments.select_preset_by_name(first, true);
+    CHECK_FALSE(HaMaterialLocalOverride::has_local_edits(bundle));
+    bundle.filaments.get_edited_preset().config.set_key_value("filament_flow_ratio", new ConfigOptionFloats{1.03});
+    const auto second = HaMaterialLocalOverride::isolate_edit_slot(bundle, 1);
+    bundle.filaments.select_preset_by_name(second, true);
+    HaMaterialLocalOverride::isolate_edit_slot(bundle, 0);
+    bundle.filaments.select_preset_by_name(first, true);
+    CHECK_FALSE(bundle.filaments.current_is_dirty());
+    CHECK(HaMaterialLocalOverride::has_local_edits(bundle));
+    const auto* baseline = HaMaterialLocalOverride::edit_baseline(bundle);
+    REQUIRE(baseline != nullptr);
+    CHECK(baseline->config.opt_serialize("filament_flow_ratio") == "0.98");
+    auto incoming = profile;
+    incoming["settings"]["filament_flow_ratio"] = "1.00";
+    const auto settings = HaMaterialLocalOverride::merge_settings(
+        HaMaterialProfile::capture(*baseline, profile).at("settings"),
+        HaMaterialProfile::capture(bundle.filaments.get_edited_preset(), profile).at("settings"),
+        incoming.at("settings"));
+    CHECK(settings.at("filament_flow_ratio") == "1.03");
+}
+
+TEST_CASE("HA project slot settings reopen through embedded presets without the downloaded cache", "[HaMaterialProfile][Regression]")
+{
+    PresetBundle bundle;
+    auto material = exact_material();
+    material.config.set_key_value("nozzle_temperature", new ConfigOptionInts{220});
+    const auto profile = HaMaterialProfile::capture(material);
+    const auto name = HaMaterialProfile::managed_name(profile);
+    bundle.filaments.load_preset({}, name, HaMaterialProfile::decode_config(profile), false).filament_id = material.filament_id;
+    bundle.set_num_filaments(3, std::vector<std::string>(3, "#112233"));
+    bundle.filament_presets = {name, name, material.name};
+    bundle.filaments.load_preset({}, material.name, material.config, false);
+    HaMaterialBinding::write(bundle.project_config, {
+        {profile_roll, profile_source, "printer"},
+        {"641c70ee-6b92-44dc-b1c1-ddc1c86ce002", profile_source, "printer"}, {}});
+    const auto first = HaMaterialLocalOverride::isolate_edit_slot(bundle, 0);
+    bundle.filaments.select_preset_by_name(first, true);
+    bundle.filaments.get_edited_preset().config.set_key_value("nozzle_temperature", new ConfigOptionInts{230});
+    const auto second = HaMaterialLocalOverride::isolate_edit_slot(bundle, 1);
+    bundle.filaments.select_preset_by_name(second, true);
+    bundle.filaments.get_edited_preset().config.set_key_value("nozzle_temperature", new ConfigOptionInts{240});
+    const auto ordinary = HaMaterialLocalOverride::isolate_edit_slot(bundle, 2);
+    bundle.filaments.select_preset_by_name(ordinary, true);
+
+    auto embedded = bundle.get_current_project_embedded_presets();
+    REQUIRE(embedded.size() == 2);
+    PresetBundle reopened;
+    REQUIRE(HaMaterialProfile::stored_preset(reopened.filaments, name) == nullptr);
+    CHECK_NOTHROW(reopened.load_project_embedded_presets(embedded, ForwardCompatibilitySubstitutionRule::Disable));
+    for (auto* preset : embedded) delete preset;
+    const auto* restored_first = HaMaterialProfile::stored_preset(reopened.filaments, first);
+    const auto* restored_second = HaMaterialProfile::stored_preset(reopened.filaments, second);
+    REQUIRE(restored_first != nullptr);
+    REQUIRE(restored_second != nullptr);
+    CHECK(restored_first->config.opt_serialize("nozzle_temperature") == "230");
+    CHECK(restored_second->config.opt_serialize("nozzle_temperature") == "240");
+    auto expected = profile;
+    expected["settings"]["nozzle_temperature"] = "230";
+    CHECK(HaMaterialProfile::capture(*restored_first, profile) == HaMaterialProfile::seal(expected));
+}
 
 static HaProjectMaterialSync::Row profile_row(const nlohmann::json& profile)
 {
@@ -163,6 +365,57 @@ TEST_CASE("An unmodified downloaded HA profile has no upload difference", "[HaMa
     const auto result = HaProjectMaterialDifferences::compare(project, {profile_row(profile)},
         {{profile_roll, profile_source, "printer"}}, profile_source, "printer");
     CHECK(result.empty());
+}
+
+TEST_CASE("An unchanged HA base profile is not a change when its nozzle variant is absent", "[HaMaterialProfileSync]")
+{
+    const auto profile = HaMaterialProfile::capture(exact_material());
+    auto row = profile_row(profile);
+    const nlohmann::json context = {{"printer_model", "Bambu Lab P2S"}, {"nozzle_diameter", "0.4"}, {"flow_type", "high_flow"}};
+    row.assignment = HaMaterialSource::with_context(row.assignment, context);
+    REQUIRE(HaMaterialSource::variant_profile(row.assignment).is_null());
+    const HaProjectMaterialSync::Project project{{HaMaterialProfile::managed_name(profile)}, {"#FFFFFF"}, {profile}};
+    CHECK(HaProjectMaterialDifferences::compare(project, {row},
+        {{profile_roll, profile_source, "printer"}}, profile_source, "printer").empty());
+
+    auto changed = profile;
+    changed["settings"]["filament_flow_ratio"] = "1.03";
+    changed = HaMaterialProfile::seal(changed);
+    const auto differences = HaProjectMaterialDifferences::compare(
+        {{HaMaterialProfile::managed_name(profile)}, {"#FFFFFF"}, {changed}}, {row},
+        {{profile_roll, profile_source, "printer"}}, profile_source, "printer");
+    REQUIRE(differences.size() == 1);
+    CHECK(differences[0].before_profile_sha256.empty());
+    CHECK(differences[0].after_profile_sha256 == HaMaterialProfile::digest(changed));
+    CHECK_NOTHROW(HaProjectMaterialDifferences::selected_rolls(differences, {true}, {row}));
+    auto selections = HaProjectMaterialDifferences::selected_rolls(differences, {true}, {row});
+    REQUIRE(selections.size() == 1);
+    CHECK(selections[0].expected_profile_sha256.empty());
+    selections[0].profile_context = context;
+    const nlohmann::json remote = {{"schema_version", 8}, {"tables", {
+        {"spools", nlohmann::json::array({{{"id", profile_roll}, {"status", "active"},
+          {"nominal_capacity_mg", 1000000}, {"filament_preset_id", profile.at("name")}, {"color_hex", "#FFFFFF"}}})},
+        {"stock_events", nlohmann::json::array({{{"spool_id", profile_roll}, {"delta_mg", 600000}}})}}}};
+    const auto changes = HaProjectRollPublish::publish_roll_changes(
+        {{HaMaterialProfile::managed_name(profile)}, {"#FFFFFF"}, {changed}}, remote, selections);
+    REQUIRE(changes.size() == 1);
+    CHECK(changes[0].at("expected_profile_sha256").is_null());
+    CHECK(changes[0].at("profile_context") == context);
+    CHECK(changes[0].at("material_profile") == changed);
+}
+
+TEST_CASE("A name-only HA association offers initial storage without claiming different settings", "[HaMaterialProfileSync]")
+{
+    const auto profile = HaMaterialProfile::capture(exact_material());
+    auto row = profile_row(profile);
+    row.assignment.material_profile = nullptr;
+    const auto differences = HaProjectMaterialDifferences::compare(
+        {{profile.at("name")}, {"#FFFFFF"}, {profile}}, {row},
+        {{profile_roll, profile_source, "printer"}}, profile_source, "printer");
+    REQUIRE(differences.size() == 1);
+    CHECK(differences[0].before == differences[0].after);
+    CHECK(differences[0].before_profile_sha256.empty());
+    CHECK_FALSE(differences[0].after_profile_sha256.empty());
 }
 
 TEST_CASE("A roll used with conflicting same-name material settings cannot be uploaded", "[HaMaterialProfileSync]")

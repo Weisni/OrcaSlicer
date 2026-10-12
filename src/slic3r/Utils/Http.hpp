@@ -100,6 +100,8 @@ public:
 
 	// Sets a maximum connection timeout in seconds
 	Http& timeout_connect(long timeout);
+    // Opt in to a thread-safe DNS cache shared across requests.
+    Http& share_dns_cache();
     // Sets a maximum total request timeout in seconds
     Http& timeout_max(long timeout);
     // Opt out when a credential must stay on the exact reviewed endpoint.

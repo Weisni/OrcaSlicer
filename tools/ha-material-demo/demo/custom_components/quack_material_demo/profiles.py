@@ -82,6 +82,48 @@ def validate_profile(value):
     return value
 
 
+def persist_profile_content(db, value):
+    """Seal content in the association writer's transaction, without committing."""
+    validate_profile(value)
+    db.execute('CREATE TABLE IF NOT EXISTS material_profile_contents('
+               'sha256 TEXT PRIMARY KEY,payload TEXT NOT NULL)')
+    payload = _canonical(value)
+    prior = db.execute('SELECT payload FROM material_profile_contents WHERE sha256=?', (value['sha256'],)).fetchone()
+    if prior is not None and _canonical(validate_profile(json.loads(prior['payload']))) != payload:
+        raise ValueError('Immutable material profile content contradicts its digest')
+    db.execute('INSERT OR IGNORE INTO material_profile_contents VALUES (?,?)', (value['sha256'], payload))
+
+
+def backfill_profile_contents(db):
+    db.execute('CREATE TABLE IF NOT EXISTS material_profile_contents('
+               'sha256 TEXT PRIMARY KEY,payload TEXT NOT NULL)')
+    for table in ('material_profiles', 'material_profile_variants'):
+        for row in db.execute('SELECT payload FROM ' + table):
+            persist_profile_content(db, json.loads(row['payload']))
+
+
+def published_profiles(db):
+    """All current associations/variants, including summaries filtered off rolls."""
+    profiles = {}
+    for table in ('material_profiles', 'material_profile_variants'):
+        for row in db.execute('SELECT payload FROM ' + table):
+            value = json.loads(row['payload'])
+            profiles[value['sha256']] = profile_summary(value)
+    return [profiles[key] for key in sorted(profiles)]
+
+
+def read_profile_content(db, sha256):
+    from .store import Conflict
+    _sha(sha256)
+    row = db.execute('SELECT payload FROM material_profile_contents WHERE sha256=?', (sha256,)).fetchone()
+    if row is None:
+        raise Conflict('HA immutable material profile is unavailable')
+    value = validate_profile(json.loads(row['payload']))
+    if value['sha256'] != sha256:
+        raise ValueError('Stored material profile digest is inconsistent')
+    return value
+
+
 def apply_profile_change(db, ident, change, native):
     """Join the caller's roll/receipt transaction; never commit independently."""
     from .store import Conflict
@@ -107,6 +149,7 @@ def apply_profile_change(db, ident, change, native):
     before = json.loads(prior['payload'])['sha256'] if prior else None
     if before != expected:
         raise Conflict('HA material profile changed; refresh before synchronizing')
+    persist_profile_content(db, profile)
     if context is not None:
         db.execute('INSERT INTO material_profile_variants VALUES (?,?,?) ON CONFLICT(spool_uuid,context_key) DO UPDATE SET payload=excluded.payload',
                    (ident, context, _canonical(profile)))

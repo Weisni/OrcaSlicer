@@ -87,7 +87,10 @@ inline std::vector<Difference> compare(const HaProjectMaterialSync::Project &pro
                             break;
                         }
                     }
-                    if (difference.problem.empty() && difference.before_profile_sha256 == difference.after_profile_sha256)
+                    if (difference.problem.empty() &&
+                        (difference.before_profile_sha256 == difference.after_profile_sha256 ||
+                         (difference.before_profile_sha256.empty() &&
+                          HaMaterialProfile::digest(row.assignment.material_profile) == difference.after_profile_sha256)))
                         continue;
                     // A legacy HA association has no settings yet. Offer the
                     // complete profile explicitly, even when its name matches.
@@ -154,7 +157,7 @@ inline std::vector<HaProjectRollPublish::RollPublish> selected_rolls(const std::
         if (normalize(difference.before) != normalize(baseline))
             throw std::runtime_error("The HA profile or color changed; refresh the comparison");
         if (profile && !difference.after_profile_sha256.empty() &&
-            difference.before_profile_sha256 != HaMaterialProfile::digest(row.assignment.material_profile))
+            difference.before_profile_sha256 != HaMaterialProfile::digest(HaMaterialSource::variant_profile(row.assignment)))
             throw std::runtime_error("The HA material settings changed; refresh the comparison");
         if (profile) HaProjectRollPublish::require_text(difference.after, 256);
         const auto after = normalize(difference.after);

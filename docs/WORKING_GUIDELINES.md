@@ -46,7 +46,44 @@ Consider them before every command, together with the applicable `AGENTS.md`.
 
 Source: user instructions and the root `AGENTS.md`, recorded 2026-09-24.
 
+- HA owns committed filament/material profiles and associations. Keep temporary
+  local setting adjustments possible without project saves or HA writes.
+  Background synchronization must preserve those overrides; publish effective
+  settings only through explicit Project-to-HA publication. Initial HA profile
+  association uploads the saved baseline and retains unsaved adjustments locally.
+- Use generation/revision checks and stable-key deltas for HA reads. Preserve
+  the last complete cache on failure; existing online print checks still apply.
+- Preserve the original human-readable material profile name in HA preset
+  lists, selected filament labels and editors. Hashes are internal identities;
+  restoring display metadata must not discard unsaved material settings.
+- Provide name filtering in the HA profile chooser. Verify standard-3MF Replace
+  mapping with the supplied input while keeping the original file unchanged.
+- The user permits closing the currently running HA test application without
+  saving its project when replacing the test runtime.
+
 - For the requested 2.5.21 release, merge the scoped HA callback repair through
   reviewed, passing cross-platform CI; publish only artifacts matching the final
   main commit. Preserve unrelated arrangement work and user profiles. Physical
   print dispatch and the nozzle-match indicator remain separate validation.
+
+- Keep one loading window across a direct HA material selection. Preserve
+  cancellation and defer unrelated UI callbacks during network waits.
+- Editing or saving an HA material for one project filament must not
+  change another filament, including when both share cached settings.
+  Keep temporary edits local and propose readable, available save names.
+
+- Keep Project-to-HA publication in one stable loading window through refresh,
+  upload, response verification and profile activation. Do not re-enable or
+  reactivate parent windows between its network requests. Hide/release loading
+  only when a real user decision is required or the sequence has finished.
+
+- Prepare the accumulated HA/profile/import changes as a new-version release
+  PR (2.5.22 after published 2.5.21). Preserve unrelated arrangement work,
+  record incomplete live acceptance, and leave merge/publication for a separate
+  authorized step.
+
+- For PR #21 release acceptance, inspect CI at the final revision, repair
+  failures and repeat actual live HA profile uploads with timing evidence.
+  Preserve unrelated rolls/physical slots and discard the test project changes.
+  CI completion and live acceptance precede declaring 2.5.22 release-ready;
+  merge, tags and release publication require their separately authorized step.

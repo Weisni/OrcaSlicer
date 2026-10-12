@@ -81,12 +81,15 @@ public:
         auto *change_layout = new wxBoxSizer(wxVERTICAL);
         for (const auto &difference : m_differences) {
             const auto &assignment = m_rows.at(difference.source_index).assignment;
-            const auto field = difference.field == HaProjectMaterialDifferences::Field::Profile ? _L("Profile") : _L("Color");
+            const bool missing_profile = difference.field == HaProjectMaterialDifferences::Field::Profile &&
+                difference.before_profile_sha256.empty() && !difference.after_profile_sha256.empty();
+            const auto field = difference.field == HaProjectMaterialDifferences::Field::Profile ?
+                (missing_profile ? _L("Save full HA profile") : _L("Profile")) : _L("Color");
             const auto location = assignment.slot.empty() ? _L("Inventory") : from_u8(assignment.slot);
             auto *check = new wxCheckBox(changes, wxID_ANY,
                 wxString::Format(_L("Filament %d"), int(difference.project_index + 1)) + " / " + location + " / " +
                 from_u8(assignment.product) + " - " + field);
-            check->SetValue(difference.problem.empty());
+            check->SetValue(difference.problem.empty() && !missing_profile);
             check->Enable(difference.problem.empty());
             check->SetToolTip(from_u8(assignment.spool_uuid));
             change_layout->Add(check, 0, wxEXPAND | wxTOP, FromDIP(8));
@@ -97,7 +100,7 @@ public:
             change_layout->Add(values, 0, wxEXPAND | wxLEFT | wxTOP | wxBOTTOM, FromDIP(7));
             if (difference.field == HaProjectMaterialDifferences::Field::Profile && !difference.after_profile_sha256.empty()) {
                 auto *settings = new wxStaticText(changes, wxID_ANY, difference.before_profile_sha256.empty()
-                    ? _L("The complete material settings will be stored in Home Assistant.")
+                    ? _L("No complete material profile is saved in Home Assistant for this roll and nozzle configuration. Saving creates it; matching profile names alone do not confirm matching settings.")
                     : _L("Material settings differ. The complete project profile will replace the HA profile for this roll and nozzle configuration."));
                 settings->Wrap(FromDIP(650));
                 change_layout->Add(settings, 0, wxEXPAND | wxLEFT | wxBOTTOM, FromDIP(7));
@@ -136,7 +139,7 @@ public:
         options->Add(new wxStaticText(this, wxID_ANY, _L("Synchronize:")), 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(8));
         options->Add(scope); layout->Add(options, 0, wxALL, FromDIP(20));
         auto *note = new wxStaticText(this, wxID_ANY,
-            _L("Choose slots and project filaments. Local profile overrides stay in the project until you send them to Home Assistant."));
+            _L("Choose slots and project filaments. Temporary local material edits are preserved without saving a project or sending them to Home Assistant."));
         note->Wrap(FromDIP(680)); layout->Add(note, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(20));
         auto *buttons = new wxBoxSizer(wxHORIZONTAL);
         auto *apply = new Button(this, _L("Synchronize now")); apply->SetStyle(ButtonStyle::Confirm, ButtonType::Window);
@@ -154,7 +157,7 @@ public:
             uploads->Show(sending);
             note->SetLabel(sending ?
                 _L("Selected profiles include their current material settings, including project edits. Stock and slot assignments stay unchanged.") :
-                _L("Choose slots and project filaments. Local profile overrides stay in the project until you send them to Home Assistant."));
+                _L("Choose slots and project filaments. Temporary local material edits are preserved without saving a project or sending them to Home Assistant."));
             note->Wrap(FromDIP(690));
             update_apply();
             Layout(); Fit(); CentreOnParent();
@@ -167,12 +170,17 @@ public:
         apply->Bind(wxEVT_BUTTON, [this, upload, scope, load, save](wxCommandEvent &) {
             try {
                 if (upload->GetValue()) {
-                    std::vector<bool> checked;
-                    for (const auto *check : m_difference_checks) checked.push_back(check->IsEnabled() && check->GetValue());
-                    const auto published = m_pending_transfer ? std::vector<HaProjectRollPublish::RollPublish>{} :
-                        HaProjectMaterialDifferences::selected_rolls(m_differences, checked, m_rows);
-                    if (published.empty() && !m_pending_transfer) throw std::runtime_error("Select at least one profile or color change");
-                    m_changed = save(published, m_project, m_rows);
+                    {
+                        // Review refresh, publication, read-back and activation
+                        // belong to one visible operation, not separate requests.
+                        HaNetworkOperation::Sequence loading(this);
+                        std::vector<bool> checked;
+                        for (const auto *check : m_difference_checks) checked.push_back(check->IsEnabled() && check->GetValue());
+                        const auto published = m_pending_transfer ? std::vector<HaProjectRollPublish::RollPublish>{} :
+                            HaProjectMaterialDifferences::selected_rolls(m_differences, checked, m_rows);
+                        if (published.empty() && !m_pending_transfer) throw std::runtime_error("Select at least one profile or color change");
+                        m_changed = save(published, m_project, m_rows);
+                    } // Close loading before ending its modal owner.
                     if (m_changed) EndModal(wxID_OK);
                     return;
                 }

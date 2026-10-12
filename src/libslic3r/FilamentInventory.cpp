@@ -1,4 +1,5 @@
 #include "FilamentInventory.hpp"
+#include "HaInventoryTransport.hpp"
 
 #include <sqlite3.h>
 #include "nlohmann/json.hpp"
@@ -3686,7 +3687,7 @@ std::string Store::ha_demo_sync_state() const {
 }
 void Store::save_ha_demo_sync_state(const std::string &sync_state) {
     auto state=nlohmann::json::parse(sync_state);
-    if(!state.is_object() || sync_state.size()>1024*1024) throw Error(ErrorCode::validation,"Invalid HA sync acknowledgement");
+    if(!state.is_object() || sync_state.size()>5*1024*1024) throw Error(ErrorCode::validation,"Invalid HA sync acknowledgement");
     std::lock_guard<std::mutex> lock(m_impl->mutex);
     Transaction transaction(m_impl->db);
     exec_sql(m_impl->db,"CREATE TABLE IF NOT EXISTS ha_demo_sync_state(id INTEGER PRIMARY KEY CHECK(id=1),payload TEXT NOT NULL)");
@@ -3703,25 +3704,43 @@ void Store::import_ha_demo_bundle(const std::string &payload, const std::string 
 }
 void Store::import_ha_bundle_impl(const std::string &payload, const std::string &sync_state, bool authoritative) {
     const size_t maximum_bytes = authoritative ? ha_authority_max_bytes : 1024 * 1024;
-    if(payload.size()>maximum_bytes || sync_state.size()>ha_authority_max_bytes+1024*1024)
+    if(payload.size()>maximum_bytes || sync_state.size()>ha_authority_max_bytes+5*1024*1024)
         throw Error(ErrorCode::validation,authoritative?"HA inventory exceeds the supported 64 MiB budget":"Demo mirror exceeds 1 MiB");
     const auto root=nlohmann::json::parse(payload);
     if(root.at("schema_version")!=schema_version || root.at("tables").size()!=ha_demo_tables.size())
         throw Error(ErrorCode::validation,"Demo mirror schema mismatch");
+    if(authoritative) HaInventoryTransport::validate_bundle(root);
     std::lock_guard<std::mutex> lock(m_impl->mutex);
     Transaction transaction(m_impl->db);
     // Deferred FK checks allow the entire graph to be replaced atomically.
     auto selected_state=sync_state.empty()?nlohmann::json():nlohmann::json::parse(sync_state);
     if(authoritative && (!selected_state.is_object() || !selected_state.value("explicit_sync",false)))
         throw Error(ErrorCode::validation,"An authoritative import requires its reviewed local baseline");
+    const auto current = authoritative ? export_demo_unlocked(m_impl->db) : nlohmann::json();
     if(selected_state.is_object() && selected_state.value("explicit_sync",false)) {
-        if(!selected_state.contains("_expected_local") || selected_state.at("_expected_local")!=export_demo_unlocked(m_impl->db))
+        if(!selected_state.contains("_expected_local") || selected_state.at("_expected_local")!=(authoritative ? current : export_demo_unlocked(m_impl->db)))
             throw Error(ErrorCode::conflict,"Local inventory changed during HA review; all local edits and job history were retained");
         selected_state.erase("_expected_local");
     }
     exec_sql(m_impl->db,"PRAGMA defer_foreign_keys=ON");
-    for(auto i=ha_demo_tables.rbegin();i!=ha_demo_tables.rend();++i)
-        exec_sql(m_impl->db,("DELETE FROM "+*i).c_str());
+    for(auto i=ha_demo_tables.rbegin();i!=ha_demo_tables.rend();++i) {
+        if(!authoritative) { exec_sql(m_impl->db,("DELETE FROM "+*i).c_str()); continue; }
+        const auto next = HaInventoryTransport::index(*i, root.at("tables").at(*i));
+        for(const auto &row : current.at("tables").at(*i)) {
+            if(next.count(HaInventoryTransport::row_key(*i,row))) continue;
+            const auto keys = HaInventoryTransport::identity_fields(*i);
+            std::string where;
+            for(const auto &key : keys) { if(!where.empty()) where += " AND "; where += key + "=?"; }
+            auto query = demo_query(m_impl->db,"DELETE FROM " + *i + " WHERE " + where);
+            int parameter = 1;
+            for(const auto &key : keys) {
+                const auto &value = row.at(key);
+                if(value.is_number_integer()) sqlite3_bind_int64(query.get(),parameter++,value.get<std::int64_t>());
+                else { const auto text = value.get<std::string>(); sqlite3_bind_text(query.get(),parameter++,text.c_str(),-1,SQLITE_TRANSIENT); }
+            }
+            if(sqlite3_step(query.get())!=SQLITE_DONE) throw Error(ErrorCode::validation,sqlite3_errmsg(m_impl->db));
+        }
+    }
     size_t total_rows = 0;
     for(const auto &table:ha_demo_tables) {
         const auto &rows=root.at("tables").at(table);
@@ -3734,21 +3753,41 @@ void Store::import_ha_bundle_impl(const std::string &payload, const std::string 
         auto info=demo_query(m_impl->db,"PRAGMA table_info("+table+")");
         while(sqlite3_step(info.get())==SQLITE_ROW)
             columns.emplace(reinterpret_cast<const char *>(sqlite3_column_text(info.get(),1)));
+        const auto previous = authoritative ? HaInventoryTransport::index(table,current.at("tables").at(table)) : std::map<std::string,const nlohmann::json *>();
         for(const auto &row:rows) {
             if(!row.is_object() || row.empty()) throw Error(ErrorCode::validation,"Invalid demo row");
             if(authoritative && row.dump().size()>256*1024) throw Error(ErrorCode::validation,"HA inventory row exceeds the supported size");
+            if(authoritative) {
+                const auto old = previous.find(HaInventoryTransport::row_key(table,row));
+                if(old != previous.end() && *old->second == row) continue;
+            }
             std::string names,parameters;
             for(auto i=row.begin();i!=row.end();++i) {
                 if(!columns.count(i.key())) throw Error(ErrorCode::validation,"Unknown demo column");
                 if(!names.empty()){names+=",";parameters+=",";}
                 names+=i.key(); parameters+="?";
             }
-            auto query=demo_query(m_impl->db,"INSERT INTO "+table+" ("+names+") VALUES ("+parameters+")");
+            std::string sql="INSERT INTO "+table+" ("+names+") VALUES ("+parameters+")";
+            if(authoritative) {
+                const auto keys = HaInventoryTransport::identity_fields(table);
+                std::string conflict,updates;
+                for(const auto &key : keys) { if(!conflict.empty()) conflict+=","; conflict+=key; }
+                for(auto i=row.begin();i!=row.end();++i) if(std::find(keys.begin(),keys.end(),i.key())==keys.end()) {
+                    if(!updates.empty()) updates+=",";
+                    updates+=i.key()+"=excluded."+i.key();
+                }
+                sql+=" ON CONFLICT ("+conflict+") "+(updates.empty()?"DO NOTHING":"DO UPDATE SET "+updates);
+            }
+            auto query=demo_query(m_impl->db,sql);
             int index=1;
             for(auto i=row.begin();i!=row.end();++i,++index) {
                 int rc=SQLITE_MISUSE;
                 if(i->is_null()) rc=sqlite3_bind_null(query.get(),index);
-                else if(i->is_string()) {const auto value=i->get<std::string>();rc=sqlite3_bind_text(query.get(),index,value.c_str(),-1,SQLITE_TRANSIENT);}
+                else if(i->is_string()) {
+                    const auto value=i->get<std::string>();
+                    if(value.find('\0') != std::string::npos) throw Error(ErrorCode::validation,"Invalid HA column text");
+                    rc=sqlite3_bind_text(query.get(),index,value.c_str(),-1,SQLITE_TRANSIENT);
+                }
                 else if(i->is_number_integer()) rc=sqlite3_bind_int64(query.get(),index,i->get<std::int64_t>());
                 else if(i->is_number_float()) rc=sqlite3_bind_double(query.get(),index,i->get<double>());
                 if(rc!=SQLITE_OK) throw Error(ErrorCode::validation,"Invalid demo column value");
@@ -3758,6 +3797,11 @@ void Store::import_ha_bundle_impl(const std::string &payload, const std::string 
     }
     auto check=demo_query(m_impl->db,"PRAGMA foreign_key_check");
     if(sqlite3_step(check.get())!=SQLITE_DONE) throw Error(ErrorCode::validation,"Invalid demo graph references");
+    // Cascading deletes can remove a supplied child without violating SQLite's
+    // final foreign keys. Verify that the committed graph is exactly the one HA
+    // supplied, including complete row fields, before publishing its revision.
+    if(authoritative && HaInventoryTransport::canonical_bundle(export_demo_unlocked(m_impl->db)) != HaInventoryTransport::canonical_bundle(root))
+        throw Error(ErrorCode::validation,"HA inventory graph changed during import");
     auto stock=demo_query(m_impl->db,"SELECT s.id FROM spools s WHERE COALESCE((SELECT SUM(delta_mg) FROM stock_events e WHERE e.spool_id=s.id),0)<COALESCE((SELECT SUM(a.estimated_weight_mg) FROM allocations a JOIN print_jobs j ON j.id=a.job_id WHERE a.spool_id=s.id AND j.state IN ('reserved','printing','needs_review')),0)");
     if(sqlite3_step(stock.get())!=SQLITE_DONE) throw Error(ErrorCode::conflict,"Demo reservations exceed stock");
     if(!sync_state.empty()) {

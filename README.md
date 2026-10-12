@@ -74,6 +74,44 @@ separate maintainers and release channels.
 
 ## Development progress and open tasks
 
+### HA incremental synchronization (implementation checkout)
+
+HA owns committed material profiles and roll associations. Generation/revision
+checks skip unchanged inventories; stable-key row deltas update only changed
+SQLite rows. Immutable profile contents are cached persistently by digest and
+preloaded in a background worker. Equal effective settings reuse one managed
+profile regardless of roll or display label.
+
+Local unsaved material adjustments remain editable. Background refresh preserves
+them; selecting a new HA base retains the changed settings over that base.
+Initial profile association uploads the saved baseline first and adopts only
+the acknowledged HA profile. Temporary edits remain local; explicit
+Project-to-HA publication includes them. Ordinary edits do not save a project.
+
+- [x] Implement authenticated incremental reads, immutable content and legacy API fallback.
+- [x] Preserve atomic import, receipts, conflict checks and temporary local overrides.
+- [x] Verify focused native contracts, profile integration and the component suite.
+- [x] Compile the changed GUI translation units and independently review the flow.
+- [x] Correct saved-profile identity checks and unchanged base-profile comparisons;
+  verify 310 assertions in 31 native profile/binding tests.
+- [x] Label missing full profiles as optional initial storage, unchecked by default.
+- [x] Build the isolated Windows test runtime and verify loading its new DLL.
+- [x] Add profile-name search and preserve shared temporary settings when a single
+  project filament switches to its saved HA profile; preflight before one batch upload.
+- [x] Include the standard-3MF object-default correction in the runtime core and
+  verify all 45 objects in the Whinny Pooh Ears input, including a replaced palette.
+- [ ] Validate the isolated Windows runtime for the profile comparison correction.
+- [ ] Verify rendered selection, offline restart and refresh with no connected printer.
+- [ ] Run complete cross-platform release builds before installation/publication.
+
+Synthetic 1,000-customer data transferred about 1.09 MB through 16 legacy
+requests; one changed row used about 4 KB in one request and an unchanged read
+used 123 bytes. These measure local transfer volume, not live HA latency.
+See [HA materials](docs/HOME_ASSISTANT_MATERIALS.md) and the
+[implementation record](docs/superpowers/plans/2026-10-09-ha-incremental-sync.md).
+The [native 3MF verification](docs/STANDARD_3MF_NATIVE_IMPORT_VERIFICATION.md)
+records the input, mapping and annotation-reset regressions.
+
 ### QuackSlicer 2.5.21
 
 Main-thread job callbacks now deliver failures to the job finalizer through
@@ -268,3 +306,65 @@ The repository contains work inherited from OrcaSlicer and its upstream
 projects as well as QuackSlicer-specific changes. Existing copyright, license,
 and third-party attribution notices remain applicable to their respective
 components.
+
+### HA material editing follow-up (2026-10-10)
+
+- Investigated per-request loading-window flicker and internal hashes in Save preset.
+- Identified broad preset replacement and a shared edit buffer as causes of cross-filament changes.
+- Completed: one loading window, readable unique save names/editor labels, and isolated per-filament HA edits in project memory.
+- Verified: scoped Windows runtime rebuild; 1,727 assertions in 131 cases; 27 native network/UI checks, including callback deferral during dialog destruction.
+- Live acceptance: ELEGOO black/SUNLU blue local edits and Save as affect only the selected filament. A2/A3/A2 spool switches restore the correct names and material values; unchanged profiles produce an empty Project-to-HA comparison.
+- Database revision 6811 and all ten table hashes remain unchanged after the direct-EXE live tests. Material completion observations were 1.46-2.73 seconds including native automation/screenshot overhead.
+- Remaining coverage: macOS/Linux, additional DPI/languages, and project save/reopen with HA profile caches absent. The earlier grouped 3MF import acceptance was not repeated in this material-editing follow-up.
+
+### HA profile upload DNS repair (2026-10-10)
+
+- Reproduced the SUNLU A1 profile-choice failure before its upload: Windows
+  name resolution occasionally exceeded the eight-second connection deadline.
+- HA requests now share a thread-safe DNS cache, allow bounded cold resolution,
+  and report the concrete transport error while preserving uncertain writes.
+- Local DNS regression failed before the fix and passed afterward. Live reads
+  measured 11-12 seconds cold, then 0.24-0.28 seconds with DNS reuse.
+- Direct-EXE live acceptance: SUNLU PLA Matte @System was published for A1,
+  HA revision 6823 to 6824. All other rolls and physical slots remained unchanged.
+- A1/A3/A1 switching restored correct profile names, settings, and colors with
+  no synchronization errors. Completion snapshots: 2.23 seconds for profile
+  publication and 0.91/0.94 seconds for switching, including automation overhead.
+- A1 and A3 produced no Project-to-HA differences. The existing Filament 2
+  PETG roll genuinely lacks a complete HA profile for this nozzle context;
+  its unchecked save offer and its project binding were preserved.
+- Verified: 1,727 assertions in 131 cases, two configured CTest targets, and
+  27 native network/UI checks. The application remains open with A1 selected.
+- Remaining: cross-platform runtime and release validation; the grouped
+  3MF and local-edit acceptance were not repeated in this DNS follow-up.
+
+### HA upload loading-window continuity (2026-10-11)
+
+- Project-to-HA upload now groups review refresh, publication, read-back and
+  profile activation in one loading sequence. Nested publication reuses it.
+- Parent windows remain disabled between requests for the whole visible
+  sequence; genuine user-choice dialogs release the parent safely.
+- Native regression reproduced premature parent re-enabling before the fix.
+  Afterward, 29 native checks passed, including exactly one show/hide across
+  three requests, parent lifetime, paint, cancellation and callback deferral.
+- Both configured HA CTest targets passed. Scoped Windows runtime build and
+  direct-EXE live upload acceptance are recorded in the local diagnostics.
+- Remaining: macOS/Linux runtime and release acceptance; this follow-up does
+  not repeat grouped 3MF or per-filament Save-as tests.
+
+### QuackSlicer 2.5.22 release preparation (2026-10-11)
+
+- Prepared the accumulated HA/profile/import fixes against current main and
+  incremented the source version to 2.5.22.
+- Scope, upgrade compatibility and open release gates are documented in
+  [release preparation](docs/RELEASE_PREPARATION_2.5.22.md).
+- Direct-EXE live tests confirmed profile upload, readable names and empty
+  comparisons after publication; unrelated rolls and physical slots were
+  unchanged. Windows focus restoration now has 34 passing native checks.
+  Final live focus verification and clean CI on the final revision remain
+  release gates. See the PR verification results before publication.
+
+- Release-preparation checks: 258 HA Python tests, bundled browser tests,
+  focused native contract/DNS/transport/inventory/profile suites, 34 loading
+  checks and 10 name-search checks passed. Independent review identified and
+  corrected internal cache/project presets in the saved-template chooser.

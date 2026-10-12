@@ -7,6 +7,7 @@
 #include "nlohmann/json.hpp"
 #include "GUI_App.hpp"
 #include "HaInventoryCredentials.hpp"
+#include "HaNetworkOperation.hpp"
 #include "FilamentInventoryService.hpp"
 #include "slic3r/Utils/Http.hpp"
 #include "libslic3r/PresetBundle.hpp"
@@ -19,24 +20,38 @@ public:
     HaInventoryRequestError(unsigned code,const std::string &message):std::runtime_error(message),status(code){}
 };
 inline bool ha_inventory_demo_enabled() { return wxGetApp().app_config->get("ha_material_demo_enabled")=="1" || wxGetApp().app_config->get("ha_material_provider_enabled")=="1"; }
-inline nlohmann::json ha_inventory_request_raw(const std::string &endpoint, const nlohmann::json *payload = nullptr,
-                                              size_t maximum_bytes = 1024 * 1024) {
-    std::string response; unsigned status=0;
-    auto http=payload ? Http::post(endpoint) : Http::get(endpoint);
-    const auto token = ha_inventory_token(endpoint);
+// Worker callers capture credentials on the GUI thread before scheduling work.
+inline nlohmann::json ha_inventory_request_raw_with_token(const std::string &endpoint, const std::string &token,
+                                              const nlohmann::json *payload = nullptr, size_t maximum_bytes = 1024 * 1024) {
+    const auto body = payload ? payload->dump() : std::string();
+    const bool posting = payload != nullptr;
+    return HaNetworkOperation::run([endpoint, token, body, posting, maximum_bytes](const std::function<bool()>& canceled) {
+    std::string response, transport_error; unsigned status=0;
+    auto http=posting ? Http::post(endpoint) : Http::get(endpoint);
     if (!token.empty()) http.header("Authorization", "Bearer " + token);
-    if(payload) http.header("Content-Type","application/json").set_post_body(payload->dump());
-    // Local HA names may need several seconds for the first Windows DNS/mDNS lookup.
-    // Keep connection and whole-request deadlines bounded without rejecting that lookup.
-    http.tls_verify(true).follow_redirects(false).timeout_connect(8).timeout_max(15).size_limit(maximum_bytes)
+    if(posting) http.header("Content-Type","application/json").set_post_body(body);
+    // Windows DNS/mDNS can take about eleven seconds on multiple interfaces.
+    // Reuse successful resolutions and allow the cold lookup on the worker;
+    // the bounded request remains cancellable through the loading dialog.
+    http.share_dns_cache().tls_verify(true).follow_redirects(false).timeout_connect(15).timeout_max(20).size_limit(maximum_bytes)
+        .on_progress([&](Http::Progress, bool& cancel) { cancel = canceled(); })
         .on_complete([&](std::string body,unsigned code){response=std::move(body);status=code;})
-        .on_error([&](std::string body,std::string,unsigned code){response=std::move(body);status=code;}).perform_sync();
+        .on_error([&](std::string body,std::string error,unsigned code){response=std::move(body);transport_error=std::move(error);status=code;}).perform_sync();
     if(status!=200) {
-        std::string detail="Could not confirm the HA response. Pending changes remain available for reconciliation.";
-        try { auto body=nlohmann::json::parse(response); detail=body.value("error",detail); } catch(...){}
+        std::string detail = status == 0 ? "Could not connect to Home Assistant" :
+            "Home Assistant returned HTTP " + std::to_string(status);
+        if (!transport_error.empty()) detail += ": " + transport_error;
+        try { auto body=nlohmann::json::parse(response); detail += ": " + body.at("error").get<std::string>(); } catch(...){}
+        if (posting) detail += ". If the write was sent, retry its saved request to reconcile the outcome.";
         throw HaInventoryRequestError(status,detail);
     }
     return nlohmann::json::parse(response);
+    });
+}
+
+inline nlohmann::json ha_inventory_request_raw(const std::string &endpoint, const nlohmann::json *payload = nullptr,
+                                              size_t maximum_bytes = 1024 * 1024) {
+    return ha_inventory_request_raw_with_token(endpoint, ha_inventory_token(endpoint), payload, maximum_bytes);
 }
 
 inline void validate_ha_material_snapshot(const nlohmann::json &snapshot) {

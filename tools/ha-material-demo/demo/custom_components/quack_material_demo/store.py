@@ -3,6 +3,7 @@ import json
 import sqlite3
 import uuid
 import time
+from collections import OrderedDict
 from threading import RLock
 from contextlib import contextmanager, nullcontext
 from datetime import datetime, timezone
@@ -40,6 +41,13 @@ class Store(Lifecycle, NativeBridge, Pilot, ExplicitSync, Provider):
         # their own snapshot so staged changes cannot observe a cached old graph.
         self._native_page_lock = RLock()
         self._native_page_cache = None
+        # History belongs to this running component. Restart/restore therefore
+        # invalidates old cursors even if the database revision is reused.
+        self._sync_generation = str(uuid.uuid4())
+        self._sync_lock = RLock()
+        self._sync_history = OrderedDict()
+        self._sync_history_bytes = 0
+        self._sync_revision = -1
         self.path = str(path)
         Path(path).parent.mkdir(parents=True, exist_ok=True)
         with self.connection() as db:
@@ -68,6 +76,8 @@ class Store(Lifecycle, NativeBridge, Pilot, ExplicitSync, Provider):
                     context_key TEXT NOT NULL, payload TEXT NOT NULL, PRIMARY KEY(spool_uuid,context_key));
             ''')
             db.execute('BEGIN IMMEDIATE')
+            from .profiles import backfill_profile_contents
+            backfill_profile_contents(db)
             for slot in SLOTS:
                 db.execute('INSERT OR IGNORE INTO slots VALUES (?, NULL, 0)', (slot,))
             validate_deactivation(db, self.active_slots)

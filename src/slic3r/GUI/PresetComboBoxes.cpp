@@ -45,6 +45,7 @@
 #include "ParamsDialog.hpp"
 #include "FilamentPickerDialog.hpp"
 #include "HaMaterialProvider.hpp"
+#include "libslic3r/HaMaterialEditSlot.hpp"
 #include "wxExtensions.hpp"
 
 #include "DeviceCore/DevManager.h"
@@ -832,6 +833,7 @@ PlaterPresetComboBox::PlaterPresetComboBox(wxWindow *parent, Preset::Type preset
     GetDropDown().SetUseContentWidth(true,true);
     const auto refresh_ha = [this]() {
         if (m_type == Preset::TYPE_FILAMENT && HaMaterialProvider::enabled() && !is_drop_down()) {
+            HaMaterialProvider::complete_refresh(*wxGetApp().preset_bundle);
             HaMaterialProvider::refresh_if_due();
             update();
         }
@@ -1025,6 +1027,15 @@ bool PlaterPresetComboBox::switch_to_tab()
     const Preset* selected_filament_preset = nullptr;
     if (m_type == Preset::TYPE_FILAMENT)
     {
+        if (HaMaterialProvider::enabled() && m_filament_idx >= 0) {
+            const auto name = HaMaterialLocalOverride::isolate_edit_slot(*m_preset_bundle, size_t(m_filament_idx));
+            if (HaMaterialProfile::is_managed_project_name(name)) {
+                auto* preset = m_preset_bundle->filaments.find_preset(name, false, true);
+                preset->alias = HaMaterialProvider::display_name(*m_preset_bundle, size_t(m_filament_idx), *preset);
+                auto& edited = m_preset_bundle->filaments.get_edited_preset();
+                if (edited.name == name) edited.alias = preset->alias;
+            }
+        }
         const std::string selected_preset = HaMaterialProvider::enabled() && m_filament_idx >= 0 ?
             m_preset_bundle->filament_presets.at(m_filament_idx) : std::string(GetString(GetSelection()).ToUTF8().data());
         if (!boost::algorithm::starts_with(selected_preset, Preset::suffix_modified()))
@@ -1162,7 +1173,7 @@ void PlaterPresetComboBox::add_ha_rolls(const std::string &selected)
             const auto *preset = HaMaterialProvider::resolve(*m_preset_bundle, a);
             const bool has_remote_profile = !a.material_profile.is_null();
             const auto profile_name = preset ? preset->name : has_remote_profile ?
-                HaMaterialProfile::managed_name(a.material_profile) : std::string();
+                HaMaterialProvider::profile_name(a) : std::string();
             const wxString slot = a.slot.empty() ? _L("Not mounted") : from_u8(a.slot);
             const auto roll_name = a.manufacturer.empty() || boost::icontains(a.product, a.manufacturer) ?
                 a.product : a.manufacturer + " " + a.product;
@@ -1596,7 +1607,10 @@ void PlaterPresetComboBox::update()
                         const auto slot = roll.slot.empty() ? _L("Inventory") : from_u8(roll.slot);
                         // Keep the effective project profile visible, including local
                         // overrides, instead of replacing it with only the physical roll.
-                        const auto project_profile = from_u8(selected_filament_preset->label(true));
+                        const bool locally_edited = selected_filament_preset->is_dirty ||
+                            HaMaterialLocalOverride::has_local_edits(*selected_filament_preset);
+                        const auto project_profile = from_u8((locally_edited ? Preset::suffix_modified() : std::string()) +
+                            HaMaterialProvider::display_name(*m_preset_bundle, size_t(m_filament_idx), *selected_filament_preset));
                         auto compact_profile = project_profile.BeforeFirst('@').Trim();
                         if (compact_profile.IsEmpty()) compact_profile = project_profile;
                         SetTextLabel(compact_profile + " | " + slot + " - " + from_u8(roll.product));
@@ -1783,7 +1797,7 @@ void TabPresetComboBox::OnSelect(wxCommandEvent &evt)
 
 wxString TabPresetComboBox::get_preset_name(const Preset& preset)
 {
-    if (preset.is_from_bundle())
+    if (preset.is_from_bundle() || HaMaterialProfile::is_managed_name(preset.name))
         return from_u8(preset.label(false));
     else
         return from_u8(preset.label(true));
@@ -1899,7 +1913,9 @@ void TabPresetComboBox::update()
     {
         set_label_marker(Append(_L("Project-inside presets"), wxNullBitmap, DD_ITEM_STYLE_SPLIT_ITEM));
         for (std::map<wxString, std::pair<wxBitmap*, bool>>::iterator it = project_embedded_presets.begin(); it != project_embedded_presets.end(); ++it) {
-            int item_id = Append(it->first, *it->second.first);
+            int item_id = Append(HaMaterialProfile::is_managed_project_name(into_u8(it->first)) ?
+                from_u8(preset_aliases[it->first]) : it->first, *it->second.first);
+            SetItemAlias(item_id, it->first);
             SetItemTooltip(item_id, preset_descriptions[it->first]);
             bool is_enabled = it->second.second;
             if (!is_enabled)
@@ -1911,7 +1927,7 @@ void TabPresetComboBox::update()
     {
         set_label_marker(Append(_L("User presets"), wxNullBitmap, DD_ITEM_STYLE_SPLIT_ITEM));
         for (std::map<wxString, std::pair<wxBitmap*, bool>>::iterator it = nonsys_presets.begin(); it != nonsys_presets.end(); ++it) {
-            int item_id = Append(it->first, *it->second.first);
+            int item_id = Append(from_u8(preset_aliases[it->first]), *it->second.first);
             SetItemAlias(item_id, it->first);
             SetItemTooltip(item_id, preset_descriptions[it->first]);
             bool is_enabled = it->second.second;
@@ -2021,7 +2037,9 @@ void TabPresetComboBox::update_dirty()
             continue;
 
         std::string   old_label = GetString(ui_id).utf8_str().data();
-        std::string   preset_name = Preset::remove_suffix_modified(old_label);
+        const auto stored_name = GetItemAlias(ui_id).utf8_string();
+        std::string   preset_name = Preset::remove_suffix_modified(
+            stored_name.empty() ? old_label : stored_name);
         std::string   ph_printer_name;
 
         if (marker == LABEL_ITEM_PHYSICAL_PRINTER) {
@@ -2031,7 +2049,7 @@ void TabPresetComboBox::update_dirty()
 
         Preset* preset = m_collection->find_preset(preset_name, false);
         if (preset) {
-            std::string new_label = preset->label(true);
+            std::string new_label = get_preset_name(*preset).utf8_string();
 
             if (marker == LABEL_ITEM_PHYSICAL_PRINTER)
                 new_label = ph_printer_name + PhysicalPrinter::separator() + new_label;
