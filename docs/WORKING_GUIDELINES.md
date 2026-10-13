@@ -87,3 +87,5 @@ Source: user instructions and the root `AGENTS.md`, recorded 2026-09-24.
   Preserve unrelated rolls/physical slots and discard the test project changes.
   CI completion and live acceptance precede declaring 2.5.22 release-ready;
   merge, tags and release publication require their separately authorized step.
+
+- For the project-load crash fix, preserve the original 3MF and production profiles; verify full GUI import using an isolated application and data directory. Refresh the already imported edited printer preset without reselecting or discarding it. Publish only after required CI passes at the exact reviewed head.

@@ -368,3 +368,9 @@ components.
   focused native contract/DNS/transport/inventory/profile suites, 34 loading
   checks and 10 name-search checks passed. Independent review identified and
   corrected internal cache/project presets in the saved-template chooser.
+
+## QuackSlicer 2.5.23: project-load crash correction
+
+- Fixed the deferred printer-tab refresh after importing a 3MF project.
+- Keep the printer settings already loaded from the project instead of selecting the preset again.
+- Verification and remaining release checks: [project-load crash report](docs/PROJECT_LOAD_CRASH_FIX.md).
