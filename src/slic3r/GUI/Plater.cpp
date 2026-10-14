@@ -8439,7 +8439,10 @@ std::vector<size_t> Plater::priv::load_files(const std::vector<fs::path>& input_
                                     if (wxGetApp().preset_bundle != nullptr && wxGetApp().plater() != nullptr) {
                                         wxGetApp().preset_bundle->physical_printers.unselect_printer();
                                         if (Tab *printer_tab = wxGetApp().get_tab(Preset::TYPE_PRINTER)) {
-                                            printer_tab->select_preset(loaded_project_printer_preset, false, {}, true, true);
+                                            // Import already selected and populated the edited preset. Reselecting
+                                            // it here can open a dirty-preset dialog during a progress update
+                                            // and discard the printer settings that were just loaded.
+                                            printer_tab->update_tab_ui();
                                         }
                                         wxGetApp().plater()->sidebar().update_presets(Preset::TYPE_PRINTER);
                                     }
