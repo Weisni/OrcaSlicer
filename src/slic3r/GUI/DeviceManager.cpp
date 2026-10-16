@@ -1,5 +1,6 @@
 #include "libslic3r/libslic3r.h"
 #include "DeviceManager.hpp"
+#include "Jobs/PrintJobPreheat.hpp"
 #include "libslic3r/Time.hpp"
 #include "libslic3r/Thread.hpp"
 #include "slic3r/Utils/NetworkAgent.hpp"
@@ -2585,6 +2586,8 @@ void MachineObject::reset()
     last_update_time = std::chrono::system_clock::now();
     subscribe_counter = SUBSCRIBE_RETRY_COUNT;
     m_push_count = 0;
+    temperature_push_time_ms.store(0);
+    chamber_door_status_ms.store(0);
     m_full_msg_count = 0;
     is_220V_voltage = false;
     get_version_retry = 0;
@@ -3291,6 +3294,19 @@ int MachineObject::parse_json(std::string tunnel, std::string payload, bool key_
                 if (jj["command"].get<std::string>() == "push_status") {
                     m_push_count++;
                     last_push_time = last_update_time;
+                    if (printer_type == "N7" && jj.contains("stat")) {
+                        const auto door = jj["stat"].is_string() ?
+                            GUI::PrintJobPreheat::p2s_door_open(jj["stat"].get<std::string>()) : std::nullopt;
+                        if (door) {
+                            const auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                std::chrono::steady_clock::now().time_since_epoch()).count();
+                            const auto previous = chamber_door_status_ms.exchange(*door ? -now_ms : now_ms);
+                            if (*door && previous >= 0)
+                                chamber_door_open_count.fetch_add(1);
+                        } else {
+                            chamber_door_status_ms.store(0);
+                        }
+                    }
 #pragma region printing
                     // U0 firmware
                     if (jj.contains("print_type")) {
@@ -3550,6 +3566,9 @@ int MachineObject::parse_json(std::string tunnel, std::string payload, bool key_
                         if (jj.contains("chamber_temper")) {
                             if (jj["chamber_temper"].is_number()) {
                                 chamber_temp = jj["chamber_temper"].get<float>();
+                                if (jj.contains("bed_temper") && jj["bed_temper"].is_number())
+                                    temperature_push_time_ms.store(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                        std::chrono::steady_clock::now().time_since_epoch()).count());
                             }
                         }
                         if (jj.contains("ctt")) {
@@ -5389,6 +5408,9 @@ void MachineObject::parse_new_info(json print)
                 json const &info = ctc["info"];
                 chamber_temp = get_flag_bits(info["temp"].get<int>(), 0, 16);
                 chamber_temp_target  = get_flag_bits(info["temp"].get<int>(), 16, 16);
+                if (device.contains("bed_temp") && device["bed_temp"].is_number())
+                    temperature_push_time_ms.store(std::chrono::duration_cast<std::chrono::milliseconds>(
+                        std::chrono::steady_clock::now().time_since_epoch()).count());
             }
         }
     }

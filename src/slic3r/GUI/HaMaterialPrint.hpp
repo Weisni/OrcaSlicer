@@ -123,13 +123,18 @@ inline std::vector<HaMaterialBinding::Resolved> verify_mapping(const Ticket &tic
     }
     return current;
 }
-inline void before_dispatch(const Ticket &ticket, const std::string &job_uuid, const std::string &print_name)
+inline void before_dispatch(const Ticket &ticket, const std::string &job_uuid, const std::string &print_name,
+    const nlohmann::json &preheat = {}, const std::function<void()> &begin_claim = {})
 {
     nlohmann::json allocations = nlohmann::json::array();
     for (const auto &row : verify_mapping(ticket,job_uuid))
         allocations.push_back({{"filament_index",row.project_index},{"spool_uuid",row.spool_uuid},{"slot",row.slot},{"revision",row.revision}});
-    const auto response = HaInventoryAuthority::provider_job("prepare_print",job_uuid,
-        {{"printer_id",ticket.printer_id},{"print_name",print_name},{"allocations",allocations}});
+    nlohmann::json data = {{"printer_id",ticket.printer_id},{"print_name",print_name},{"allocations",allocations}};
+    if (!preheat.is_null()) data["preheat"] = preheat;
+    // Mark uncertainty only once local mapping validation has succeeded, before
+    // the durable authority request can reach HA or lose its reply.
+    if (begin_claim) begin_claim();
+    const auto response = HaInventoryAuthority::provider_job("prepare_print",job_uuid,data);
     const auto &authorization = response.at("provider_job");
     if (authorization.at("job_uuid") != job_uuid || authorization.at("printer_id") != ticket.printer_id ||
         authorization.at("status") != "prepared")

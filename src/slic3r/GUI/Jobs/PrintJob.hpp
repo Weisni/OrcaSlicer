@@ -4,6 +4,7 @@
 #include <boost/filesystem/path.hpp>
 #include <boost/filesystem/operations.hpp>
 #include "libslic3r/PrintConfig.hpp"
+#include "libslic3r/HaJobPreheat.hpp"
 #include "Job.hpp"
 #include "slic3r/GUI/DeviceCore/DevStorage.h" 
 
@@ -14,6 +15,7 @@ namespace GUI {
 
 class Plater;
 namespace HaMaterialPrint { struct Ticket; }
+namespace HaJobPreheat { class Client; }
 
 #define PRINT_JOB_SENDING_TIMEOUT   25
 
@@ -58,6 +60,10 @@ public:
         std::string job_id;
     };
 
+    // Job-local skip survives a transport fallback, but never a new print job.
+    std::shared_ptr<std::atomic<bool>> m_skip_preheat = std::make_shared<std::atomic<bool>>(false);
+    std::function<void(bool)> m_preheat_state_callback;
+
     PrintPrepareData job_data;
     PlateListData    plate_data;
 
@@ -80,6 +86,9 @@ public:
     std::string m_inventory_job_id;
     std::shared_ptr<HaMaterialPrint::Ticket> m_ha_ticket;
     std::string m_ha_external_job_id;
+    std::shared_ptr<HaJobPreheat::Client> m_ha_preheat;
+    Slic3r::HaJobPreheat::DispatchGuard m_ha_dispatch_guard;
+    bool m_ha_preheat_cancelled = false;
     bool m_ha_prepared = false;
     bool m_ha_outcome_recorded = false;
     InventoryBambuBaseline m_inventory_bambu_baseline;

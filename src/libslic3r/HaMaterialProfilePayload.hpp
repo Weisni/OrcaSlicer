@@ -123,13 +123,34 @@ inline bool is_managed_project_name(const std::string& name)
 {
     constexpr size_t prefix_size = 13; // "HA material ["
     constexpr size_t canonical_size = prefix_size + 65;
+    if (name.size() <= canonical_size || name.compare(0, prefix_size, "HA material [") != 0 ||
+        name[canonical_size - 1] != ']' || !is_sha256(name.substr(prefix_size, 64)))
+        return false;
+
+    size_t cursor = canonical_size;
     const std::string suffix = " [project filament ";
-    const size_t number = canonical_size + suffix.size();
-    return name.size() > number + 1 && name.compare(0, prefix_size, "HA material [") == 0 &&
-        name[canonical_size - 1] == ']' && is_sha256(name.substr(prefix_size, 64)) &&
-        name.compare(canonical_size, suffix.size(), suffix) == 0 && name.back() == ']' &&
-        name[number] >= '1' && name[number] <= '9' &&
-        name.find_first_not_of("0123456789", number) == name.size() - 1;
+    if (name.compare(cursor, suffix.size(), suffix) == 0) {
+        cursor += suffix.size();
+        if (cursor >= name.size() || name[cursor] < '1' || name[cursor] > '9') return false;
+        cursor = name.find_first_not_of("0123456789", cursor);
+        if (cursor == std::string::npos || name[cursor++] != ']') return false;
+        if (cursor == name.size()) return true;
+    }
+
+    // load_external_preset appends "(project.3mf)" or "-N(project.3mf)" when
+    // embedded effective settings differ from the installed cache. These names
+    // already exist in saved projects and still identify the same HA baseline.
+    if (name[cursor] == '-') {
+        ++cursor;
+        if (cursor >= name.size() || name[cursor] < '1' || name[cursor] > '9') return false;
+        cursor = name.find_first_not_of("0123456789", cursor);
+        if (cursor == std::string::npos) return false;
+    }
+    if (name[cursor] != '(' || name.size() <= cursor + 6) return false;
+    const auto extension = name.substr(name.size() - 5);
+    return extension[0] == '.' && extension[1] == '3' &&
+        (extension[2] == 'm' || extension[2] == 'M') &&
+        (extension[3] == 'f' || extension[3] == 'F') && extension[4] == ')';
 }
 inline bool is_managed_name(const std::string& name)
 {

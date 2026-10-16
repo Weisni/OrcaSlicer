@@ -3901,6 +3901,15 @@ void SelectMachineDialog::on_send_print()
     }
 
     m_print_job = std::make_shared<PrintJob>(m_printer_last_select);
+    m_print_job->m_preheat_state_callback = [status = std::weak_ptr<BBLStatusBarPrint>(m_status_bar),
+                                             skip = m_print_job->m_skip_preheat](bool active) {
+        if (auto bar = status.lock()) {
+            if (active)
+                bar->set_preheat_skip_callback([skip] { skip->store(true); });
+            else
+                bar->set_preheat_skip_callback();
+        }
+    };
     m_print_job->m_ha_ticket = ha_ticket;
     m_print_job->m_inventory_bambu_baseline = {
         obj_->print_status,
@@ -4049,7 +4058,27 @@ void SelectMachineDialog::on_send_print()
 
     m_print_job->m_inventory_job_id =
         std::exchange(m_inventory_job_id, std::string());
-    replace_job(*m_worker, m_print_job);
+    replace_job(*m_worker,
+        [job = m_print_job](Job::Ctl &ctl) { job->process(ctl); },
+        [this, token = std::weak_ptr<int>(m_token), job = m_print_job](bool canceled, std::exception_ptr &error) {
+            try {
+                job->finalize(canceled, error);
+            } catch (...) {
+                error = std::current_exception();
+            }
+            if (!error || token.expired())
+                return;
+
+            // Keep the job's reservation/dispatch reconciliation and the worker's
+            // error reporting. Restore the dialog only after finalization returns;
+            // prepare_mode waits for the worker and must not retry a physical job.
+            CallAfter([this, token, job] {
+                if (token.expired() || m_print_job != job || !m_is_in_sending_mode)
+                    return;
+                show_status(PrintDialogStatus::PrintStatusInit);
+                prepare_mode();
+            });
+        });
     BOOST_LOG_TRIVIAL(info) << "print_job: start print job";
 }
 

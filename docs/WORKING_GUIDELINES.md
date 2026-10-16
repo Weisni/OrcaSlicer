@@ -89,3 +89,21 @@ Source: user instructions and the root `AGENTS.md`, recorded 2026-09-24.
   merge, tags and release publication require their separately authorized step.
 
 - For the project-load crash fix, preserve the original 3MF and production profiles; verify full GUI import using an isolated application and data directory. Refresh the already imported edited printer preset without reselecting or discarding it. Publish only after required CI passes at the exact reviewed head.
+
+- The 2026-10-15 passive chamber preheat correction is local preparation only.
+  Preserve the source project, active profiles, live HA and printer state. Scope
+  temperature targets to the materials of the dispatched plate and distinguish
+  local regression/compile validation from physical heating acceptance.
+
+- The 2026-10-15 preheat extension is local preparation only. Preserve Cancel and
+  bed restoration/cooling when skipping the chamber wait. Evaluate recorded
+  temperatures with print status, bed target and airflow mode; do not infer a
+  fixed device limit or physical heat-soak acceptance from a plateau.
+
+- P2S door openings must invalidate plateau evidence even between polls. Require
+  recovery and a fresh complete window. HA-led preheating remains a proposal,
+  without authorization to install or activate a heater controller in this task.
+
+- The user authorized implementing job-bound HA preheat without a queue on 2026-10-15. Stage and install source through SSH, preserve the active print, and defer any required Core restart or heater activation until the printer is safely idle. This supersedes the earlier proposal-only restriction.
+
+- The user explicitly authorized publishing the tested preheat/material recovery version as the next QuackSlicer release on 2026-10-16. Use an exact reviewed head, passing checks and matching main-build artifacts; preserve unrelated primary-checkout changes and do not operate the printer for release validation.

@@ -36,6 +36,8 @@ class BBLStatusBarPrint : public ProgressIndicator
     wxBitmap      m_bitmap_show_error_close;
     wxBitmap      m_bitmap_show_error_open;
     Button *      m_cancelbutton;
+    Button *      m_skip_preheat_button;
+    CancelFn      m_skip_preheat_callback;
     wxStaticText *m_status_text;
     wxPanel*      top_panel;
     wxStaticText *m_stext_percent;
@@ -80,6 +82,7 @@ public:
     bool        is_slice_info_shown();
     bool        update_status(wxString &msg, bool &was_cancel, int percent = -1, bool yield = true);
     void        reset();
+    void        set_preheat_skip_callback(CancelFn callback = CancelFn());
     // Temporary methods to satisfy Perl side
     void show_cancel_button();
     void hide_cancel_button();
