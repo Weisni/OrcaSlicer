@@ -7,7 +7,7 @@ import unittest
 from unittest.mock import patch
 from custom_components.quack_materials.preheat_telemetry import PreheatTelemetry
 
-SERIAL = '22E8BJ620703305'
+SERIAL = 'P2STEST00000001'
 
 
 def full(**changes):

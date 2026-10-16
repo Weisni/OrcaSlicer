@@ -17,12 +17,12 @@ vm.runInNewContext(fs.readFileSync(source,'utf8'),context);
 const calls=[];
 let reply={schema_version:1,enabled:true,preheat:null};
 const hass={user:{is_admin:true},states:{
-  'binary_sensor.p2s_22e8bj620703305_online':{state:'on'},
-  'sensor.p2s_22e8bj620703305_print_status':{state:'finish'},
-  'sensor.p2s_22e8bj620703305_current_stage':{state:'idle'}},
+  'binary_sensor.p2s_p2stest00000001_online':{state:'on'},
+  'sensor.p2s_p2stest00000001_print_status':{state:'finish'},
+  'sensor.p2s_p2stest00000001_current_stage':{state:'idle'}},
   async callApi(method,path,data){calls.push({method,path,data});return reply;}};
 (async()=>{
- const card=new registered();card.setConfig({printer_id:'22E8BJ620703305',compact:true});card.hass=hass;
+ const card=new registered();card.setConfig({printer_id:'P2STEST00000001',compact:true});card.hass=hass;
  card.connectedCallback();await card.refresh();
  assert(calls.every(c=>c.method==='GET'),'Creating and refreshing the card cannot actuate heaters');
  assert.equal(elements.get('#settings').hidden,true,'Compact settings start collapsed');
@@ -113,9 +113,9 @@ const hass={user:{is_admin:true},states:{
  assert.equal(card.canStart(),false,'Backend safety diagnostics may veto otherwise idle UI state');
  reply={schema_version:1,enabled:true,preheat:null};await card.refresh();
  for(const status of ['running','pause','prepare','unknown','unavailable']){
-  hass.states['sensor.p2s_22e8bj620703305_print_status'].state=status;card.hass=hass;assert.equal(card.canStart(),false);
+  hass.states['sensor.p2s_p2stest00000001_print_status'].state=status;card.hass=hass;assert.equal(card.canStart(),false);
  }
- hass.states['sensor.p2s_22e8bj620703305_print_status'].state='finish';hass.user.is_admin=false;card.hass=hass;
+ hass.states['sensor.p2s_p2stest00000001_print_status'].state='finish';hass.user.is_admin=false;card.hass=hass;
  assert.equal(card.canStart(),false,'Only an administrator can start manual heating');
  card.disconnectedCallback();console.log('PASS manual preheat: passive render/GET, explicit confirmation, stable retries, occupancy and permissions');
 })().catch(error=>{console.error(error);process.exitCode=1;});
