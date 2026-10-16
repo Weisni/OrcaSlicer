@@ -1,0 +1,6 @@
+cmake_minimum_required(VERSION 3.20)
+project(PrintJobErrorUiTests LANGUAGES CXX)
+set(CMAKE_CXX_STANDARD 17)
+add_executable(print_job_error_ui_tests "${CMAKE_BINARY_DIR}/print_job_error_ui_tests.cpp")
+enable_testing()
+add_test(NAME PrintJobErrorUi COMMAND print_job_error_ui_tests)

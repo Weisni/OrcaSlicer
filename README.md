@@ -374,3 +374,20 @@ components.
 - Fixed the deferred printer-tab refresh after importing a 3MF project.
 - Keep the printer settings already loaded from the project instead of selecting the preset again.
 - Verification and remaining release checks: [project-load crash report](docs/PROJECT_LOAD_CRASH_FIX.md).
+
+
+## QuackSlicer 2.5.24: HA preheat and project material recovery
+
+This release selects chamber and bed temperatures from the filaments actually
+used by the submitted plate. Home Assistant can own a bounded preheat operation
+for the reserved print attempt, including atomic takeover of manual advance
+warming. Fresh safety/temperature checks remain mandatory before dispatch.
+An already reached chamber target bypasses plateau waiting; otherwise a proven
+plateau can release the chamber wait. Connection recovery never repeats a
+physical print dispatch. Reopened projects retain readable HA material names
+and their existing local material settings. Send errors restore the preparation
+screen while preserving any unresolved reservation or dispatch outcome.
+
+The existing local preheat path remains available for integrations without the
+job-preheat capability. See [release details](docs/releases/2.5.24.md) for setup,
+validation, compatibility and remaining physical acceptance work.

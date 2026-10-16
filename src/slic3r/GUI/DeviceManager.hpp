@@ -280,6 +280,11 @@ public:
     std::chrono::system_clock::time_point   last_update_time;   /* last received print data from machine */
     std::chrono::system_clock::time_point   last_utc_time;   /* last received print data from machine */
     std::chrono::system_clock::time_point   last_keep_alive;    /* last received print data from machine */
+    // Only successfully decoded thermal push-status data refreshes this clock.
+    std::atomic<std::int64_t> temperature_push_time_ms {0};
+    // Positive: closed push timestamp; negative: open; zero: unknown (P2S).
+    std::atomic<std::int64_t> chamber_door_status_ms {0};
+    std::atomic<std::uint64_t> chamber_door_open_count {0};
     std::chrono::system_clock::time_point   last_push_time;     /* last received print push from machine */
     std::chrono::system_clock::time_point   last_request_push;  /* last received print push from machine */
     std::chrono::system_clock::time_point   last_request_start; /* last received print push from machine */

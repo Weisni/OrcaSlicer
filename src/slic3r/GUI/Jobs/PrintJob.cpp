@@ -1,5 +1,7 @@
 #include "slic3r/GUI/HaMaterialPrint.hpp"
+#include "slic3r/GUI/HaJobPreheat.hpp"
 #include "PrintJob.hpp"
+#include "PrintJobPreheat.hpp"
 #include "libslic3r/MTUtils.hpp"
 #include "libslic3r/Model.hpp"
 #include "libslic3r/PresetBundle.hpp"
@@ -71,21 +73,8 @@ struct PassiveChamberPreheatParams
     int chamber_target   = 0;
     int start_bed_temp   = 0;
     int timeout          = 2700;
-    int no_rise_timeout  = 600;
     int poll             = 5;
 };
-
-static int get_max_config_value(const DynamicPrintConfig& config, const std::string& key)
-{
-    const ConfigOptionInts* values = config.option<ConfigOptionInts>(key);
-    if (!values)
-        return 0;
-
-    int max_value = 0;
-    for (int value : values->values)
-        max_value = std::max(max_value, value);
-    return max_value;
-}
 
 static int percent_between(int value, int start, int end)
 {
@@ -96,7 +85,8 @@ static int percent_between(int value, int start, int end)
     return std::clamp(int(std::round(progress)), 0, 100);
 }
 
-static bool wait_for_passive_chamber_preheat(MachineObject* obj, const PassiveChamberPreheatParams& params, OnUpdateStatusFn update_fn, WasCancelledFn cancel_fn)
+static bool wait_for_passive_chamber_preheat(MachineObject* obj, const PassiveChamberPreheatParams& params, OnUpdateStatusFn update_fn, WasCancelledFn cancel_fn,
+    const std::shared_ptr<std::atomic<bool>>& skip, const std::function<void(bool)>& set_active)
 {
     if (!obj || params.chamber_target <= 0 || params.start_bed_temp <= 0)
         return true;
@@ -107,8 +97,7 @@ static bool wait_for_passive_chamber_preheat(MachineObject* obj, const PassiveCh
 
     const int timeout = std::max(0, params.timeout);
     const int poll    = std::max(1, params.poll);
-    const int no_rise_timeout = std::max(0, params.no_rise_timeout);
-    if (obj->chamber_temp >= params.chamber_target)
+    if (skip->load() || obj->chamber_temp >= params.chamber_target)
         return true;
 
     const int preheat_bed_temp = obj->get_bed_temperature_limit();
@@ -121,18 +110,26 @@ static bool wait_for_passive_chamber_preheat(MachineObject* obj, const PassiveCh
                             << ", timeout=" << timeout;
 
     obj->command_set_bed(preheat_bed_temp);
+    ScopeGuard restore_bed([&] { obj->command_set_bed(params.start_bed_temp); });
+    set_active(true);
 
+    const auto started = std::chrono::steady_clock::now();
     int elapsed = 0;
-    int last_rise_elapsed = 0;
-    float highest_chamber_temp = obj->chamber_temp;
+    PrintJobPreheat::PlateauDetector plateau;
     bool reached_target = false;
-    bool stopped_no_rise = false;
+    bool stopped_plateau = false;
+    bool skipped = false;
     while (elapsed < timeout) {
         if (cancel_fn && cancel_fn()) {
-            obj->command_set_bed(params.start_bed_temp);
+            set_active(false);
             return false;
         }
 
+        if (skip->load()) {
+            skipped = true;
+            BOOST_LOG_TRIVIAL(info) << "print_job: passive chamber preheat skipped by user, chamber=" << obj->chamber_temp;
+            break;
+        }
         obj->command_set_bed(preheat_bed_temp);
 
         if (obj->chamber_temp >= params.chamber_target) {
@@ -141,15 +138,21 @@ static bool wait_for_passive_chamber_preheat(MachineObject* obj, const PassiveCh
             break;
         }
 
-        if (obj->chamber_temp > highest_chamber_temp) {
-            highest_chamber_temp = obj->chamber_temp;
-            last_rise_elapsed = elapsed;
-        }
-        else if (no_rise_timeout > 0 && elapsed - last_rise_elapsed >= no_rise_timeout) {
-            BOOST_LOG_TRIVIAL(info) << "print_job: passive chamber preheat stopped because chamber temperature did not rise, chamber="
-                                    << obj->chamber_temp << ", target=" << params.chamber_target
-                                    << ", elapsed=" << elapsed;
-            stopped_no_rise = true;
+        const auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count();
+        const bool bed_ready = obj->GetBed() && obj->GetBed()->GetBedTemp() >= preheat_bed_temp - 2;
+        const bool needs_door = obj->printer_type == "N7";
+        // Reject an open/close transition interleaved with this snapshot.
+        const auto openings_before = obj->chamber_door_open_count.load();
+        const auto door_status_ms = obj->chamber_door_status_ms.load();
+        const auto openings_after = obj->chamber_door_open_count.load();
+        const auto door_open_count = needs_door ? openings_after : 0;
+        const bool ready = PrintJobPreheat::plateau_ready(now_ms, obj->temperature_push_time_ms.load(),
+            bed_ready, needs_door, door_status_ms, openings_before == openings_after);
+        if (plateau.update(elapsed, obj->chamber_temp, ready, door_open_count)) {
+            BOOST_LOG_TRIVIAL(info) << "print_job: passive chamber preheat plateau, chamber=" << obj->chamber_temp
+                                    << ", target=" << params.chamber_target << ", elapsed=" << elapsed;
+            stopped_plateau = true;
             break;
         }
 
@@ -160,10 +163,11 @@ static bool wait_for_passive_chamber_preheat(MachineObject* obj, const PassiveCh
 
         const int sleep_seconds = std::min(poll, timeout - elapsed);
         boost::this_thread::sleep_for(boost::chrono::seconds(sleep_seconds));
-        elapsed += sleep_seconds;
+        elapsed = int(std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - started).count());
     }
 
-    if (!reached_target && !stopped_no_rise) {
+    set_active(false);
+    if (!reached_target && !stopped_plateau && !skipped) {
         BOOST_LOG_TRIVIAL(info) << "print_job: passive chamber preheat timed out, chamber=" << obj->chamber_temp
                                 << ", target=" << params.chamber_target;
     }
@@ -171,6 +175,7 @@ static bool wait_for_passive_chamber_preheat(MachineObject* obj, const PassiveCh
     if (params.start_bed_temp > 0) {
         BOOST_LOG_TRIVIAL(info) << "print_job: passive chamber preheat restore bed target=" << params.start_bed_temp;
         obj->command_set_bed(params.start_bed_temp);
+        restore_bed.reset();
 
         const int cooldown_start_temp = obj->GetBed() ? obj->GetBed()->GetBedTemp() : params.start_bed_temp;
         while (obj->GetBed() && obj->GetBed()->GetBedTemp() > params.start_bed_temp) {
@@ -281,6 +286,14 @@ wxString PrintJob::get_http_error_msg(unsigned int status, std::string body)
 
 void PrintJob::process(Ctl &ctl)
 {
+    // The worker owns cancellation HTTP. An uncertain claim must first be
+    // reconciled through its saved authority receipt, never cancelled/retried.
+    ScopeGuard cancel_preheat([&] {
+        if (ctl.was_canceled() && m_ha_preheat && !m_ha_prepared && !m_ha_dispatch_guard.uncertain()) {
+            try { m_ha_preheat_cancelled = m_ha_preheat->cancel(); }
+            catch (const std::exception& error) { BOOST_LOG_TRIVIAL(error) << "HA preheat cancellation awaits review: " << error.what(); }
+        }
+    });
     if (wxGetApp().app_config->get_bool("ha_material_demo_enabled"))
         throw std::runtime_error("Printer dispatch is disabled in HA material demo mode");
     if (HaMaterialProvider::enabled()) {
@@ -435,13 +448,24 @@ void PrintJob::process(Ctl &ctl)
     params.task_ext_change_assist = this->task_ext_change_assist;
     PassiveChamberPreheatParams passive_chamber_preheat;
     if (m_print_type == "from_normal") {
-        const DynamicPrintConfig preset_full_config = wxGetApp().preset_bundle->full_config();
-        passive_chamber_preheat.chamber_target = get_max_config_value(preset_full_config, "chamber_temperature");
+        ctl.call_on_main_thread([this, curr_plate_idx, &passive_chamber_preheat] {
+            // The UI may display another plate; use the plate selected for this job.
+            PartPlate* plate = m_plater->get_partplate_list().get_plate(curr_plate_idx - 1);
+            if (!plate)
+                return;
+            const auto used_filaments = plate->get_extruders(true);
+            const DynamicPrintConfig config = wxGetApp().preset_bundle->full_config();
+            const auto temperature_for_plate = [&](const std::string& key) {
+                const auto* values = config.option<ConfigOptionInts>(key);
+                return values ? PrintJobPreheat::max_temperature(values->values, used_filaments) : 0;
+            };
+            passive_chamber_preheat.chamber_target = temperature_for_plate("chamber_temperature");
 
-        BedType bed_type = curr_plate ? (plate_data.is_valid ? plate_data.bed_type : curr_plate->get_bed_type(true)) : BedType::btDefault;
-        const std::string bed_temp_key = get_bed_temp_1st_layer_key(bed_type);
-        if (!bed_temp_key.empty())
-            passive_chamber_preheat.start_bed_temp = get_max_config_value(preset_full_config, bed_temp_key);
+            const BedType bed_type = plate_data.is_valid ? plate_data.bed_type : plate->get_bed_type(true);
+            const std::string bed_temp_key = get_bed_temp_1st_layer_key(bed_type);
+            if (!bed_temp_key.empty())
+                passive_chamber_preheat.start_bed_temp = temperature_for_plate(bed_temp_key);
+        }).get();
     }
     // Allow disabling the eMMC print path via AppConfig. Plugin 02.03.00.62's
     // eMMC tunnel code hangs indefinitely at the upload phase with some
@@ -728,26 +752,71 @@ void PrintJob::process(Ctl &ctl)
             return true;
     };
 
+    ctl.call_on_main_thread([&] {
+        if (Slic3r::HaJobPreheat::use_server(bool(m_ha_ticket),HaMaterialProvider::snapshot())) {
+            const bool enabled = wxGetApp().app_config->get_bool("passive_chamber_preheat") &&
+                m_print_type == "from_normal" && passive_chamber_preheat.chamber_target > 0 && passive_chamber_preheat.start_bed_temp > 0;
+            const auto source = m_ha_ticket->source;
+            m_ha_preheat = std::make_shared<HaJobPreheat::Client>(source,ha_inventory_token(source),m_inventory_job_id,m_dev_id,
+                nlohmann::json{{"enabled",enabled},{"chamber_target",passive_chamber_preheat.chamber_target},
+                    {"print_bed_target",passive_chamber_preheat.start_bed_temp},
+                    {"preheat_bed_target",obj ? obj->get_bed_temperature_limit() : 0}});
+        }
+    }).get();
+    const auto set_preheat_active = [this,&ctl](bool active) {
+        if (m_preheat_state_callback)
+            ctl.call_on_main_thread([this,active] { m_preheat_state_callback(active); }).get();
+    };
+    bool server_preheat_ready = false;
+    const auto server_preheat = [&]() {
+        if (server_preheat_ready) return true;
+        set_preheat_active(true);
+        ScopeGuard inactive([&] { set_preheat_active(false); });
+        bool ready = m_ha_preheat->start();
+        while (true) {
+            if (cancel_fn()) return false;
+            if (m_skip_preheat->exchange(false)) ready = m_ha_preheat->skip();
+            if (ready) { server_preheat_ready = true; return true; }
+            update_fn(PrintingStageSending,0,"Home Assistant preheat: " + m_ha_preheat->phase() + " (" + m_ha_preheat->reason() + ")");
+            for (int i=0; i<8 && !cancel_fn() && !m_skip_preheat->load(); ++i)
+                boost::this_thread::sleep_for(boost::chrono::milliseconds(250));
+            if (!cancel_fn()) ready = m_ha_preheat->read();
+        }
+    };
     const auto verify_dispatch_mapping = [&]() {
-        if (m_ha_ticket) ctl.call_on_main_thread([this,&params] {
-            // Provider mode never resends a physical command. Authorize only
-            // after preheating, immediately before its single dispatch attempt.
-            HaMaterialPrint::before_dispatch(*m_ha_ticket,m_inventory_job_id,params.project_name);
-            m_ha_prepared = true;
-        }).get();
+        if (m_ha_ticket) {
+            if (cancel_fn()) throw std::runtime_error("Print dispatch was cancelled");
+            const auto preheat = m_ha_preheat ? m_ha_preheat->claim() : nlohmann::json();
+            try {
+                ctl.call_on_main_thread([this,&params,&preheat] {
+                    HaMaterialPrint::before_dispatch(*m_ha_ticket,m_inventory_job_id,params.project_name,preheat,
+                        [this] { m_ha_dispatch_guard.begin_claim(); });
+                    m_ha_prepared = true;
+                    m_ha_dispatch_guard.confirm_claim();
+                }).get();
+            } catch (const HaInventoryRequestError& error) {
+                // These responses definitively reject this request. Transport
+                // failures and malformed success replies retain uncertainty.
+                if (error.status == 400 || error.status == 409) m_ha_dispatch_guard.reject_claim();
+                throw;
+            }
+            m_ha_dispatch_guard.begin_dispatch();
+        }
     };
     auto passive_preheat_fn = [&]() {
         if (m_ha_ticket) ctl.call_on_main_thread([this] {
             HaMaterialPrint::verify_mapping(*m_ha_ticket,m_inventory_job_id);
         }).get();
+        if (m_ha_preheat) return server_preheat();
         if (wxGetApp().app_config && !wxGetApp().app_config->get_bool("passive_chamber_preheat"))
             return true;
-        return wait_for_passive_chamber_preheat(obj, passive_chamber_preheat, update_fn, cancel_fn);
+        return wait_for_passive_chamber_preheat(obj, passive_chamber_preheat, update_fn, cancel_fn, m_skip_preheat,set_preheat_active);
     };
 
     if (m_print_type == "from_sdcard_view") {
         BOOST_LOG_TRIVIAL(info) << "print_job: try to send with cloud, model is sdcard view";
         ctl.update_status(curr_percent, _u8L("Sending print job through cloud service"));
+        if (m_ha_preheat && !server_preheat()) return;
         verify_dispatch_mapping();
         m_inventory_dispatch_attempted = true;
         result = m_agent->start_sdcard_print(params, update_fn, cancel_fn);
@@ -979,6 +1048,8 @@ void PrintJob::process(Ctl &ctl)
 }
 
 void PrintJob::finalize(bool canceled, std::exception_ptr &eptr) {
+    if (m_preheat_state_callback)
+        m_preheat_state_callback(false);
     try {
         if (eptr)
             std::rethrow_exception(eptr);
@@ -991,6 +1062,16 @@ void PrintJob::finalize(bool canceled, std::exception_ptr &eptr) {
         if (m_ha_prepared && !m_ha_outcome_recorded) {
             try { HaMaterialPrint::dispatch_result(m_inventory_job_id,m_inventory_dispatch_attempted ? "uncertain" : "rejected"); }
             catch (const std::exception &error) { BOOST_LOG_TRIVIAL(error) << "HA dispatch reconciliation pending: " << error.what(); }
+        } else if (m_ha_dispatch_guard.uncertain()) {
+            // No dispatch_result is queued for an unconfirmed prepare: it may
+            // never have committed. Keep the prepare journal and reservation;
+            // recovery can replay only bookkeeping, never a physical print.
+            try { wxGetApp().filament_inventory().store().mark_needs_review(m_inventory_job_id); }
+            catch (const std::exception &error) { BOOST_LOG_TRIVIAL(error) << "HA claim requires review; reservation retained: " << error.what(); }
+        } else if (m_ha_preheat && !m_ha_preheat_cancelled) {
+            // Interrupted warm-up remains a reserved attempt for explicit HA
+            // review/retry. Marking its inventory state here would revoke it.
+            BOOST_LOG_TRIVIAL(warning) << "HA preheat requires review; reservation retained";
         } else if (!m_ha_prepared) {
             try { wxGetApp().filament_inventory().store().discard_job(m_inventory_job_id); }
             catch (const std::exception &error) { BOOST_LOG_TRIVIAL(error) << "HA reservation release pending: " << error.what(); }

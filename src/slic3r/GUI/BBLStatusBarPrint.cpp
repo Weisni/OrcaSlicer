@@ -64,6 +64,19 @@ BBLStatusBarPrint::BBLStatusBarPrint(wxWindow *parent, int id)
             m_cancel_cb_fina();
     });
 
+    m_skip_preheat_button = new Button(top_panel, _L("Skip preheat"));
+    m_skip_preheat_button->SetToolTip(_L("Continue without waiting for the chamber target. Print quality may be affected. The bed returns to the print temperature."));
+    m_skip_preheat_button->SetStyle(ButtonStyle::Regular, ButtonType::Compact);
+    m_skip_preheat_button->SetMinSize(wxSize(m_self->FromDIP(128), m_self->FromDIP(24)));
+    m_skip_preheat_button->SetMaxSize(wxSize(m_self->FromDIP(128), m_self->FromDIP(24)));
+    m_skip_preheat_button->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
+        if (m_skip_preheat_callback) {
+            m_skip_preheat_callback();
+            m_skip_preheat_button->Disable();
+        }
+    });
+    m_skip_preheat_button->Hide();
+
     m_stext_percent = new wxStaticText(top_panel, wxID_ANY, "", wxDefaultPosition, wxDefaultSize, 0);
     m_stext_percent->SetForegroundColour(wxColour(107, 107, 107));
     m_stext_percent->SetFont(::Label::Head_13);
@@ -118,6 +131,7 @@ BBLStatusBarPrint::BBLStatusBarPrint(wxWindow *parent, int id)
     m_sizer_top->Add(m_status_text, 1, wxEXPAND, 0);
     m_sizer_top->Add(0, 0, 1, wxEXPAND, 0);
     m_sizer_top->Add(m_sizer_status_text, 0, wxALIGN_CENTER, 0);
+    m_sizer_top->Add(m_skip_preheat_button, 0, wxALIGN_CENTER | wxLEFT | wxRIGHT, m_self->FromDIP(4));
     m_sizer_top->Add(m_stext_percent, 0, wxEXPAND, 0);
 
     top_panel->SetSizer(m_sizer_top);
@@ -184,6 +198,7 @@ void BBLStatusBarPrint::clear_percent()
 
 void BBLStatusBarPrint::show_error_info(wxString msg, int code, wxString description, wxString extra)
 {
+    set_preheat_skip_callback();
     set_status_text(msg);
     m_prog->Hide();
     m_stext_percent->Hide();
@@ -354,6 +369,8 @@ void BBLStatusBarPrint::set_status_text(const char *txt)
 }
 
 void BBLStatusBarPrint::msw_rescale() {
+    m_skip_preheat_button->SetMinSize(wxSize(m_self->FromDIP(128), m_self->FromDIP(24)));
+    m_skip_preheat_button->SetMaxSize(wxSize(m_self->FromDIP(128), m_self->FromDIP(24)));
     //set_prog_block();
     m_cancelbutton->SetMinSize(wxSize(m_self->FromDIP(56), m_self->FromDIP(24)));
 }
@@ -377,6 +394,7 @@ bool BBLStatusBarPrint::update_status(wxString &msg, bool &was_cancel, int perce
 
 void BBLStatusBarPrint::reset()
 {
+    set_preheat_skip_callback();
     m_link_show_error->Hide();
     m_static_bitmap_show_error->Hide();
     m_prog->Show();
@@ -428,4 +446,20 @@ void BBLStatusBarPrint::enable_cancel_button()
     m_cancelbutton->Enable();
 }
 
+}
+
+void Slic3r::BBLStatusBarPrint::set_preheat_skip_callback(CancelFn callback)
+{
+    if (!m_skip_preheat_callback && !callback)
+        return;
+    m_skip_preheat_callback = std::move(callback);
+    m_skip_preheat_button->Show(bool(m_skip_preheat_callback));
+    m_skip_preheat_button->Enable(bool(m_skip_preheat_callback));
+    // Keep both actions inside SelectMachine's fixed 645 x 32 DIP progress area.
+    const int status_width = m_skip_preheat_callback ? 340 : 400;
+    m_status_text->SetMinSize(wxSize(m_self->FromDIP(status_width), m_self->FromDIP(26)));
+    m_status_text->SetMaxSize(wxSize(m_self->FromDIP(status_width), m_self->FromDIP(26)));
+    top_panel->Layout();
+    m_self->Layout();
+    m_self->GetParent()->Layout();
 }

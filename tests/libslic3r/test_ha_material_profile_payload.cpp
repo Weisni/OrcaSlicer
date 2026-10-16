@@ -78,3 +78,23 @@ TEST_CASE("Identical effective material settings reuse one managed profile regar
     CHECK(digest(first) != digest(second));
     CHECK(managed_name(first) == managed_name(second));
 }
+
+TEST_CASE("Reopened HA material project names retain their managed identity", "[HaMaterialProfilePayload][Regression]")
+{
+    const auto base = managed_name(seal(profile_content()));
+    for (const auto& suffix : {"(Sink+strainer+with+plug.3mf)", "-3(Sink+strainer+with+plug.3mf)",
+             " [project filament 3](Project (copy).3mf)", "(First.3mf)-2(Second.3MF)"}) {
+        const auto name = base + suffix;
+        CAPTURE(name);
+        CHECK(is_managed_project_name(name));
+        CHECK(is_managed_name(name));
+    }
+    CHECK(is_managed_project_name(base + " [project filament 3]"));
+    CHECK_FALSE(is_managed_project_name(base));
+    for (const auto& suffix : {"junk(Project.3mf)", "-0(Project.3mf)", "-3(Project.ini)",
+             " [project filament 0]", " [project filament 3]junk(Project.3mf)", "(Project.3mf)junk"}) {
+        CAPTURE(suffix);
+        CHECK_FALSE(is_managed_name(base + suffix));
+    }
+    CHECK_FALSE(is_managed_name("HA material [" + std::string(64, 'z') + "](Project.3mf)"));
+}

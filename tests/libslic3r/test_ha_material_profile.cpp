@@ -441,3 +441,30 @@ TEST_CASE("HA material assignments retain their profile content identity", "[HaM
     const auto assignment = HaMaterialSource::assignment_from_spool(spool, "A1", 2);
     CHECK(assignment.material_profile == spool.at("material_profile"));
 }
+
+TEST_CASE("Reopened HA material aliases preserve publication metadata and local override detection", "[HaMaterialProfile][Regression]")
+{
+    const auto original = HaMaterialProfile::capture(exact_material());
+    const auto canonical = HaMaterialProfile::managed_name(original);
+    for (const auto& suffix : {"(Sink+strainer+with+plug.3mf)", "-3(Sink+strainer+with+plug.3mf)",
+             " [project filament 3](Project (copy).3mf)"}) {
+        Preset reopened(Preset::TYPE_FILAMENT, canonical + suffix);
+        reopened.config = HaMaterialProfile::decode_config(original);
+        reopened.filament_id = original.at("dependencies").at("filament_id");
+        reopened.is_project_embedded = true;
+        const HaMaterialBinding::Binding binding{profile_roll, profile_source, "printer",
+            "Bambu Lab P2S|0.4|high_flow", canonical, HaMaterialProfile::digest(original)};
+        CAPTURE(reopened.name);
+        CHECK(HaMaterialProfile::capture(reopened, original) == original);
+        CHECK_FALSE(HaMaterialBinding::preserves_override(binding, &reopened));
+        CHECK_FALSE(HaMaterialLocalOverride::has_local_edits(reopened));
+
+        reopened.config.set_key_value("filament_flow_ratio", new ConfigOptionFloats{1.03});
+        const auto changed = HaMaterialProfile::capture(reopened, original);
+        CHECK(changed.at("name") == original.at("name"));
+        CHECK(changed.at("dependencies") == original.at("dependencies"));
+        CHECK(changed.at("settings").at("filament_flow_ratio") == "1.03");
+        CHECK(HaMaterialBinding::preserves_override(binding, &reopened));
+        CHECK(HaMaterialLocalOverride::has_local_edits(reopened));
+    }
+}

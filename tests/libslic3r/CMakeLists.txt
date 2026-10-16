@@ -10,6 +10,7 @@ add_executable(${_TEST_NAME}_tests
     test_bambu_networking.cpp
     test_calib.cpp
     test_camera_playback_request.cpp
+    test_print_job_preheat.cpp
     test_build_path_classifier.cpp
     test_clipper_offset.cpp
     test_clipper_utils.cpp
@@ -23,6 +24,7 @@ add_executable(${_TEST_NAME}_tests
     test_filament_inventory.cpp
     test_filament_inventory_service.cpp
     test_filament_reservation_plan.cpp
+    test_ha_job_preheat.cpp
     test_ha_material_source.cpp
     test_ha_material_binding.cpp
     test_ha_material_refresh.cpp

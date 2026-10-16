@@ -1,0 +1,7 @@
+cmake_minimum_required(VERSION 3.20)
+project(HaPreheatRecoveryTests LANGUAGES CXX)
+set(CMAKE_CXX_STANDARD 17)
+add_executable(ha_preheat_recovery_tests "${CMAKE_BINARY_DIR}/ha_preheat_recovery_tests.cpp")
+target_include_directories(ha_preheat_recovery_tests PRIVATE "${QUACK_ROOT}/src" "${QUACK_ROOT}/deps_src")
+enable_testing()
+add_test(NAME HaPreheatRecovery COMMAND ha_preheat_recovery_tests)
