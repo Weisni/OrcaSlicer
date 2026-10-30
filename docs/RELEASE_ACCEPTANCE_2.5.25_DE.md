@@ -55,6 +55,15 @@ A4/A3-Ausgangskopie `build-test/comparison/a4-a3-mixed-test.3mf` wurde dabei nic
 
 ## Offene Abschlussgates
 
+Der erste vollständige Plattformlauf am Zwischenstand `5d46bc25ca` fand unter
+Linux ARM64 mit Clang 18 zwei `unused-private-field`-Fehler im G-Code-
+PreCoolingInjector. Beide Eingaben werden derzeit bewusst nicht ausgewertet.
+Sie sind gezielt mit `[[maybe_unused]]` markiert, entsprechend dem bestehenden
+Muster in `FanMover.hpp`; globale Warnungen bleiben unverändert. Die echte
+Übersetzungseinheit reproduziert lokal beide Compilerfehler vor der Korrektur
+und besteht danach mit aktivem `-Werror=unused-private-field`. Ein vollständiger
+neuer CI-Lauf am korrigierten Commit ist weiterhin erforderlich.
+
 - [x] Finaler Windows-Release-Build mit allen Korrekturen: 3.090 native
   Registrierungen ohne Fehler, neun Umgebungs-Skips; 51 geänderte
   C++-Dateien bestehen Clang-tidy. Reguläre EXE-/Produktversion ist 2.5.25.
