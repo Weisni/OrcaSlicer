@@ -130,6 +130,9 @@ matrix and final package checks pass.
   fixture, preserving constructors and unique ownership without changing the
   production class ABI. Reproduce the warning, pass the corrected unit and both
   affected cases (18 assertions); Clang-tidy still passes on 62 changed files.
+- [x] Correct read/execute permissions in the extracted Linux AppDir before
+  repacking its preset caches. Preserve executable/data-file distinctions and
+  keep appimagetool's permission checks enabled; workflow and Bash syntax pass.
 - [ ] Pass the complete hosted platform CI and verify the final release assets.
 
 See the [German acceptance report](docs/RELEASE_ACCEPTANCE_2.5.25_DE.md)

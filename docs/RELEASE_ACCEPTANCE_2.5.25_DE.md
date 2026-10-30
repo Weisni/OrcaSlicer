@@ -181,6 +181,24 @@ stattfindet. Clang-tidy besteht weiterhin für 62 geänderte C++-Dateien. Belege
 `owned-preset-collection-build.log`, `owned-preset-collection-tests.log`,
 `release-owned-preset-tidy.log`.
 
+Am Zwischenstand `c932bf319c` kompiliert die Linux-ARM-CI die Anwendung und
+sämtliche nativen Testprogramme einschließlich der korrigierten Preset-Fixture.
+Das erste AppImage wird erstellt und das Testartefakt hochgeladen. Erst das
+erneute Verpacken nach Einfügen der Profil-Caches scheitert: Die Extraktion
+erzeugt private Verzeichnisse mit Modus 0700; das aktualisierte appimagetool
+meldet 403 Rechteprobleme und verweigert das zweite Paket.
+
+Vor diesem Repack erhält ausschließlich das extrahierte `squashfs-root` mit
+`a+rX` allgemeine Lese-/Verzeichnisrechte beziehungsweise Ausführungsrechte für
+bereits ausführbare Dateien. `AppRun` erhält ausdrücklich `a+rx`. Gewöhnliche
+Datendateien werden nicht ausführbar, Schreibrechte werden nicht erweitert und
+die Paketprüfung wird nicht umgangen. Das unabhängige Review sowie actionlint
+für vier Workflows und `bash -n` für den geänderten Block bestehen. Die echte
+Linux-Repack-Abnahme bleibt dem folgenden vollständigen CI-Lauf vorbehalten.
+Belege: `ci-final-c932-linux-aarch64-124316139431.log`,
+`release-appimage-permissions-actionlint.log`,
+`release-appimage-permissions-bash.log`.
+
 - [x] Lokaler Windows-Release-Abnahmesnapshot an `c14cbf0735`: 3.090 native
   Registrierungen ohne Fehler, neun Umgebungs-Skips; 52 geänderte
   C++-Dateien bestehen Clang-tidy. Reguläre EXE-/Produktversion ist 2.5.25.

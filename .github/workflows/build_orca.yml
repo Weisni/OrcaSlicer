@@ -665,6 +665,9 @@ jobs:
           "$appimage" --appimage-extract
           ./scripts/build_preset_cache.sh -b build build/package/resources/profiles squashfs-root/resources/profiles
           appimagetool=$(find build -name "appimagetool.AppImage" | head -1)
+          # Extraction creates private directories; the shipped AppDir must be usable by every user.
+          chmod -R a+rX squashfs-root
+          chmod a+rx squashfs-root/AppRun
           ARCH=$(uname -m) "$appimagetool" --appimage-extract-and-run squashfs-root "$appimage"
           rm -rf squashfs-root
         # Ship the freshly-built validator so slice_check_linux (build_all.yml)
