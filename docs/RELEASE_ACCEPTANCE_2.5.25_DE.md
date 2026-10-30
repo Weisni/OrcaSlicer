@@ -134,6 +134,32 @@ leeren ausgehenden HA-Vergleich ohne Erstprofil-Hinweis. Im tatsächlichen
 Objekt-Kontextmenü heißt Platz 3 „Mixed Filament 3“. Es wurde nichts an HA
 publiziert und kein physischer Auftrag gestartet.
 
+Der wiederholte Vier-Diagnosen-Gesamtlauf besteht anschließend für alle 739
+Einheiten. Die echte Plattform-CI findet danach noch eine zusätzliche C++17-
+Inkompatibilität in der physischen Filamentzuordnung: Ein Lambda erfasst direkt
+das Structured Binding eines Map-Schlüssels. Der Referenz-Initcapture erfasst
+denselben stabilen Schlüssel C++17-konform; der synchrone `find_if`-Aufruf,
+Aggregation und Bestandsvergleich bleiben gleich. Die echte Übersetzungseinheit
+reproduziert den Fehler vor der Korrektur und besteht danach; das unabhängige
+Review bestätigt unveränderte Lebensdauer und Zuordnung.
+
+Der erweiterte lokale Gesamtlauf umfasst ebenfalls alle 739 Einheiten und
+verwendet `-Wall -Werror` mit den bestehenden CI-Ausnahmen. Die GNU-Clang-
+Optionen werden bei clang-cl über `/clang:` weitergereicht; dessen eigene
+`-Wall`-Option hätte stattdessen auch C++98-Kompatibilitätswarnungen aktiviert.
+Die im lokalen LLVM 22 unbekannte enum-constexpr-Demotion entfällt nur lokal.
+731 Einheiten bestehen einschließlich zusätzlich aktivierter C++20-Diagnosen;
+acht Einheiten melden dabei ausschließlich zusätzliche Attribut-/Variadic-Macro-
+Diagnosen aus dieser erweiterten Gruppe. Alle acht bestehen den gezielten
+erneuten Lauf mit dem tatsächlichen CI-Warnumfang ohne diese Zusatzgruppe.
+Die unveränderte TextureToColor-Datei wurde auch in der echten Linux-CI mit
+Clang 18 erfolgreich kompiliert. Es werden weder Upstream-Attribute/Makros noch
+die produktive Warnpolicy geändert. Die reguläre Projektprüfung besteht für
+62 geänderte C++-Dateien. Vollständige Plattform-CI bleibt das Freigabe-Gate.
+Belege: `allocation-cpp17-{red,green}.log`,
+`all-app-clang-final-65e4-summary.log`, `all-app-clang-ci-warnings-summary.log`,
+`all-app-ci-default-followup-summary.log`, `release-cpp17-tidy.log`.
+
 - [x] Lokaler Windows-Release-Abnahmesnapshot an `c14cbf0735`: 3.090 native
   Registrierungen ohne Fehler, neun Umgebungs-Skips; 52 geänderte
   C++-Dateien bestehen Clang-tidy. Reguläre EXE-/Produktversion ist 2.5.25.

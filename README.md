@@ -118,8 +118,13 @@ matrix and final package checks pass.
   127-unit warning check with this diagnostic and pass Clang-tidy on 59 files.
 - [x] Extend the strict warning check to all 739 compiled application translation
   units. Correct the CAD Camera forward declaration and retain two unused CAD
-  edge-body slots with targeted attributes: 738 units pass the sweep and the sole
-  failing unit passes its corrected rerun. Clang-tidy passes on 61 changed files.
+  edge-body slots with targeted attributes; the repeated four-diagnostic sweep
+  passes all 739 units. Clang-tidy passes on 61 changed files.
+- [x] Correct a C++17 structured-binding capture in the physical-spool check,
+  retaining the same synchronous reference and stock calculation. Reproduce the
+  error before the fix, check all 739 units with the broader local CI warning
+  scope and pass Clang-tidy on 62 changed files. Compiler-version-specific
+  extra diagnostics and their unchanged-policy reruns are recorded in the report.
 - [ ] Pass the complete hosted platform CI and verify the final release assets.
 
 See the [German acceptance report](docs/RELEASE_ACCEPTANCE_2.5.25_DE.md)

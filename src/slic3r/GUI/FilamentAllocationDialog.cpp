@@ -294,7 +294,7 @@ public:
         for (const auto &[spool_id, required] : required_by_spool) {
             const auto found = std::find_if(
                 m_spools.begin(), m_spools.end(),
-                [&spool_id](const Spool &spool) { return spool.id == spool_id; });
+                [&spool_id = spool_id](const Spool &spool) { return spool.id == spool_id; });
             if (found != m_spools.end() && found->available_weight_mg < required) {
                 error = wxString::Format(
                     _L("Spool \"%s\" has %s available, but the assigned filaments require %s."),
