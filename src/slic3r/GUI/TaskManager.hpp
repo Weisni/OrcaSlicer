@@ -2,7 +2,7 @@
 #define slic3r_TaskManager_hpp_
 
 #include "DeviceManager.hpp"
-#include "bambu_networking.hpp"
+#include "slic3r/Utils/bambu_networking.hpp"
 #include "slic3r/Utils/NetworkAgent.hpp"
 
 #include <boost/date_time/posix_time/posix_time.hpp>
@@ -46,7 +46,8 @@ public:
     static int g_task_info_id;
     typedef std::function<void(TaskState state, int percent)> StateChangedFn;
 
-    TaskStateInfo(const PrintParams param);
+    TaskStateInfo(const PrintParams param, bool untracked_authorized = false);
+    bool untracked_authorized() const { return m_untracked_authorized; }
 
     TaskStateInfo() {
         task_info_id = ++TaskStateInfo::g_task_info_id;
@@ -126,6 +127,7 @@ private:
     int               m_sending_percent;
     std::string       m_job_id;
     StateChangedFn    m_state_changed_fn;
+    bool m_untracked_authorized { false };
 };
 
 class TaskSettings
@@ -133,6 +135,7 @@ class TaskSettings
 public:
     int sending_interval { 180 };    /* sending a job every 60 seconds */
     int max_sending_at_same_time { 1 };
+    bool untracked_authorized { false };
 };
 
 class TaskGroup

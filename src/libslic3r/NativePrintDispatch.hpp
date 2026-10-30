@@ -8,16 +8,19 @@ namespace Slic3r::NativePrintDispatch {
 struct Mode {
     bool demo;
     bool provider;
+    bool passive_preheat = false;
 };
 
 // Read a fresh, synchronized optional<Mode> at both queue admission and dispatch.
 // Losing the GUI snapshot never authorizes an untracked physical print.
 template<class Snapshot, class Dispatch>
-int run(Snapshot snapshot, Dispatch dispatch)
+int run(Snapshot snapshot, Dispatch dispatch, bool untracked_authorized = false)
 {
+    if (!untracked_authorized)
+        return -1;
     try {
         const auto mode = snapshot();
-        if (!mode || mode->demo || mode->provider)
+        if (!mode || mode->demo || mode->provider || mode->passive_preheat)
             return -1;
     } catch (...) {
         return -1;

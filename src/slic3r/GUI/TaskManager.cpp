@@ -46,7 +46,8 @@ static std::optional<NativePrintDispatch::Mode> native_print_mode_on_main_thread
     if (!config)
         return std::nullopt;
     return NativePrintDispatch::Mode{config->get_bool("ha_material_demo_enabled"),
-                                     config->get_bool("ha_material_provider_enabled")};
+                                     config->get_bool("ha_material_provider_enabled"),
+                                     config->get_bool("passive_chamber_preheat")};
 }
 
 static std::optional<NativePrintDispatch::Mode> fresh_native_print_mode()
@@ -116,12 +117,13 @@ TaskState parse_task_status(int status)
 
 int TaskStateInfo::g_task_info_id = 0;
 
-TaskStateInfo::TaskStateInfo(PrintParams param)
+TaskStateInfo::TaskStateInfo(PrintParams param, bool untracked_authorized)
     : m_state(TaskState::TS_PENDING)
     , m_params(param)
     , m_sending_percent(0)
     , m_state_changed_fn(nullptr)
     , m_cancel(false)
+    , m_untracked_authorized(untracked_authorized)
 {
     task_info_id = ++TaskStateInfo::g_task_info_id;
 
@@ -224,19 +226,19 @@ bool TaskManager::try_detach_agent()
 int TaskManager::start_print(const std::vector<PrintParams>& params, TaskSettings* settings)
 {
     // Refuse before changing queue state; pending tasks recheck at the agent call.
-    if (NativePrintDispatch::run(fresh_native_print_mode, [] { return 0; }) != 0) {
-        BOOST_LOG_TRIVIAL(error) << "task_manager: refusing untracked dispatch in Home Assistant material mode";
+    const TaskSettings effective_settings = settings ? *settings : TaskSettings{};
+    if (NativePrintDispatch::run(fresh_native_print_mode, [] { return 0; }, effective_settings.untracked_authorized) != 0) {
+        BOOST_LOG_TRIVIAL(error) << "task_manager: refusing dispatch without explicit untracked consent or with tracked material/preheat mode";
         return -1;
     }
     BOOST_LOG_TRIVIAL(info) << "task_manager: start_print size = " << params.size();
-    const TaskSettings effective_settings = settings ? *settings : TaskSettings{};
     TaskManager::MaxSendingAtSameTime = effective_settings.max_sending_at_same_time;
     TaskManager::SendingInterval = effective_settings.sending_interval;
     m_map_mutex.lock();
     TaskGroup task_group(effective_settings);
     task_group.tasks.reserve(params.size());
     for (auto it = params.begin(); it != params.end(); it++) {
-        TaskStateInfo* new_item = new TaskStateInfo(*it);
+        TaskStateInfo* new_item = new TaskStateInfo(*it, effective_settings.untracked_authorized);
         task_group.append(new_item);
     }
     m_cache_map.push_back(task_group);
@@ -302,9 +304,9 @@ int TaskManager::schedule(TaskStateInfo* task)
                     return NativePrintDispatch::with_agent(m_agent_lifetime_mutex, m_agent, [&](NetworkAgent &agent) {
                         return agent.start_print(task->get_params(), task->update_status_fn, task->cancel_fn, task->wait_fn);
                     });
-                });
+                }, task->untracked_authorized());
                 if (result == -1)
-                    BOOST_LOG_TRIVIAL(error) << "task_manager: dispatch failed or Home Assistant material mode rejected the pending task";
+                    BOOST_LOG_TRIVIAL(error) << "task_manager: dispatch failed or the current consent/material/preheat policy rejected the pending task";
 #endif
             } catch (const std::exception& ex) {
                 BOOST_LOG_TRIVIAL(error) << "task_manager: start_print threw: " << ex.what();

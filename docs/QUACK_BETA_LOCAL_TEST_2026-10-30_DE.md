@@ -320,3 +320,15 @@ Aktuelle Release-DLL SHA-256:
 3.079 native Registrierungen ohne Fehler (neun Umgebungs-Skips), 80 gezielte
 Fälle mit 1.244 Assertions, clang-tidy für 36 geänderte Dateien sowie Extraktion
 der neuen UI-Texte bestanden. Details im [aktuellen Abnahmenachtrag](HA_BETA_ACCEPTANCE_2026-10-30_DE.md#nachtrag-a4-zuordnung-und-mischungsbezeichnung).
+
+### Nachtrag reguläre 2.5.25 und Mehrdrucker-Absicherung
+
+Die lokale Testanwendung verwendet jetzt die Versionskennung 2.5.25, behält
+aber ihre isolierten Daten- und Credential-Identitäten. Die aktuelle DLL ist
+`30a73e642c02086cb8b289c728b1349459d456e71db0169a4970cd3d4f1e26b0`;
+dies ersetzt die vorherigen Runtime-Hashes. Der native Gesamtlauf besteht mit
+3.090 Registrierungen, null Fehlern und neun Umgebungs-Skips. Alle 51 geänderten
+C++-Dateien bestehen Clang-tidy; die geänderten UI-Texte sind extrahiert.
+Die zusätzliche GUI-Sperre bei passivem Vorheizen ohne HA ist bestätigt.
+Release-CI und finale Pakete bleiben separate Gates; siehe
+[Abschlussprüfung](RELEASE_ACCEPTANCE_2.5.25_DE.md).

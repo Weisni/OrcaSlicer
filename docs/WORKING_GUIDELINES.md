@@ -138,3 +138,7 @@ Source: user instructions and the root `AGENTS.md`, recorded 2026-09-24.
   earlier local-build-only publication restriction. It does not authorize live
   HA installation, physical heating/printing or changing production profiles.
 - The release-channel reply explicitly selects QuackSlicer 2.5.25 as a regular release, superseding the provisional 2.5.25-beta preparation. Keep the Orca Beta source basis explicit in the release notes; final publication still requires the agreed checks.
+- The user explicitly selected a direct fast-forward of remote main after the
+  candidate platform CI passes, rather than a pull request review. This applies
+  only to the current 2.5.25 release task; subsequent main-build and package
+  checks still gate publication. Preserve the dirty primary checkout.

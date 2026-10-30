@@ -14951,10 +14951,11 @@ void Plater::priv::open_machine_select_dialog(int plate_idx, PrintFromType print
 
 void Plater::priv::on_action_send_to_multi_machine(SimpleEvent&)
 {
-    if (wxGetApp().app_config->get_bool("ha_material_demo_enabled") || HaMaterialProvider::enabled()) {
+    if (wxGetApp().app_config->get_bool("ha_material_demo_enabled") || HaMaterialProvider::enabled() ||
+        wxGetApp().app_config->get_bool("passive_chamber_preheat")) {
         MessageDialog dialog(q,
-            _L("Multi-printer dispatch is unavailable while Home Assistant materials are enabled. Use the single-printer print dialog to preserve material reservations and preheating."),
-            _L("Home Assistant materials"), wxOK | wxICON_INFORMATION);
+            _L("Multi-printer dispatch is unavailable while Home Assistant materials or passive chamber preheating are enabled. Use the single-printer print dialog to preserve material reservations and preheating."),
+            _L("Print queue"), wxOK | wxICON_INFORMATION);
         dialog.ShowModal();
         return;
     }

@@ -34,6 +34,17 @@ A4/A3-Ausgangskopie `build-test/comparison/a4-a3-mixed-test.3mf` wurde dabei nic
 - Der native Mehrdrucker-Versand besitzt keine HA-Tickets für Reservierung und
   Preheat. In HA-/Demo-Materialmodus muss der Einzeldrucker-Dialog verwendet
   werden. Die Mehrdrucker-Pfade werden vor dem Versand gesperrt.
+- Die zusätzliche Prüfung fand denselben fehlenden Buchungspfad auch ohne HA:
+  Lokale Reservierung, Auftragszuordnung und passives Vorheizen werden vom
+  nativen Mehrdruckerpfad umgangen. Deshalb ist vor Export eine ausdrückliche
+  Entscheidung für ungetracktes Drucken nötig, standardmäßig „Cancel“.
+  Die Zustimmung wird pro Aufgabe gespeichert und erneut vor dem Versand
+  geprüft. Aktives passives Vorheizen sperrt den Mehrdruckerpfad unabhängig
+  von HA. Gezielte Tests reproduzierten acht Fehler vor der Korrektur und
+  bestehen danach mit 90 Assertions in neun Fällen. Der vollständige Nachlauf
+  besteht mit 3.090 Registrierungen; die erneute CI-Qualifikation bleibt offen.
+  Die GUI-Sperre wurde auch bei ausgeschalteter HA-Anbindung und aktivem
+  passivem Vorheizen vor dem Export bestätigt.
 - Linux-AppImage-Suche und Flatpak-Metadaten verwendeten teilweise den
   Upstream-Namen. D-Bus- und macOS-Bundle-Identitäten sind jetzt Quack-spezifisch;
   die lokale Testanwendung besitzt zusätzlich eine eigene Identität.
@@ -44,16 +55,16 @@ A4/A3-Ausgangskopie `build-test/comparison/a4-a3-mixed-test.3mf` wurde dabei nic
 
 ## Offene Abschlussgates
 
-- [x] Finaler Windows-Release-Build mit allen Korrekturen: 3.088 native
-  Registrierungen ohne Fehler, neun Umgebungs-Skips; 46 geänderte und fünf neue
+- [x] Finaler Windows-Release-Build mit allen Korrekturen: 3.090 native
+  Registrierungen ohne Fehler, neun Umgebungs-Skips; 51 geänderte
   C++-Dateien bestehen Clang-tidy. Reguläre EXE-/Produktversion ist 2.5.25.
 - [x] Aktualisierte lokale Testversion gestartet: A4 auf 1, A3 auf 2 und
   virtuelle 50/50-Mischung auf 3 erhalten. Vorheriger HA-/Düsen-Roundtrip
   bestätigt keine ausstehenden Profil-/Farbänderungen im Ausgangskontext.
 - [x] Mehrdrucker-Sperre im GUI mit credentialfreiem Loopback-Profil bestätigt;
-  Queue-/Dispatch-/Lifetime-Regressionen bestehen mit 69 Assertions in sieben
-  Fällen. Bereits wartende Aufträge werden beim HA-Moduswechsel abgewiesen;
-  unveränderte native Sends bleiben parallel möglich.
+  Queue-/Dispatch-/Lifetime-Regressionen bestehen mit 90 Assertions in neun
+  Fällen. Bereits wartende Aufträge werden beim HA-/Vorheiz-Moduswechsel
+  abgewiesen; ausdrücklich bestätigte ungetrackte Sends bleiben parallel möglich.
 - [ ] Vollständige CI des tatsächlich veröffentlichten Commits auf allen
   unterstützten Plattform-/Architekturlanes.
 - [ ] Endgültige Pakete, eingebettete Versionen und veröffentlichte Prüfsummen
@@ -69,10 +80,12 @@ Der vollständige native Zwischenlauf nach den Lifecycle-Korrekturen bestand
 mit 3.085 Registrierungen und null Fehlern (neun Umgebungs-Skips). Der Benutzer
 wählte anschließend ausdrücklich das reguläre Release 2.5.25. Der finale Build
 mit dieser Versionskennung und den zusätzlichen Desktop-Policytests besteht
-mit 3.088 Registrierungen in 68,18 Sekunden, null Fehlern und neun Skips.
+mit 3.088 Registrierungen in 68,18 Sekunden. Nach der zusätzlichen Absicherung
+des lokalen Mehrdruckerpfads bestehen 3.090 Registrierungen in 76,50 Sekunden,
+null Fehler und neun Skips. Clang-tidy besteht für alle 51 geänderten C++-Dateien.
 
 Aktuelle lokale Test-DLL SHA-256:
-`c59734b9da86a097576a3fc692b3d3cb117b201a2fdc1b536da24b57778832f8`.
+`30a73e642c02086cb8b289c728b1349459d456e71db0169a4970cd3d4f1e26b0`.
 Aktuelle lokale Test-EXE SHA-256:
 `1d81bf0b0ec9f2e78c1bd8fa7f3d1366edddeaed663a13c9e27daec8eec69741`.
 Diese Dateien verwenden weiterhin ausdrücklich die isolierte Identität

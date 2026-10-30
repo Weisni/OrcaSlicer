@@ -1,6 +1,7 @@
 #include "SendMultiMachinePage.hpp"
 #include "TaskManager.hpp"
 #include "I18N.hpp"
+#include <wx/msgdlg.h>
 
 #include "GUI_App.hpp"
 #include "slic3r/Utils/bambu_networking.hpp"
@@ -763,13 +764,20 @@ bool SendMultiMachinePage::get_ams_mapping_result(std::string &mapping_array_str
 void SendMultiMachinePage::on_send(wxCommandEvent& event)
 {
     event.Skip();
-    if (app_config->get_bool("ha_material_demo_enabled") || app_config->get_bool("ha_material_provider_enabled")) {
+    if (app_config->get_bool("ha_material_demo_enabled") || app_config->get_bool("ha_material_provider_enabled") ||
+        app_config->get_bool("passive_chamber_preheat")) {
         MessageDialog dialog(this,
-            _L("Multi-printer dispatch is unavailable while Home Assistant materials are enabled. Use the single-printer print dialog to preserve material reservations and preheating."),
-            _L("Home Assistant materials"), wxOK | wxICON_INFORMATION);
+            _L("Multi-printer dispatch is unavailable while Home Assistant materials or passive chamber preheating are enabled. Use the single-printer print dialog to preserve material reservations and preheating."),
+            _L("Print queue"), wxOK | wxICON_INFORMATION);
         dialog.ShowModal();
         return;
     }
+    wxMessageDialog tracking(this,
+        _L("The multi-printer queue does not reserve or deduct filament, associate prints with customer orders, or record inventory costs. Continue without inventory tracking?"),
+        _L("Filament inventory"), wxYES_NO | wxNO_DEFAULT | wxICON_WARNING);
+    tracking.SetYesNoLabels(_L("Continue without tracking"), _L("Cancel"));
+    if (tracking.ShowModal() != wxID_YES)
+        return;
     BOOST_LOG_TRIVIAL(info) << "SendMultiMachinePage: on_send";
 
     int result = m_plater->send_gcode(m_print_plate_idx, [this](int export_stage, int current, int total, bool& cancel) {
@@ -829,6 +837,7 @@ void SendMultiMachinePage::on_send(wxCommandEvent& event)
 
     if (wxGetApp().getTaskManager()) {
        TaskSettings settings;
+       settings.untracked_authorized = true; // The user explicitly confirmed the tracking opt-out above.
 
        try
        {
@@ -855,7 +864,7 @@ void SendMultiMachinePage::on_send(wxCommandEvent& event)
 
 
            if (wxGetApp().getTaskManager()->start_print(print_params, &settings) != 0) {
-               MessageDialog dialog(this, _L("The print queue rejected this request. Check the Home Assistant material mode before sending again."),
+               MessageDialog dialog(this, _L("The print queue rejected this request. Check the current material and passive preheat settings before sending again."),
                    _L("Print queue"), wxOK | wxICON_WARNING);
                dialog.ShowModal();
                return;

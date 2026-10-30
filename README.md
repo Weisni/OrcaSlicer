@@ -92,11 +92,14 @@ matrix and final package checks pass.
   and the 50/50 mix through a 0.4/0.6/0.4 nozzle roundtrip.
 - [x] Correct platform application identities and strengthen release matrix,
   tag/source and asset-digest checks.
-- [x] Build regular 2.5.25, pass all 3,088 native registrations (nine environment
-  skips), check 46 changed plus five new C++ files with Clang-tidy and restart
+- [x] Build regular 2.5.25, pass all 3,090 native registrations (nine environment
+  skips), check 51 changed C++ files with Clang-tidy and restart
   the updated local runtime with A4/A3 and the virtual mix intact.
 - [x] Verify HA multi-printer rejection in the isolated GUI and queue/dispatch
   policy tests, retaining parallel native sends when HA is off.
+- [x] Requalify the additional local multi-printer tracking opt-out: default to
+  cancellation, retain per-task consent and reject passive preheat before dispatch.
+  Pass 90 policy assertions and confirm the passive-preheat GUI rejection.
 - [ ] Pass the complete hosted platform CI and verify the final release assets.
 
 See the [German acceptance report](docs/RELEASE_ACCEPTANCE_2.5.25_DE.md)

@@ -280,3 +280,14 @@ Aktuell ausgelieferte und im GUI gestartete `runtime/OrcaSlicer.dll`:
 Diese Angabe ersetzt die früheren Runtime-Hashes. Starter und Testprofil bleiben
 unverändert. Live-HA wurde ausschließlich gelesen; es gab keinen Upload,
 keine Bestandsänderung und keinen Druck-/Heizauftrag.
+
+### Nachtrag Release-Qualifikation 2.5.25
+
+Die später aktualisierte isolierte Test-DLL besitzt SHA-256
+`30a73e642c02086cb8b289c728b1349459d456e71db0169a4970cd3d4f1e26b0`.
+Dies ersetzt die vorherigen Runtime-Hashes. 3.090 native Registrierungen ohne
+Fehler (neun Umgebungs-Skips), 90 Queue-/Dispatch-Assertions und Clang-tidy
+für 51 geänderte C++-Dateien sind bestanden. Die GUI-Sperre des Mehrdruckerpfads
+bei passivem Vorheizen wurde unabhängig vom HA-Modus bestätigt.
+Aktueller Umfang und offene Release-Gates stehen in der
+[Abschlussprüfung](RELEASE_ACCEPTANCE_2.5.25_DE.md).

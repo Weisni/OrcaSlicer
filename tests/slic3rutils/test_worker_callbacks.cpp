@@ -3,6 +3,8 @@
 
 #include "slic3r/GUI/Jobs/BoostThreadWorker.hpp"
 #include "libslic3r/NativePrintDispatch.hpp"
+#include "slic3r/GUI/TaskManager.hpp"
+#include "slic3r/Utils/bambu_networking.hpp"
 #include <functional>
 #include <optional>
 #include <stdexcept>
@@ -74,22 +76,22 @@ TEST_CASE("Nonstandard main-thread failure remains available to the job", "[Work
     CHECK_FALSE(rejected->continued);
 }
 
-TEST_CASE("A queued native print rechecks HA mode before invoking the agent", "[Worker][NativePrintDispatch][Regression]")
+TEST_CASE("A queued native print rechecks HA and passive preheat before invoking the agent", "[Worker][NativePrintDispatch][Regression]")
 {
     using Slic3r::NativePrintDispatch::Mode;
-    const Mode dispatch_mode = GENERATE(Mode{false, false}, Mode{true, false}, Mode{false, true}, Mode{true, true});
+    const Mode dispatch_mode = GENERATE(Mode{false, false}, Mode{true, false}, Mode{false, true}, Mode{true, true}, Mode{false, false, true});
     const bool unavailable_at_dispatch = GENERATE(false, true);
     std::optional<Mode> mode = Mode{false, false};
     const auto snapshot = [&] { return mode; };
     int agent_calls = 0;
     std::function<int()> queued;
     REQUIRE(Slic3r::NativePrintDispatch::run(snapshot, [&] {
-        queued = [&] { return Slic3r::NativePrintDispatch::run(snapshot, [&] { ++agent_calls; return 17; }); };
+        queued = [&] { return Slic3r::NativePrintDispatch::run(snapshot, [&] { ++agent_calls; return 17; }, true); };
         return 0;
-    }) == 0);
+    }, true) == 0);
     REQUIRE(bool(queued));
     mode = unavailable_at_dispatch ? std::nullopt : std::optional<Mode>(dispatch_mode);
-    const bool blocked = unavailable_at_dispatch || dispatch_mode.demo || dispatch_mode.provider;
+    const bool blocked = unavailable_at_dispatch || dispatch_mode.demo || dispatch_mode.provider || dispatch_mode.passive_preheat;
     CHECK(queued() == (blocked ? -1 : 17));
     CHECK(agent_calls == (blocked ? 0 : 1));
 }
@@ -99,19 +101,19 @@ TEST_CASE("Untracked print admission fails closed when the mode snapshot is unav
     using Slic3r::NativePrintDispatch::Mode;
     int dispatched = 0;
     const auto dispatch = [&] { ++dispatched; return 0; };
-    CHECK(Slic3r::NativePrintDispatch::run([] { return std::optional<Mode>(); }, dispatch) == -1);
+    CHECK(Slic3r::NativePrintDispatch::run([] { return std::optional<Mode>(); }, dispatch, true) == -1);
     CHECK(Slic3r::NativePrintDispatch::run([]() -> std::optional<Mode> {
         throw std::runtime_error("The GUI snapshot is unavailable");
-    }, dispatch) == -1);
+    }, dispatch, true) == -1);
     CHECK(dispatched == 0);
 }
 
-TEST_CASE("HA modes reject a native print before it enters the queue", "[Worker][NativePrintDispatch][Regression]")
+TEST_CASE("HA and passive preheat reject a native print before it enters the queue", "[Worker][NativePrintDispatch][Regression]")
 {
     using Slic3r::NativePrintDispatch::Mode;
-    const Mode mode = GENERATE(Mode{true, false}, Mode{false, true}, Mode{true, true});
+    const Mode mode = GENERATE(Mode{true, false}, Mode{false, true}, Mode{true, true}, Mode{false, false, true});
     int queued = 0;
-    CHECK(Slic3r::NativePrintDispatch::run([&] { return std::optional<Mode>(mode); }, [&] { ++queued; return 0; }) == -1);
+    CHECK(Slic3r::NativePrintDispatch::run([&] { return std::optional<Mode>(mode); }, [&] { ++queued; return 0; }, true) == -1);
     CHECK(queued == 0);
 }
 
@@ -122,8 +124,40 @@ TEST_CASE("A native agent exception is preserved without retrying a dispatch", "
     CHECK_THROWS_AS(Slic3r::NativePrintDispatch::run([] { return std::optional<Mode>(Mode{false, false}); }, [&]() -> int {
         ++calls;
         throw std::runtime_error("The dispatch outcome is uncertain");
-    }), std::runtime_error);
+    }, true), std::runtime_error);
     CHECK(calls == 1);
+}
+
+TEST_CASE("A native print requires explicit untracked consent at admission and dispatch", "[Worker][NativePrintDispatch][Regression]")
+{
+    using Slic3r::NativePrintDispatch::Mode;
+    const auto snapshot = [] { return std::optional<Mode>(Mode{false, false, false}); };
+    int queued = 0, dispatched = 0;
+    CHECK(Slic3r::NativePrintDispatch::run(snapshot, [&] { ++queued; return 0; }) == -1);
+    CHECK(queued == 0);
+    std::function<int()> pending;
+    REQUIRE(Slic3r::NativePrintDispatch::run(snapshot, [&] {
+        pending = [&] { return Slic3r::NativePrintDispatch::run(snapshot, [&] { ++dispatched; return 0; }); };
+        return 0;
+    }, true) == 0);
+    REQUIRE(bool(pending));
+    CHECK(pending() == -1);
+    CHECK(dispatched == 0);
+}
+
+TEST_CASE("Untracked print consent belongs to each queued task and defaults to denied", "[Worker][NativePrintDispatch][Regression]")
+{
+    Slic3r::TaskSettings defaults;
+    CHECK_FALSE(defaults.untracked_authorized);
+    Slic3r::PrintParams params;
+    Slic3r::TaskStateInfo unconfirmed(params);
+    Slic3r::TaskStateInfo confirmed(params, true);
+    Slic3r::TaskStateInfo unrelated(params);
+    CHECK_FALSE(unconfirmed.untracked_authorized());
+    CHECK(confirmed.untracked_authorized());
+    CHECK_FALSE(unrelated.untracked_authorized());
+    const Slic3r::TaskStateInfo retained = confirmed;
+    CHECK(retained.untracked_authorized());
 }
 
 TEST_CASE("Agent reload refuses active sends and concurrent native sends retain their leases", "[Worker][NativePrintDispatch][Regression]")
@@ -136,11 +170,15 @@ TEST_CASE("Agent reload refuses active sends and concurrent native sends retain 
     auto first_ready = first_entered.get_future();
     auto second_ready = second_entered.get_future();
     const auto send = [&](std::promise<void> &entered) {
-        return Slic3r::NativePrintDispatch::with_agent(lifetime, agent, [&](Agent &active) {
-            entered.set_value();
-            released.wait();
-            return active.result;
-        });
+        return Slic3r::NativePrintDispatch::run([] {
+            return std::optional<Slic3r::NativePrintDispatch::Mode>(Slic3r::NativePrintDispatch::Mode{false, false, false});
+        }, [&] {
+            return Slic3r::NativePrintDispatch::with_agent(lifetime, agent, [&](Agent &active) {
+                entered.set_value();
+                released.wait();
+                return active.result;
+            });
+        }, true);
     };
     auto first = std::async(std::launch::async, [&] { return send(first_entered); });
     const bool first_running = first_ready.wait_for(std::chrono::seconds(3)) == std::future_status::ready;
