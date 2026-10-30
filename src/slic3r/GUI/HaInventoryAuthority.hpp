@@ -1,6 +1,7 @@
 #pragma once
 
 #include "HaInventoryDemo.hpp"
+#include "GUI.hpp"
 #include <wx/filefn.h>
 #include <mutex>
 #include <map>

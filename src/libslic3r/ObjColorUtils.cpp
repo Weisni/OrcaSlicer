@@ -6,6 +6,8 @@
 #include <set>
 #include <unordered_map>
 #include <boost/log/trivial.hpp>
+#include <vector>
+#include "Color.hpp"
 
 bool obj_color_deal_algo(std::vector<Slic3r::RGBA> & input_colors,
                          std::vector<Slic3r::RGBA> & cluster_colors_from_algo,

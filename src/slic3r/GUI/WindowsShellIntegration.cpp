@@ -205,6 +205,10 @@ void repair_shortcuts_in(const fs::path &directory, const fs::path &previous_bui
 
 void initialize_process_app_id()
 {
+#ifdef QUACK_LOCAL_TEST
+    SetCurrentProcessExplicitAppUserModelID(L"QuackSlicer.BetaTest");
+    return;
+#endif
     g_executable = boost::dll::program_location();
     g_is_build   = is_cmake_build_executable(g_executable);
     g_app_id     = packaged_app_id();
@@ -218,6 +222,9 @@ void initialize_process_app_id()
 
 void repair_shortcuts()
 {
+#ifdef QUACK_LOCAL_TEST
+    return; // A local trial never repairs production/build shortcuts or registry entries.
+#endif
     if (g_executable.empty())
         initialize_process_app_id();
 
@@ -244,6 +251,9 @@ void repair_shortcuts()
 
 void add_recent_document(const std::wstring &filename)
 {
+#ifdef QUACK_LOCAL_TEST
+    return;
+#endif
     if (filename.empty())
         return;
     if (g_executable.empty())

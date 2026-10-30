@@ -3,11 +3,17 @@
 
 #include "Line.hpp"
 
+#include <cstddef>
 #include <functional>
 #include <utility>
 #include <vector>
 
 struct indexed_triangle_set;
+#include <boost/polygon/polygon.hpp>
+
+#include "Line.hpp"
+#include "Point.hpp"
+#include "libslic3r.h"
 
 namespace Slic3r {
 

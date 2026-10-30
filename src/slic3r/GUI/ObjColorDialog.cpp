@@ -1,3 +1,4 @@
+#include "PartPlate.hpp"
 #include <algorithm>
 #include <sstream>
 //#include "libslic3r/FlushVolCalc.hpp"

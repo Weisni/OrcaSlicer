@@ -1,4 +1,6 @@
 #pragma once
+#include "GUI.hpp"
+#include "wxExtensions.hpp"
 
 #include <functional>
 #include <cmath>

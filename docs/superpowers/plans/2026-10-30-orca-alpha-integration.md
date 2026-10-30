@@ -330,16 +330,26 @@ dialogs; HA `store.py`, `accounting.py`, `consumption.py`, `lifecycle.py`,
   divergence, shared paths, custom features and existing instructions.
 - [x] Create coverage/shared-path ledgers and project agent instructions.
 - [x] Record proposed architecture, task dependencies and acceptance criteria.
-- [ ] Review/approve the design before source implementation.
+- [x] User authorized implementation, Beta target and full available compute.
 - [ ] Execute T0-T9, including stock-Orca comparison trials and replacement decisions.
 - [ ] Select the Quack prerelease version and qualification hardware when needed.
 
-No code has been merged or compiled for this planning task. Timelines cannot be
-estimated responsibly until the isolated merge and dependency build expose actual
-conflicts. Every task should end in a focused reviewed commit and README update;
+The historical planning snapshot above is superseded by the execution record.
+The full Beta tree has now been integrated and built in an isolated Windows worktree.
+See `docs/QUACK_BETA_LOCAL_TEST_2026-10-30_DE.md` for tested behavior and open gates. Every task should end in a focused reviewed commit and README update;
 do not mix unrelated local fixes into the integration to make tests appear green.
 
 
 ## Execution authorization and Beta target
 
 On 2026-10-30 the user authorized implementation and an isolated local test build, then explicitly selected OrcaSlicer 2.5.0 Beta (345efec64c7b95a05ce5cf96df0dde66a158835c, published 2026-10-27). This supersedes the earlier planning-only scope and Alpha implementation target. Historical Alpha audit counts remain labeled snapshots. Keep the Alpha coverage ledger and additionally evaluate the Beta ledger and regenerated shared-path ledger. No production installation, live HA deployment, physical print/heating or release publication is authorized. No custom feature is retired without its comparison and user decision.
+
+## Local execution result
+
+The isolated Beta merge, matching dependency/application build, native tests,
+HA Python/JS checks, gettext catalog compilation and an offline copied-profile
+package are complete. Two independent-review findings were reproduced RED and
+fixed GREEN. Preserve all unresolved custom behavior.
+T0 stock-replacement user decisions and T9 cross-platform/cloud/hardware/full-
+individual-feature qualification remain open; this is a local trial handoff,
+not an assertion that every acceptance checkbox above passed.

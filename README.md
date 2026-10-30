@@ -393,35 +393,33 @@ job-preheat capability. See [release details](docs/releases/2.5.24.md) for setup
 validation, compatibility and remaining physical acceptance work.
 
 
-### OrcaSlicer 2.5.0 Alpha integration planning (2026-10-30)
+### OrcaSlicer 2.5.0 Beta local integration (2026-10-30)
 
-The official Alpha tag was audited against current remote Quack 2.5.24, rather
-than the older dirty primary checkout. The proposed full-tag integration keeps
-all upstream capabilities and explicitly preserves Quack inventory, orders,
-HA profiles/preheat, per-object towers, projected color penetration and waves.
+The full official Beta tag `345efec64c7b95a05ce5cf96df0dde66a158835c` is integrated
+into an isolated branch based on remote Quack 2.5.24. The user selected Beta over
+the originally audited Alpha. The Windows x64 Release build includes CAD and the
+bundled Python/plugin runtime, while preserving Quack inventory/orders/HA,
+Projected and surface-normal paint, Wave Overhangs and per-object towers.
 
-- [x] Pin the Alpha and Quack commits, inspect source/history, and identify 136
-  shared changed paths requiring semantic review.
-- [x] Record all 351 highlighted Alpha entries (646 distinct referenced PRs)
-  with task ownership and evidence fields.
-- [x] Extend root agent instructions while retaining upstream rules.
-- [x] Prepare the [integration design](docs/superpowers/specs/2026-10-30-orca-alpha-integration-design.md)
-  and [implementation plan](docs/superpowers/plans/2026-10-30-orca-alpha-integration.md).
-- [ ] Review the proposed design, refresh upstream/Quack baselines and open PRs.
-- [ ] Compare custom features with stock Orca in T0, preparing reproducible user
-  trials and recording replacement/retention decisions in the
-  [standard comparison matrix](docs/upstream/quack-orca-standard-comparison.md).
-- [ ] Execute T0-T9 in isolation, filling the
-  [feature ledger](docs/upstream/orca-2.5.0-alpha-coverage.csv) and
-  [shared-path ledger](docs/upstream/orca-2.5.0-alpha-shared-paths.csv).
-- [ ] Qualify cross-platform packages, existing/custom workflows, external
-  services and device-specific acceptance before proposing a Quack prerelease.
+- [x] Preserve root [agent instructions](AGENTS.md) and [working guidelines](docs/WORKING_GUIDELINES.md).
+- [x] Resolve the tagged merge and build fresh matching dependencies/application.
+- [x] Run native CTest: 3,044 registered, zero failures, nine environment skips.
+- [x] Run 436 HA tests on bundled Python 3.12.13 and 11 JavaScript UI test files.
+- [x] Compile/check all gettext catalogs; create an isolated offline profile and database copy.
+- [x] Independent review: fix cloud credential namespace and plugin database-access boundaries.
+- [x] Compare a common P2S/PLA CLI slice with official Beta: 4,009 identical movement commands,
+  equal calculated 2.40 g consumption; this is one baseline, not broad equivalence proof.
+- [ ] Complete individual stock-replacement user trials and record the user's decisions.
+- [ ] Qualify every feature interaction, all platform packages, external services and hardware
+  before any release. Unpublished primary-checkout changes remain separate.
 
-Finding: virtual mixed filaments must resolve to physical UUID stock usage,
-including purge/support, while nozzle variants retain HA profile context.
-The Alpha also changes printer agents, the Windows build path, Python and CAD
-dependencies. Planning is complete; source integration and runtime validation
-have not started. Existing unpublished changes and research remain separate.
+Start the local package with `build-test/QuackSlicer-Beta-Test/Start-Quack-Beta-Test.cmd`
+in the integration worktree. It uses `build-test/test-profile`, its own credential
+service, no production installer/associations, and disabled HA/preheat/sync by default.
+The package is a local Windows test build, not a release-qualified installer.
 
-The [German audit report](docs/ORCA_ALPHA_INTEGRATION_REVIEW_2026-10-30.md)
-summarizes the findings, preservation requirements and remaining acceptance.
+See the [German test handoff](docs/QUACK_BETA_LOCAL_TEST_2026-10-30_DE.md),
+[stock-Orca trial guide](docs/ORCA_STANDARD_COMPARISON_TRIALS_DE.md),
+[comparison matrix](docs/upstream/quack-orca-standard-comparison.md),
+[Beta coverage ledger](docs/upstream/orca-2.5.0-beta-coverage.csv) and
+[implementation plan](docs/superpowers/plans/2026-10-30-orca-alpha-integration.md).

@@ -1,3 +1,4 @@
+#include "I18N.hpp"
 #include "FilamentManagerPanel.hpp"
 
 #include <algorithm>
@@ -36,6 +37,7 @@
 #include <wx/wrapsizer.h>
 
 #include "BitmapComboBox.hpp"
+#include "ColorPickerDialog.hpp"
 #include "GUI_App.hpp"
 #include "GUI_Utils.hpp"
 #include "CustomerOrderDialogs.hpp"
@@ -624,10 +626,14 @@ public:
 private:
     void choose_color()
     {
-        wxColourData data;
-        data.SetChooseFull(true);
-        data.SetColour(m_color_value);
-        set_color(show_sys_picker_dialog(this, data).GetColour());
+        const ColorRGBA initial(m_color_value.Red(), m_color_value.Green(), m_color_value.Blue(), static_cast<unsigned char>(255));
+        ColorPickerDialog dialog(this, initial);
+        if (dialog.ShowModal() == wxID_OK && dialog.selection()) {
+            const auto &color = std::get<ColorRGBA>(*dialog.selection());
+            set_color(wxColour(static_cast<unsigned char>(std::lround(color.r() * 255.f)),
+                               static_cast<unsigned char>(std::lround(color.g() * 255.f)),
+                               static_cast<unsigned char>(std::lround(color.b() * 255.f))));
+        }
     }
 
     void set_color_from_hex(const wxString &hex)

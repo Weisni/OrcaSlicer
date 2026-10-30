@@ -1,5 +1,6 @@
 #include <catch2/catch_test_macros.hpp>
 #include "libslic3r/HaCredentialPolicy.hpp"
+#include "libslic3r/CloudCredentialPolicy.hpp"
 
 using namespace Slic3r::HaCredentialPolicy;
 
@@ -61,4 +62,13 @@ TEST_CASE("HA connection persistence checks the actual saved settings including 
     CHECK_FALSE(persisted_connection_matches(saved.substr(0, saved.size() - 1), expected));
     CHECK_FALSE(persisted_connection_matches("{}", expected));
     CHECK(persisted_connection_matches(R"({"app":{"enabled":true}})", {{"enabled", "true"}, {"missing", ""}}));
+}
+
+TEST_CASE("Quack cloud credential stores cannot read or delete Orca sessions", "[CloudCredentialPolicy][Regression]")
+{
+    using Slic3r::CloudCredentialPolicy::service_name;
+    CHECK(std::string(service_name(false)) == "QuackSlicer/Auth");
+    CHECK(std::string(service_name(true)) == "QuackSlicerBetaTest/Auth");
+    CHECK(std::string(service_name(false)) != service_name(true));
+    CHECK(std::string(service_name(false)) != "OrcaSlicer/Auth");
 }

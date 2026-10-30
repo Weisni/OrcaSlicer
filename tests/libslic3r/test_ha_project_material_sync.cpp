@@ -251,14 +251,15 @@ TEST_CASE("Invalid HA project growth preserves the existing bundle", "[HaProject
     bundle.project_config.option<Slic3r::ConfigOptionStrings>("filament_colour_type")->values = {"1"};
     bundle.project_config.option<Slic3r::ConfigOptionFloats>("flush_volumes_matrix")->values = {0.};
     bundle.project_config.option<Slic3r::ConfigOptionFloats>("flush_multiplier")->values = {1.};
+    const size_t oversized_count = size_t(Slic3r::EnforcerBlockerType::ExtruderMax) + 1;
     const auto original = bundle.project_config;
     const auto original_presets = bundle.filament_presets;
     CHECK_THROWS(extend_project(bundle, {{"PLA", "PETG"}, {"#AABBCC"}}));
-    CHECK_THROWS(extend_project(bundle, {std::vector<std::string>(17, "PLA"), std::vector<std::string>(17, "#AABBCC")}));
+    CHECK_THROWS(extend_project(bundle, {std::vector<std::string>(oversized_count, "PLA"), std::vector<std::string>(oversized_count, "#AABBCC")}));
     CHECK(bundle.project_config == original);
     CHECK(bundle.filament_presets == original_presets);
-    bundle.filament_presets.resize(17, original_presets[0]);
-    const Project oversized{bundle.filament_presets, std::vector<std::string>(17, "#AABBCC")};
+    bundle.filament_presets.resize(oversized_count, original_presets[0]);
+    const Project oversized{bundle.filament_presets, std::vector<std::string>(oversized_count, "#AABBCC")};
     CHECK_NOTHROW(extend_project(bundle, oversized));
     CHECK(bundle.filament_presets == oversized.presets);
 }

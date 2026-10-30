@@ -1,6 +1,7 @@
 #pragma once
 
 #include "HaMaterialProvider.hpp"
+#include "DeviceManager.hpp"
 #include "DeviceCore/DevManager.h"
 #include "DeviceCore/DevFilaSystem.h"
 #include "libslic3r/ProjectTask.hpp"
