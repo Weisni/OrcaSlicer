@@ -391,3 +391,37 @@ screen while preserving any unresolved reservation or dispatch outcome.
 The existing local preheat path remains available for integrations without the
 job-preheat capability. See [release details](docs/releases/2.5.24.md) for setup,
 validation, compatibility and remaining physical acceptance work.
+
+
+### OrcaSlicer 2.5.0 Alpha integration planning (2026-10-30)
+
+The official Alpha tag was audited against current remote Quack 2.5.24, rather
+than the older dirty primary checkout. The proposed full-tag integration keeps
+all upstream capabilities and explicitly preserves Quack inventory, orders,
+HA profiles/preheat, per-object towers, projected color penetration and waves.
+
+- [x] Pin the Alpha and Quack commits, inspect source/history, and identify 136
+  shared changed paths requiring semantic review.
+- [x] Record all 351 highlighted Alpha entries (646 distinct referenced PRs)
+  with task ownership and evidence fields.
+- [x] Extend root agent instructions while retaining upstream rules.
+- [x] Prepare the [integration design](docs/superpowers/specs/2026-10-30-orca-alpha-integration-design.md)
+  and [implementation plan](docs/superpowers/plans/2026-10-30-orca-alpha-integration.md).
+- [ ] Review the proposed design, refresh upstream/Quack baselines and open PRs.
+- [ ] Compare custom features with stock Orca in T0, preparing reproducible user
+  trials and recording replacement/retention decisions in the
+  [standard comparison matrix](docs/upstream/quack-orca-standard-comparison.md).
+- [ ] Execute T0-T9 in isolation, filling the
+  [feature ledger](docs/upstream/orca-2.5.0-alpha-coverage.csv) and
+  [shared-path ledger](docs/upstream/orca-2.5.0-alpha-shared-paths.csv).
+- [ ] Qualify cross-platform packages, existing/custom workflows, external
+  services and device-specific acceptance before proposing a Quack prerelease.
+
+Finding: virtual mixed filaments must resolve to physical UUID stock usage,
+including purge/support, while nozzle variants retain HA profile context.
+The Alpha also changes printer agents, the Windows build path, Python and CAD
+dependencies. Planning is complete; source integration and runtime validation
+have not started. Existing unpublished changes and research remain separate.
+
+The [German audit report](docs/ORCA_ALPHA_INTEGRATION_REVIEW_2026-10-30.md)
+summarizes the findings, preservation requirements and remaining acceptance.

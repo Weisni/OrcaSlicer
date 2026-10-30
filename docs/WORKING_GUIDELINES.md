@@ -3,7 +3,8 @@
 These guidelines record user-provided project instructions for later work.
 Consider them before every command, together with the applicable `AGENTS.md`.
 
-- Write software and project documentation in English unless requested otherwise.
+- Write code and Git-facing project documentation in English unless requested otherwise.
+- Write change summaries, conclusions, and diagnostic reports in German.
 - Maintain the root `README.md`, including open tasks, progress, and findings.
 - Record durable working instructions in this file; distinguish proposals in
   implementation plans from accepted project requirements.
@@ -36,74 +37,87 @@ Consider them before every command, together with the applicable `AGENTS.md`.
   and extrusion-volume intersection with the model. Layer/path counts alone
   do not establish correct placement. Preserve source project snapshots and
   recheck the latest saved project when its settings or instances change.
-- For upstream synchronization, review open pull requests first and prioritize
-  official stable OrcaSlicer and Bambu Studio releases over development-branch
-  snapshots. Present interesting development-branch changes for an explicit
-  decision unless they were already approved for the next update.
-- Keep local Windows builds below full machine saturation. Use at most two
-  parallel MSBuild processes for sync and release validation; rely on GitHub
-  Actions for the other supported platforms and publication artifacts.
+- For standard 3MF color-import corrections, preserve the original input file
+  and check object-level filament defaults alongside volume and painted-face
+  assignments. A complete filament list alone does not establish correct mapping.
+- HA material profiles are authoritative saved baselines. Publish a newly
+  associated saved profile before using its HA copy; retain unsaved local
+  material edits until explicitly discarded or synchronized.
+- Show the original human-readable material profile name in HA filament labels
+  and editors. Keep content hashes internal, preserve selection by internal ID,
+  and restore display metadata for already downloaded profiles after restart.
+- For HA performance acceptance, launch the test EXE directly with live data,
+  import the supplied Whinny project with Replace and all parts in one group,
+  check profile identities and empty comparisons after repeated spool changes,
+  and record UI responsiveness separately from network completion time.
+- The 2026-10-10 HA extension deployment and Core restart were explicitly
+  authorized with backups. Verify the active component and its aliases before
+  deployment; preserve newer NFC, payment, consumption and order features.
 
 Source: user instructions and the root `AGENTS.md`, recorded 2026-09-24.
 
-- HA owns committed filament/material profiles and associations. Keep temporary
-  local setting adjustments possible without project saves or HA writes.
-  Background synchronization must preserve those overrides; publish effective
-  settings only through explicit Project-to-HA publication. Initial HA profile
-  association uploads the saved baseline and retains unsaved adjustments locally.
-- Use generation/revision checks and stable-key deltas for HA reads. Preserve
-  the last complete cache on failure; existing online print checks still apply.
-- Preserve the original human-readable material profile name in HA preset
-  lists, selected filament labels and editors. Hashes are internal identities;
-  restoring display metadata must not discard unsaved material settings.
-- Provide name filtering in the HA profile chooser. Verify standard-3MF Replace
-  mapping with the supplied input while keeping the original file unchanged.
-- The user permits closing the currently running HA test application without
-  saving its project when replacing the test runtime.
+- The 2026-10-15 HA recovery authorizes SSH installation and the required Core
+  restart. Keep authenticated SSH access open while needed, compare the active
+  integration with the prepared patch, and back up live files and the database
+  consistently. Preserve newer features, history, profiles and inventory. Never
+  infer zero consumption from an aborted warm-up or start a physical print for
+  this recovery. Diagnose invalid imported values independently of stuck jobs.
 
-- For the requested 2.5.21 release, merge the scoped HA callback repair through
-  reviewed, passing cross-platform CI; publish only artifacts matching the final
-  main commit. Preserve unrelated arrangement work and user profiles. Physical
-  print dispatch and the nozzle-match indicator remain separate validation.
+- For project-load crash fixes, preserve original 3MF files and production profiles, reproduce with a separate data directory, and verify complete GUI import rather than treating a CLI import or waiting version dialog as acceptance. Refresh the imported edited printer preset without reselecting or discarding it.
+- A separate data directory alone does not isolate Windows Credential Manager. A startable local test variant must use its own application identity and credential-service name; preserve production credentials and verify the exact runtime before handing it over.
+- For the explicitly authorized 2026-10-14 crash-fix release and print, use a copy of the Threaded-Divider-V2 project. Put only FitThread and its test TensionNut at the center of a new Cool Plate SuperTack plate. The user confirmed the clean installed plate and 0.4 mm TCHF nozzle. Verify the only black PLA in AMS 2 Pro (expected slot 4) before starting one print on Duck Poop P2S. Publish only the reviewed crash fix after required CI passes at the exact reviewed head; preserve unrelated work. Stop the affected step if hardware, material identity, or access cannot be verified.
 
-- Keep one loading window across a direct HA material selection. Preserve
-  cancellation and defer unrelated UI callbacks during network waits.
-- Editing or saving an HA material for one project filament must not
-  change another filament, including when both share cached settings.
-  Keep temporary edits local and propose readable, available save names.
+- The 2026-10-15 preheat investigation and extension are local preparation only.
+  Preserve Cancel and bed restoration when adding manual chamber-wait skipping.
+  Analyze chamber history together with bed temperatures, print status and air
+  mode; distinguish a measured plateau from a fixed device limit or heat-soak
+  acceptance. Do not heat, start a print or install a new slicer for these checks.
+- A P2S door opening must invalidate plateau evidence, including short open/close
+  events between polls. Require temperature recovery and a new full window before
+  plateau release. HA-controlled preheating is an evaluated alternative, not an
+  instruction to install or activate a heater controller in this task.
+- The requested HA preheat concept must cover cancellation, connection failures,
+  manual operation and recovery actions, Quack crashes, two Quack instances and
+  HA restarts. The user's current print is already running; concept work does
+  not authorize changing that print or deploying a preheat controller.
 
-- Keep Project-to-HA publication in one stable loading window through refresh,
-  upload, response verification and profile activation. Do not re-enable or
-  reactivate parent windows between its network requests. Hide/release loading
-  only when a real user decision is required or the sequence has finished.
+- The later 2026-10-15 implementation request authorizes local job-bound preheat without a queue and implementation/staging in HA. It supersedes concept-only scope. Preserve the running print: no heater commands, printer-mode changes or Core restart affecting it. Verify staged versus active deployment and retain SSH access while needed.
 
-- Prepare the accumulated HA/profile/import changes as a new-version release
-  PR (2.5.22 after published 2.5.21). Preserve unrelated arrangement work,
-  record incomplete live acceptance, and leave merge/publication for a separate
-  authorized step.
+- The user authorized live changes to Duck Poop's Bedienung dashboard section on 2026-10-15: expose temperature/fan controls and manual preheat activation. Preserve existing print guards and unrelated dashboard content, back up first, save through HA's supported editor, and verify the installed export. Do not send heating or print commands as an installation test.
+- The subsequent UI correction keeps Duck Poop's Bedienung compact: show actual/target temperatures with pencil actions, remove individual fan controls, and reveal preheat target inputs only when editing. Preserve the existing print guards and manual-preheat ownership/safety behavior.
+- The subsequent local test-build request authorizes a runnable isolated QuackSlicer build containing the corrected material chamber target and job-bound HA preheat. Prepare copied profiles and separate credential storage, retain production installation/settings/associations, and cap compiler workers at two. Enable the matching HA job-preheat mode only after the runtime is ready and the printer is confirmed idle; never start a physical print or heat as a build test.
+- For the reported manual HA preheat failure, diagnose browser, durable attempt and printer feedback before changing the controller. Preserve user-started attempts and temperatures. Verify the HTTP browser environment explicitly; install a narrow backed-up correction and leave physical heating acceptance to an explicit user start.
+- The later 2026-10-15 preheat correction explicitly keeps heating an existing job with an open door; door openings still invalidate readiness and require recovery plus a fresh plateau window after closing. The user also explicitly chose automatic restoration of the job target after a reported zero bed target; stopping requires cancelling the preheat job. Keep protection enabled, enforce the original expiry, require fresh idle telemetry and a confirmed restored target, and do not revive already terminal attempts.
+- For the subsequent follow-up, manual preheat is advance warming and a matching print must take ownership atomically. Preserve project material selections and repair readable HA names after reopen. HA failures must leave the send dialog recoverable. Use the released 2.5.23 baseline and accurate test-version resources. The user explicitly requested full available PC performance for the rebuild, superseding the earlier two-compiler limit for this task. Preserve the running test session/profile and do not initiate a print.
+- The later deadline correction explicitly permits one automatic additional stabilization allowance of up to 15 minutes when fresh idle telemetry and confirmed heating remain valid. It supersedes the earlier strict original-expiry rule only for this bounded allowance. Never revive terminal attempts or renew manual holds automatically. Door events still invalidate readiness and require recovery plus a fresh window. The user also authorized temporarily stopping manual preheat for installation; verify cancellation, idle status and zero heater targets before the Core restart.
+- An already reached chamber target bypasses chamber plateau waiting. Preserve bed conditioning and all fresh dispatch/safety checks. If target-only readiness loses its target before dispatch, revoke it; do not confuse it with a proven plateau. After closing the door, a fresh temperature still at or above target is sufficient, while lower-temperature plateau release still requires recovery and a new window. Failed pre-restart checks must stop the dependent restart; never issue it unconditionally after a diagnostic tool call.
 
-- For PR #21 release acceptance, inspect CI at the final revision, repair
-  failures and repeat actual live HA profile uploads with timing evidence.
-  Preserve unrelated rolls/physical slots and discard the test project changes.
-  CI completion and live acceptance precede declaring 2.5.22 release-ready;
-  merge, tags and release publication require their separately authorized step.
+- The 2026-10-22 correction authorizes editing the recorded HA print status for
+  every source and state, including physically running prints. Treat this as an
+  audited display correction: preserve the observer link, native stock lifecycle,
+  reservations and existing consumption. Unknown consumption must remain unknown.
+  Keep explicit settlement and consumption review available independently of the
+  display status. Printer-panel Print Again attempts must export complete native
+  job rows, including legacy rows, without rewriting historical values.
 
-- For the project-load crash fix, preserve the original 3MF and production profiles; verify full GUI import using an isolated application and data directory. Refresh the already imported edited printer preset without reselecting or discarding it. Publish only after required CI passes at the exact reviewed head.
 
-- The 2026-10-15 passive chamber preheat correction is local preparation only.
-  Preserve the source project, active profiles, live HA and printer state. Scope
-  temperature targets to the materials of the dispatched plate and distinguish
-  local regression/compile validation from physical heating acceptance.
+## Orca Alpha integration request (2026-10-30)
 
-- The 2026-10-15 preheat extension is local preparation only. Preserve Cancel and
-  bed restoration/cooling when skipping the chamber wait. Evaluate recorded
-  temperatures with print status, bed target and airflow mode; do not infer a
-  fixed device limit or physical heat-soak acceptance from a plateau.
+- Audit the new official Orca Alpha and plan complete availability in Quack,
+  explicitly retaining all user-introduced features. Maintain root
+  `AGENTS.md` with actionable project and integration instructions.
+- This request authorizes audit/planning/documentation. It does not request
+  source integration, builds, HA deployment, physical commands or publication.
+- The full-tag merge is a proposed approach; use the design, T0-T9 plan and
+  coverage/shared-path ledgers together. Refresh the pinned baseline before
+  implementation and preserve unrelated work in every checkout/worktree.
+- Require explicit coverage for virtual mixes versus physical stock,
+  nozzle/HA variants, plugin/agent lifecycle versus accounting/preheat,
+  per-object towers, projected paint, Wave Overhangs and existing fixes.
+- Before porting custom features, assess how far unmodified official Orca's
+  standards can replace them. Prepare reproducible stock-Orca user trials,
+  document full/partial coverage, missing behavior and adapter/plugin needs,
+  and let the user choose adoption or custom-code retirement. Preserve required
+  outcomes and unresolved custom behavior; no removal is implied by planning.
 
-- P2S door openings must invalidate plateau evidence even between polls. Require
-  recovery and a fresh complete window. HA-led preheating remains a proposal,
-  without authorization to install or activate a heater controller in this task.
-
-- The user authorized implementing job-bound HA preheat without a queue on 2026-10-15. Stage and install source through SSH, preserve the active print, and defer any required Core restart or heater activation until the printer is safely idle. This supersedes the earlier proposal-only restriction.
-
-- The user explicitly authorized publishing the tested preheat/material recovery version as the next QuackSlicer release on 2026-10-16. Use an exact reviewed head, passing checks and matching main-build artifacts; preserve unrelated primary-checkout changes and do not operate the printer for release validation.
+- The 2026-10-30 follow-up authorizes executing the integration plan and preparing an isolated local test build. The user selected the newer Orca 2.5.0 Beta. Retain production app/configuration/credentials and all custom behavior pending replacement decisions. This does not authorize production HA deployment, heating, physical sends or publishing.
