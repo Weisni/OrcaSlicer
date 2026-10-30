@@ -116,6 +116,10 @@ matrix and final package checks pass.
 - [x] Make the two existing cut-connector copy assignments explicitly defaulted
   for current Clang, preserving their memberwise semantics. Repeat the complete
   127-unit warning check with this diagnostic and pass Clang-tidy on 59 files.
+- [x] Extend the strict warning check to all 739 compiled application translation
+  units. Correct the CAD Camera forward declaration and retain two unused CAD
+  edge-body slots with targeted attributes: 738 units pass the sweep and the sole
+  failing unit passes its corrected rerun. Clang-tidy passes on 61 changed files.
 - [ ] Pass the complete hosted platform CI and verify the final release assets.
 
 See the [German acceptance report](docs/RELEASE_ACCEPTANCE_2.5.25_DE.md)

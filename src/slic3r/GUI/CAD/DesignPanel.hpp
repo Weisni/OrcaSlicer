@@ -911,7 +911,9 @@ private:
     wxSpinCtrlDouble* m_axis_p1x{nullptr};           wxSpinCtrlDouble* m_axis_p1y{nullptr};           wxSpinCtrlDouble* m_axis_p1z{nullptr};
     wxSpinCtrlDouble* m_axis_p2x{nullptr};           wxSpinCtrlDouble* m_axis_p2y{nullptr};           wxSpinCtrlDouble* m_axis_p2z{nullptr};
     int m_ax_face_body{-1}, m_ax_face{-1};
-    int m_ax_edge_body{-1}, m_ax_edge{-1};
+    // Edge picks use m_ax_face_body; retain the unused slot for class layout.
+    [[maybe_unused]] int m_ax_edge_body{-1};
+    int m_ax_edge{-1};
     AxisPick m_axis_pick{AxisPick::None};
 
     // CoordSys controls (datum coordinate system: point + orthonormal frame).
@@ -922,7 +924,9 @@ private:
     ::Button*         m_cs_pick_edge{nullptr};       wxStaticText* m_cs_edge_lbl{nullptr};
     wxSpinCtrlDouble* m_cs_hx{nullptr};              wxSpinCtrlDouble* m_cs_hy{nullptr};              wxSpinCtrlDouble* m_cs_hz{nullptr};
     int m_cs_face_body{-1}, m_cs_face{-1};
-    int m_cs_edge_body{-1}, m_cs_edge{-1};
+    // Edge picks use m_cs_face_body; retain the unused slot for class layout.
+    [[maybe_unused]] int m_cs_edge_body{-1};
+    int m_cs_edge{-1};
     CoordSysPick m_coordsys_pick{CoordSysPick::None};
 
     // Onshape-style docked value-entry card (Angle/Radius/Diameter/Offset/Fillet).

@@ -111,6 +111,29 @@ Projektprüfung besteht für 59 geänderte C++-Dateien. Belege:
 `release-copy-tidy.log`. Die bestehenden `[CutConnectors]`-Geometrieprüfungen
 werden mit dem nachfolgenden vollständigen Neubau ausgeführt.
 
+Die erweiterte Clang-Prüfung umfasst alle 739 aktuell kompilierten eigenen
+Anwendungs-Übersetzungseinheiten, einschließlich unveränderter Beta-CAD-Dateien.
+Sie behandelt vier konkrete Warnungskategorien als Fehler: unbenutzte private
+Felder und Lambda-Captures, veraltete implizite Copy-Zuweisungen sowie abweichende
+class/struct-Deklarationen. Die CAD-Vorwärtsdeklaration von Camera entspricht
+jetzt dessen tatsächlicher struct-Definition. Im Gesamtlauf bestehen 738 Einheiten;
+die einzige fehlerhafte Einheit meldet zwei unbenutzte CAD-Edge-Body-Felder.
+Gezielte Attribute erhalten deren Layout und Initialwerte; die tatsächlich
+verwendeten Nachbarfelder bleiben unverändert. Der erneute Lauf dieser Einheit
+besteht danach mit denselben vier Fehlerkategorien. Die reguläre Projektprüfung
+besteht für alle 61 geänderten C++-Dateien. Diese Prüfung ist keine Aussage über
+sämtliche anderen Clang-Warnungen. Belege: `all-app-clang-warnings-summary.log`,
+`cad-panel-unused-green.log`, `release-cad-tidy-final.log`.
+
+Der lokale Neubau an `aeba440219` besteht mit 3.090 nativen Registrierungen,
+null Fehlern und neun Umgebungs-Skips einschließlich aller drei bestehenden
+CutConnectors-Geometriefälle. Der erneute CLI-Test entspricht mit 4.009
+Bewegungsbefehlen der offiziellen Beta. Nach normalem Neustart bestätigt die
+GUI erneut A4 auf 1, A3 auf 2, die virtuelle 50/50-Mischung auf 3 sowie einen
+leeren ausgehenden HA-Vergleich ohne Erstprofil-Hinweis. Im tatsächlichen
+Objekt-Kontextmenü heißt Platz 3 „Mixed Filament 3“. Es wurde nichts an HA
+publiziert und kein physischer Auftrag gestartet.
+
 - [x] Lokaler Windows-Release-Abnahmesnapshot an `c14cbf0735`: 3.090 native
   Registrierungen ohne Fehler, neun Umgebungs-Skips; 52 geänderte
   C++-Dateien bestehen Clang-tidy. Reguläre EXE-/Produktversion ist 2.5.25.
