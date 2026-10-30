@@ -37,8 +37,12 @@ endif ()
 
 message(STATUS "Build commit: ${HASH}${SUFFIX}")
 
+# A precompiled version header may already contain the uninitialized fallback.
+# Generated metadata is authoritative for every consumer, including crash reports.
 string(CONCAT CONTENT
     "#pragma once\n"
+    "#undef GIT_COMMIT_HASH\n"
+    "#undef GIT_COMMIT_SUFFIX\n"
     "#define GIT_COMMIT_HASH \"${HASH}\"\n"
     "#define GIT_COMMIT_SUFFIX \"${SUFFIX}\"\n")
 

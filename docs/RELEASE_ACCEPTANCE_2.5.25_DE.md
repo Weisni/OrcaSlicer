@@ -86,6 +86,18 @@ bestehen die Projekt-Clang-tidy-Prüfung. Dies ersetzt weiterhin keine Linux-/
 macOS-Ausführung. Belege: `all-quack-clang-warnings-summary-green.log`,
 `release-all-quack-tidy-final.log` und `obj-color-unused-{red,green}.log`.
 
+Der Lauf an `140693c81a` erreichte anschließend das GUI-Modul und fand eine
+PCH-spezifische Kollision der tatsächlichen Git-Kennung mit dem Platzhalter
+`0000000`. Der zentrale Headergenerator entfernt jetzt die vorigen Hash-/
+Suffix-Definitionen unmittelbar vor den autoritativen erzeugten Werten. Das
+gilt auch für den Windows-Crashbericht; PCH-Policy und Warnungsflags bleiben
+erhalten. Die echte BuildCommit-Quelle reproduziert den Fehler sowohl in
+Clang als auch in einer tatsächlichen PCH-Fixture mit `/W4 /WX`; beide Proben
+bestehen nach der Korrektur. Die Fixture prüft zusätzlich die echte Kennung
+und das Dirty-Label zur Laufzeit. Belege:
+`git-metadata-{pch,real-pch}-{red,green}.log`. Der neue vollständige
+Plattformlauf bleibt ein erforderliches Gate.
+
 - [x] Lokaler Windows-Release-Abnahmesnapshot an `c14cbf0735`: 3.090 native
   Registrierungen ohne Fehler, neun Umgebungs-Skips; 52 geänderte
   C++-Dateien bestehen Clang-tidy. Reguläre EXE-/Produktversion ist 2.5.25.

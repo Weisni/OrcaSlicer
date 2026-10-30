@@ -110,6 +110,9 @@ matrix and final package checks pass.
   units differing from official Beta. Correct three further unused captures,
   retain four unused object-color fields with targeted attributes, add direct
   headers and pass the project Clang-tidy check on all 58 changed C++ files.
+- [x] Reproduce the generated Git metadata/PCH fallback collision and verify
+  authoritative commit labels with both Clang and an actual PCH build under
+  warnings-as-errors, preserving the legacy CMake path and crash-report consumer.
 - [ ] Pass the complete hosted platform CI and verify the final release assets.
 
 See the [German acceptance report](docs/RELEASE_ACCEPTANCE_2.5.25_DE.md)
