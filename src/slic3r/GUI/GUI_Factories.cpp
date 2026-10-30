@@ -67,6 +67,17 @@ static int filaments_count()
     return wxGetApp().filaments_cnt();
 }
 
+static wxString filament_menu_label(size_t index)
+{
+    const auto &bundle = *wxGetApp().preset_bundle;
+    const auto *mixed = bundle.project_config.option<ConfigOptionBools>("filament_is_mixed");
+    if (mixed && index < mixed->values.size() && mixed->values[index])
+        return wxString::Format(_L("Mixed Filament %d"), int(index + 1));
+    const auto *preset = index < bundle.filament_presets.size()
+        ? bundle.filaments.find_preset(bundle.filament_presets[index]) : nullptr;
+    return preset ? from_u8(preset->label(false)) : wxString::Format(_L("Filament %d"), int(index + 1));
+}
+
 static bool is_improper_category(const std::string& category, const int filaments_cnt, const bool is_object_settings = true)
 {
     return  category.empty() ||
@@ -1161,14 +1172,7 @@ void MenuFactory::append_menu_item_change_extruder(wxMenu* menu)
 
         wxString item_name = _L("Default");
 
-        if (i > 0) {
-            auto preset = wxGetApp().preset_bundle->filaments.find_preset(wxGetApp().preset_bundle->filament_presets[i - 1]);
-            if (preset == nullptr) {
-                item_name = wxString::Format(_L("Filament %d"), i);
-            } else {
-                item_name = from_u8(preset->label(false));
-            }
-        }
+        if (i > 0) item_name = filament_menu_label(size_t(i - 1));
 
         if (is_active_extruder) {
             item_name << " (" + _L("current") + ")";
@@ -2634,14 +2638,7 @@ void MenuFactory::append_menu_item_change_filament(wxMenu* menu, size_t pos)
 
         wxString item_name = _L("Default");
 
-        if (i > 0) {
-            auto preset = wxGetApp().preset_bundle->filaments.find_preset(wxGetApp().preset_bundle->filament_presets[i - 1]);
-            if (preset == nullptr) {
-                item_name = wxString::Format(_L("Filament %d"), i);
-            } else {
-                item_name = from_u8(preset->label(false));
-            }
-        }
+        if (i > 0) item_name = filament_menu_label(size_t(i - 1));
 
         if (is_active_extruder) {
             item_name << " (" + _L("current") + ")";

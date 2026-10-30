@@ -60,6 +60,7 @@ add_executable(${_TEST_NAME}_tests
     test_ha_inventory_import.cpp
     test_ha_credential_policy.cpp
     test_ha_project_material_sync.cpp
+    test_plate_filament_slots.cpp
     test_ha_project_roll_publish.cpp
     test_exclusion_volumes.cpp
     test_fill_corner_smoothing.cpp

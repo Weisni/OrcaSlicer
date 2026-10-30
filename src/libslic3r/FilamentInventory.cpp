@@ -3706,10 +3706,15 @@ void Store::import_ha_bundle_impl(const std::string &payload, const std::string 
     const size_t maximum_bytes = authoritative ? ha_authority_max_bytes : 1024 * 1024;
     if(payload.size()>maximum_bytes || sync_state.size()>ha_authority_max_bytes+5*1024*1024)
         throw Error(ErrorCode::validation,authoritative?"HA inventory exceeds the supported 64 MiB budget":"Demo mirror exceeds 1 MiB");
-    const auto root=nlohmann::json::parse(payload);
+    auto root=nlohmann::json::parse(payload);
     if(root.at("schema_version")!=schema_version || root.at("tables").size()!=ha_demo_tables.size())
         throw Error(ErrorCode::validation,"Demo mirror schema mismatch");
-    if(authoritative) HaInventoryTransport::validate_bundle(root);
+    if(authoritative) {
+        HaInventoryTransport::validate_bundle(root);
+        for (auto &row : root.at("tables").at("allocations"))
+            HaInventoryTransport::normalize_allocation_actuals(row);
+        HaInventoryTransport::validate_bundle(root);
+    }
     std::lock_guard<std::mutex> lock(m_impl->mutex);
     Transaction transaction(m_impl->db);
     // Deferred FK checks allow the entire graph to be replaced atomically.

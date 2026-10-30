@@ -508,7 +508,7 @@ std::vector<size_t> check_mixed_filament_integrity(
             continue;
         }
         for (unsigned int c : comps) {
-            if (c < 1 || c > num_physical) {
+            if (c < 1 || c > num_physical || (c <= is_mixed.size() && is_mixed[c - 1])) {
                 broken.push_back(i);
                 break;
             }

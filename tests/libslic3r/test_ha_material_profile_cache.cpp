@@ -1,7 +1,10 @@
 #include <catch2/catch_test_macros.hpp>
 #include "libslic3r/HaMaterialProfileCache.hpp"
+#include "libslic3r/HaMaterialProfile.hpp"
+#include "libslic3r/PresetBundle.hpp"
 #include <fstream>
 #include <chrono>
+#include <filesystem>
 using namespace Slic3r::HaMaterialProfile;
 namespace {
 struct CacheDirectory {
@@ -39,6 +42,26 @@ TEST_CASE("Repeated roll downloads reuse a validated persistent content entry", 
     PersistentCache upgraded(files.root,"schema2");
     CHECK(upgraded.find("endpoint",summary).is_null());
 }
+TEST_CASE("Persistent profiles reopen through forward slashes and parent directory components", "[HaMaterialProfileCache][Regression]")
+{
+    CacheDirectory files;
+    const auto payload = cache_profile();
+    const auto summary = profile_summary(payload);
+    {
+        PersistentCache canonical(files.root, "schema1");
+        REQUIRE(canonical.get("endpoint", summary, [&] { return payload; }) == payload);
+    }
+    auto plain = files.root;
+#ifdef _WIN32
+    // Exercise the ordinary CLI spelling, not the test fixture's verbatim prefix.
+    plain = plain.native().substr(4);
+#endif
+    PersistentCache forward(std::filesystem::u8path(plain.generic_u8string()), "schema1");
+    CHECK(forward.find("endpoint", summary) == payload);
+    PersistentCache parent(plain / ".." / plain.filename(), "schema1");
+    CHECK(parent.find("endpoint", summary) == payload);
+}
+
 TEST_CASE("A changed association cannot substitute different downloaded content", "[HaMaterialProfileCache]")
 {
     CacheDirectory files;
@@ -149,4 +172,24 @@ TEST_CASE("An offline roster restores only with every current content cached for
     CHECK_FALSE(restorable_contents(restarted,"other endpoint",roster));
     PersistentCache upgraded(files.root,"schema2");
     CHECK_FALSE(restorable_contents(upgraded,"endpoint",roster));
+}
+
+TEST_CASE("Legacy HA profile cache verifies original content across the Beta schema addition", "[HaMaterialProfileCache][Regression]")
+{
+    Slic3r::PresetBundle bundle;
+    auto payload = capture(bundle.filaments.default_preset());
+    payload["settings"].erase("filament_retract_length_toolchange");
+    payload["settings"].erase("filament_retract_restart_extra_toolchange");
+    payload = seal(payload);
+    CacheDirectory files;
+    PersistentCache cache(files.root, "beta-schema", setting_keys());
+    const auto summary = profile_summary(payload);
+    REQUIRE_NOTHROW(cache.get("endpoint", summary, [&] { return payload; }));
+    CHECK(cache.find("endpoint", summary) == payload);
+    PersistentCache restarted(files.root, "beta-schema", setting_keys());
+    CHECK(restarted.find("endpoint", summary) == payload);
+    auto missing = payload;
+    missing["settings"].erase("filament_flow_ratio");
+    missing = seal(missing);
+    CHECK_THROWS(cache.get("endpoint", profile_summary(missing), [&] { return missing; }));
 }

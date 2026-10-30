@@ -196,6 +196,19 @@ const char *PresetBundle::ORCA_DEFAULT_FILAMENT = "Generic PLA @System";
 const char *PresetBundle::ORCA_FILAMENT_LIBRARY = "OrcaFilamentLibrary";
 const char *PresetBundle::ORCA_DEFAULT_FILAMENT_PLACEHOLDER = "Default Filament";
 
+static void expand_filament_variant_broadcasts(DynamicPrintConfig &config)
+{
+    const auto *variants = config.option<ConfigOptionStrings>("filament_extruder_variant");
+    if (!variants) return;
+    // Expand each profile before concatenation so the next material starts at
+    // its own variant index, including when a value broadcasts over all variants.
+    for (const auto &key : filament_options_with_variant) {
+        auto *values = dynamic_cast<ConfigOptionVectorBase *>(config.option(key));
+        if (values && !values->empty() && values->size() < variants->size())
+            values->resize(variants->size());
+    }
+}
+
 DynamicPrintConfig PresetBundle::construct_full_config(
     Preset& in_printer_preset,
     Preset& in_print_preset,
@@ -281,6 +294,7 @@ DynamicPrintConfig PresetBundle::construct_full_config(
     if (num_filaments <= 1) {
         // BBS: update filament config related with variants
         DynamicPrintConfig filament_config = in_filament_presets[0].config;
+        if (!apply_extruder) expand_filament_variant_broadcasts(filament_config);
         // Orca: a multi-variant filament resolves its variants on a single-variant printer too.
         if (apply_extruder && ((extruder_count > 1) || different_extruder || filament_config.has_multi_variant_filament()))
             filament_config.update_values_to_printer_extruders(out, extruder_count, extruder_volume_type_count, nozzle_volume_types, filament_options_with_variant, "", "filament_extruder_variant", 1, filament_maps[0], (NozzleVolumeType)filament_volume_maps[0]);
@@ -306,6 +320,7 @@ DynamicPrintConfig PresetBundle::construct_full_config(
         filament_temp_configs.resize(num_filaments);
         for (size_t i = 0; i < num_filaments; ++i) {
             filament_temp_configs[i] = *(filament_configs[i]);
+            if (!apply_extruder) expand_filament_variant_broadcasts(filament_temp_configs[i]);
             // Orca: a multi-variant filament resolves its variants on a single-variant printer too.
             if (apply_extruder && ((extruder_count > 1) || different_extruder || filament_temp_configs[i].has_multi_variant_filament()))
                 filament_temp_configs[i].update_values_to_printer_extruders(out, extruder_count, extruder_volume_type_count, nozzle_volume_types, filament_options_with_variant, "", "filament_extruder_variant", 1, filament_maps[i], (NozzleVolumeType)filament_volume_maps[i]);
@@ -3953,7 +3968,9 @@ void PresetBundle::update_selections(AppConfig &config, bool preserve_project_fi
 
     // Filament colors and their indices belong to the open project, not to the
     // printer preset. Keep every existing project slot when switching printers.
-    if (preserve_project_filament_colors && filament_presets.size() < project_filament_colors.size())
+    if (preserve_project_filament_colors &&
+        (filament_presets.size() < project_filament_colors.size() ||
+         (num_mixed_filaments() > 0 && printers.get_edited_preset().config.opt_bool("single_extruder_multi_material"))))
         filament_presets.resize(project_filament_colors.size(), filament_presets.empty()
             ? filaments.first_visible().name
             : filament_presets.back());
@@ -4030,9 +4047,14 @@ void PresetBundle::update_selections(AppConfig &config, bool preserve_project_fi
         auto flush_multipliers = matrix | boost::adaptors::transformed(boost::lexical_cast<double, std::string>);
         project_config.option<ConfigOptionFloats>("flush_multiplier")->values = std::vector<double>(flush_multipliers.begin(), flush_multipliers.end());
     }
-    // No global fallback here: on a printer change the legacy shared keys describe another
-    // printer's filament list, so absent per-printer keys must clear the mixes, not revive them.
-    load_mixed_filament_settings(project_config, config, initial_printer_profile_name, filament_presets.size(), false);
+    if (preserve_project_filament_colors) {
+        // The open project's slot indices survive a nozzle/printer change, so
+        // their mix definitions must survive with them, including unsaved edits.
+        resize_mixed_filament_metadata(project_config, project_filament_colors.size(), filament_presets.size());
+    } else {
+        // Restoring a printer's own filament list restores only its own mixes.
+        load_mixed_filament_settings(project_config, config, initial_printer_profile_name, filament_presets.size(), false);
+    }
 
     // Update visibility of presets based on their compatibility with the active printer.
     // Always try to select a compatible print and filament preset to the current printer preset,
@@ -5667,6 +5689,7 @@ DynamicPrintConfig PresetBundle::full_fff_config(bool apply_extruder, std::optio
     if (num_filaments <= 1) {
         //BBS: update filament config related with variants
         DynamicPrintConfig filament_config = this->filaments.get_edited_preset().config;
+        if (!apply_extruder) expand_filament_variant_broadcasts(filament_config);
         // Orca: a multi-variant filament resolves its variants on a single-variant printer too.
         if (apply_extruder && ((extruder_count > 1) || different_extruder || filament_config.has_multi_variant_filament()))
             filament_config.update_values_to_printer_extruders(out, extruder_count, extruder_volume_type_count, nozzle_volume_types, filament_options_with_variant, "", "filament_extruder_variant", 1, filament_maps[0], (NozzleVolumeType)filament_volume_maps[0]);
@@ -5762,6 +5785,7 @@ DynamicPrintConfig PresetBundle::full_fff_config(bool apply_extruder, std::optio
         filament_temp_configs.resize(num_filaments);
         for (size_t i = 0; i < num_filaments; ++i) {
             filament_temp_configs[i] = *(filament_configs[i]);
+            if (!apply_extruder) expand_filament_variant_broadcasts(filament_temp_configs[i]);
             // Orca: a multi-variant filament resolves its variants on a single-variant printer too.
             if (apply_extruder && ((extruder_count > 1) || different_extruder || filament_temp_configs[i].has_multi_variant_filament()))
                 filament_temp_configs[i].update_values_to_printer_extruders(out, extruder_count, extruder_volume_type_count, nozzle_volume_types, filament_options_with_variant, "", "filament_extruder_variant", 1, filament_maps[i], (NozzleVolumeType)filament_volume_maps[i]);
@@ -6489,6 +6513,10 @@ void PresetBundle::load_config_file_config(const std::string &name_or_path, bool
 
         // A new project must not inherit the previous project physical-roll bindings.
         HaMaterialBinding::write(this->project_config, {});
+        // Legacy projects omit these fields entirely. Clear the previous
+        // project's definitions before applying any authored mixed slots.
+        if (!is_published)
+            resize_mixed_filament_metadata(this->project_config, 0, num_filaments);
         // Load the project config values. In published mode only the plate/bed geometry keys
         // cross over (the receiver must not inherit the author's filament/purge data).
         this->project_config.apply_only(config, is_published ? s_project_options_published : s_project_options);

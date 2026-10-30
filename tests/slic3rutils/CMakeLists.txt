@@ -7,6 +7,7 @@ add_executable(${_TEST_NAME}_tests
     test_config_value_formatter.cpp
     test_creality_cfs_match.cpp
     test_creality_print.cpp
+    test_desktop_integration_policy.cpp
     test_dev_mapping.cpp
     test_worker_callbacks.cpp
     test_filament_allocation_label.cpp

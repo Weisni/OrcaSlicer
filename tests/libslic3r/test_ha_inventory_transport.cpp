@@ -87,6 +87,23 @@ TEST_CASE("Incremental cache identity is independent of storage row order", "[Ha
     CHECK(canonical_bundle(source) != canonical_bundle(reordered));
 }
 
+TEST_CASE("Inventory identity treats omitted allocation actuals as unknown", "[HaInventoryTransport][Regression]")
+{
+    auto omitted = transport_inventory();
+    omitted["tables"]["allocations"].push_back({{"id", "allocation"}, {"estimated_weight_mg", 5000}});
+    auto unknown = omitted;
+    unknown["tables"]["allocations"][0]["actual_weight_mg"] = nullptr;
+    unknown["tables"]["allocations"][0]["actual_material_cost_micros"] = nullptr;
+    CHECK(canonical_bundle(omitted) == canonical_bundle(unknown));
+    auto measured = unknown;
+    measured["tables"]["allocations"][0]["actual_weight_mg"] = 0;
+    CHECK(canonical_bundle(measured) != canonical_bundle(unknown));
+    auto incomplete = unknown;
+    incomplete["tables"]["allocations"][0].erase("estimated_weight_mg");
+    CHECK(canonical_bundle(incomplete) != canonical_bundle(unknown));
+    CHECK_FALSE(omitted["tables"]["allocations"][0].contains("actual_weight_mg"));
+}
+
 TEST_CASE("Incremental reads reject ambiguous compound deletions and oversized rows", "[HaInventoryTransport]")
 {
     auto source = transport_inventory();

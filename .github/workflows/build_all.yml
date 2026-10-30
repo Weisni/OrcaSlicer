@@ -26,6 +26,11 @@ on:
      - 'scripts/flatpak/**'
      - 'scripts/msix/**'
      - 'tests/**'
+     - 'tools/ha-material-demo/**'
+     - 'scripts/*release_assets.py'
+     - 'scripts/*release_target.py'
+     - '.github/workflows/ha-materials-tests.yml'
+     - '.github/workflows/publish_release.yml'
 
   pull_request:
     branches:
@@ -50,6 +55,11 @@ on:
      - 'scripts/flatpak/**'
      - 'scripts/msix/**'
      - 'tests/**'
+     - 'tools/ha-material-demo/**'
+     - 'scripts/*release_assets.py'
+     - 'scripts/*release_target.py'
+     - '.github/workflows/ha-materials-tests.yml'
+     - '.github/workflows/publish_release.yml'
 
 
   workflow_dispatch: # allows for manual dispatch
@@ -69,6 +79,28 @@ concurrency:
   
 
 jobs:
+  release_gate_tests:
+    name: Release asset gate tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: |
+          python3 scripts/test_validate_release_assets.py
+          python3 scripts/test_verify_release_target.py
+      - name: Record the source build matrix
+        env:
+          SELF_HOSTED: ${{ vars.SELF_HOSTED }}
+        run: |
+          python3 -c 'import json, os; from pathlib import Path; Path("release-matrix.json").write_text(json.dumps({"head_sha": os.environ["GITHUB_SHA"], "self_hosted": bool(os.environ["SELF_HOSTED"])}))'
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-matrix
+          path: release-matrix.json
+          if-no-files-found: error
+  ha_materials_tests:
+    name: Home Assistant materials regression gate
+    uses: ./.github/workflows/ha-materials-tests.yml
+
   # build_win.bat ships a test suite. Run it before the Windows builds.
   check_build_script:
     name: Windows build script tests
@@ -384,7 +416,7 @@ jobs:
       shell: bash
     - uses: flatpak/flatpak-github-actions/flatpak-builder@master
       with:
-        bundle: OrcaSlicer-Linux-flatpak_${{ env.ver }}_${{ matrix.variant.arch }}.flatpak
+        bundle: QuackSlicer-Linux-flatpak_${{ env.ver }}_${{ matrix.variant.arch }}.flatpak
         manifest-path: scripts/flatpak/com.orcaslicer.OrcaSlicer.yml
         # cache only turns on flatpak-builder --ccache; the caching itself is above.
         cache: true
@@ -442,14 +474,15 @@ jobs:
     - name: Upload artifacts Flatpak
       uses: actions/upload-artifact@v7
       with:
-        name: OrcaSlicer-Linux-flatpak_${{ env.ver }}_${{ matrix.variant.arch }}.flatpak
-        path: '/__w/OrcaSlicer/OrcaSlicer/OrcaSlicer-Linux-flatpak_${{ env.ver }}_${{ matrix.variant.arch }}.flatpak'
+        name: QuackSlicer-Linux-flatpak_${{ env.ver }}_${{ matrix.variant.arch }}.flatpak
+        if-no-files-found: error
+        path: '/__w/OrcaSlicer/OrcaSlicer/QuackSlicer-Linux-flatpak_${{ env.ver }}_${{ matrix.variant.arch }}.flatpak'
     - name: Deploy Flatpak to nightly release
       if: github.repository == 'OrcaSlicer/OrcaSlicer' && github.ref == 'refs/heads/main'
       uses: ./.github/actions/deploy-nightly
       with:
-        asset_path: /__w/OrcaSlicer/OrcaSlicer/OrcaSlicer-Linux-flatpak_${{ env.ver }}_${{ matrix.variant.arch }}.flatpak
-        asset_name: OrcaSlicer-Linux-flatpak_nightly_${{ matrix.variant.arch }}.flatpak
+        asset_path: /__w/OrcaSlicer/OrcaSlicer/QuackSlicer-Linux-flatpak_${{ env.ver }}_${{ matrix.variant.arch }}.flatpak
+        asset_name: QuackSlicer-Linux-flatpak_nightly_${{ matrix.variant.arch }}.flatpak
     # The asset is /app (the exes link it at runtime) plus the build tree
     # slimmed to what ctest needs.
     - name: Package flatpak test asset

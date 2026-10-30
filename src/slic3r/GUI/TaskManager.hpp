@@ -17,6 +17,7 @@
 #include <map>
 #include <mutex>
 #include <atomic>
+#include <shared_mutex>
 #include <wx/event.h>
 
 
@@ -160,6 +161,8 @@ public:
     TaskManager(NetworkAgent* agent);
 
     void set_agent(NetworkAgent* agent);
+    // Refuse reload while native sends hold the old agent, without blocking the GUI.
+    bool try_detach_agent();
 
     int start_print(const std::vector<PrintParams>& params, TaskSettings* settings = nullptr);
 
@@ -186,9 +189,10 @@ private:
     std::vector<TaskStateInfo*>   m_scedule_list;
     std::vector<boost::thread*>   m_sending_thread_list;
     std::mutex                    m_scedule_mutex;
-    bool                        m_started { false };
+    std::atomic<bool>            m_started { false };
     // Replaced on the main thread whenever networking is re-initialised, read by the sending threads.
     std::atomic<NetworkAgent*>  m_agent { nullptr };
+    std::shared_mutex m_agent_lifetime_mutex;
 
     std::chrono::system_clock::time_point last_sent_timestamp;
 };

@@ -1,4 +1,7 @@
 #pragma once
+#include <algorithm>
+#include <string>
+#include <vector>
 #include "PresetBundle.hpp"
 #include "HaMaterialBinding.hpp"
 
@@ -61,5 +64,19 @@ inline std::string isolate_edit_slot(PresetBundle& bundle, size_t index)
     installed.is_compatible = local.is_compatible;
     bundle.set_filament_preset(index, local.name);
     return local.name;
+}
+
+inline std::string isolate_rebased_edit_slot(PresetBundle& bundle, size_t index,
+                                            const std::vector<std::string>& previous_presets)
+{
+    const auto incoming = bundle.filament_presets.at(index);
+    const auto previous = previous_presets.at(index);
+    const auto local = isolate_edit_slot(bundle, index);
+    // The old shared edit buffer supplied every occurrence of its name. Keep
+    // that group together, while other rolls retain the incoming saved base.
+    for (size_t i = 0; i < previous_presets.size() && i < bundle.filament_presets.size(); ++i)
+        if (previous_presets[i] == previous && bundle.filament_presets[i] == incoming)
+            bundle.set_filament_preset(i, local);
+    return local;
 }
 }

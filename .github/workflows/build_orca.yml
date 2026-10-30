@@ -278,6 +278,19 @@ jobs:
           ./build_release_macos.sh -u -x ${{ !vars.SELF_HOSTED && '-j 3' || '' }} -a universal -t 10.15
 
  # Thanks to RaySajuuk, it's working now
+      - name: Stage macOS delivery bundles
+        if: runner.os == 'macOS' && inputs.macos-combine-only
+        working-directory: ${{ github.workspace }}
+        run: |
+          mkdir -p build/universal/OrcaSlicer_dmg build/universal/OrcaSlicer_profile_validator_dmg
+          rm -rf build/universal/OrcaSlicer_dmg/* build/universal/OrcaSlicer_profile_validator_dmg/*
+          cp -R build/universal/OrcaSlicer/OrcaSlicer.app "build/universal/OrcaSlicer_dmg/${{ env.artifact_prefix }}.app"
+          ln -sfn /Applications build/universal/OrcaSlicer_dmg/Applications
+          if [ -f build/universal/OrcaSlicer/OrcaSlicer_profile_validator.app/Contents/MacOS/OrcaSlicer_profile_validator ]; then
+            cp -R build/universal/OrcaSlicer/OrcaSlicer_profile_validator.app "build/universal/OrcaSlicer_profile_validator_dmg/${{ env.artifact_prefix }}_profile_validator.app"
+            ln -sfn /Applications build/universal/OrcaSlicer_profile_validator_dmg/Applications
+          fi
+
       - name: Sign app and notary
         if: github.repository == 'OrcaSlicer/OrcaSlicer' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/release/')) && runner.os == 'macOS' && inputs.macos-combine-only
         timeout-minutes: 30
@@ -333,27 +346,19 @@ jobs:
             sign --verbose "$app"
             codesign --verify --deep --strict --verbose=2 "$app"
           }
-          sign_app "${{ github.workspace }}/build/universal/OrcaSlicer/OrcaSlicer.app"
+          sign_app "${{ github.workspace }}/build/universal/OrcaSlicer_dmg/${{ env.artifact_prefix }}.app"
           # Sign OrcaSlicer_profile_validator.app if it exists
-          if [ -f "${{ github.workspace }}/build/universal/OrcaSlicer/OrcaSlicer_profile_validator.app/Contents/MacOS/OrcaSlicer_profile_validator" ]; then
-            sign_app "${{ github.workspace }}/build/universal/OrcaSlicer/OrcaSlicer_profile_validator.app"
+          if [ -f "${{ github.workspace }}/build/universal/OrcaSlicer_profile_validator_dmg/${{ env.artifact_prefix }}_profile_validator.app/Contents/MacOS/OrcaSlicer_profile_validator" ]; then
+            sign_app "${{ github.workspace }}/build/universal/OrcaSlicer_profile_validator_dmg/${{ env.artifact_prefix }}_profile_validator.app"
           fi
           
-          # Create main OrcaSlicer DMG without the profile validator helper
-          mkdir -p ${{ github.workspace }}/build/universal/OrcaSlicer_dmg
-          rm -rf ${{ github.workspace }}/build/universal/OrcaSlicer_dmg/*
-          cp -R ${{ github.workspace }}/build/universal/OrcaSlicer/OrcaSlicer.app ${{ github.workspace }}/build/universal/OrcaSlicer_dmg/
-          ln -sfn /Applications ${{ github.workspace }}/build/universal/OrcaSlicer_dmg/Applications
+          # Create the delivery DMG without the profile validator helper
           create_dmg "${{ env.artifact_prefix }}" ${{ github.workspace }}/build/universal/OrcaSlicer_dmg ${{ env.artifact_prefix }}_Mac_universal_${{ env.ver }}.dmg
           codesign --deep --force --verbose --options runtime --timestamp --entitlements "$ENTITLEMENTS" --sign "$CERTIFICATE_ID" ${{ env.artifact_prefix }}_Mac_universal_${{ env.ver }}.dmg
           
           # Create separate OrcaSlicer_profile_validator DMG if the app exists
-          if [ -f "${{ github.workspace }}/build/universal/OrcaSlicer/OrcaSlicer_profile_validator.app/Contents/MacOS/OrcaSlicer_profile_validator" ]; then
-            mkdir -p ${{ github.workspace }}/build/universal/OrcaSlicer_profile_validator_dmg
-            rm -rf ${{ github.workspace }}/build/universal/OrcaSlicer_profile_validator_dmg/*
-            cp -R ${{ github.workspace }}/build/universal/OrcaSlicer/OrcaSlicer_profile_validator.app ${{ github.workspace }}/build/universal/OrcaSlicer_profile_validator_dmg/
-            ln -sfn /Applications ${{ github.workspace }}/build/universal/OrcaSlicer_profile_validator_dmg/Applications
-            create_dmg "OrcaSlicer Profile Validator" ${{ github.workspace }}/build/universal/OrcaSlicer_profile_validator_dmg OrcaSlicer_profile_validator_Mac_universal_${{ env.ver }}.dmg
+          if [ -f "${{ github.workspace }}/build/universal/OrcaSlicer_profile_validator_dmg/${{ env.artifact_prefix }}_profile_validator.app/Contents/MacOS/OrcaSlicer_profile_validator" ]; then
+            create_dmg "${{ env.artifact_prefix }} Profile Validator" ${{ github.workspace }}/build/universal/OrcaSlicer_profile_validator_dmg OrcaSlicer_profile_validator_Mac_universal_${{ env.ver }}.dmg
             codesign --deep --force --verbose --options runtime --timestamp --entitlements "$ENTITLEMENTS" --sign "$CERTIFICATE_ID" OrcaSlicer_profile_validator_Mac_universal_${{ env.ver }}.dmg
           fi
           
@@ -374,19 +379,11 @@ jobs:
           # Load the `retry` and `create_dmg` helpers.
           source ${{ github.workspace }}/scripts/retry.sh
           source ${{ github.workspace }}/scripts/create_dmg.sh
-          mkdir -p ${{ github.workspace }}/build/universal/OrcaSlicer_dmg
-          rm -rf ${{ github.workspace }}/build/universal/OrcaSlicer_dmg/*
-          cp -R ${{ github.workspace }}/build/universal/OrcaSlicer/OrcaSlicer.app ${{ github.workspace }}/build/universal/OrcaSlicer_dmg/
-          ln -sfn /Applications ${{ github.workspace }}/build/universal/OrcaSlicer_dmg/Applications
           create_dmg "${{ env.artifact_prefix }}" ${{ github.workspace }}/build/universal/OrcaSlicer_dmg ${{ env.artifact_prefix }}_Mac_universal_${{ env.ver }}.dmg
           
           # Create separate OrcaSlicer_profile_validator DMG if the app exists
-          if [ -f "${{ github.workspace }}/build/universal/OrcaSlicer/OrcaSlicer_profile_validator.app/Contents/MacOS/OrcaSlicer_profile_validator" ]; then
-            mkdir -p ${{ github.workspace }}/build/universal/OrcaSlicer_profile_validator_dmg
-            rm -rf ${{ github.workspace }}/build/universal/OrcaSlicer_profile_validator_dmg/*
-            cp -R ${{ github.workspace }}/build/universal/OrcaSlicer/OrcaSlicer_profile_validator.app ${{ github.workspace }}/build/universal/OrcaSlicer_profile_validator_dmg/
-            ln -sfn /Applications ${{ github.workspace }}/build/universal/OrcaSlicer_profile_validator_dmg/Applications
-            create_dmg "OrcaSlicer Profile Validator" ${{ github.workspace }}/build/universal/OrcaSlicer_profile_validator_dmg OrcaSlicer_profile_validator_Mac_universal_${{ env.ver }}.dmg
+          if [ -f "${{ github.workspace }}/build/universal/OrcaSlicer_profile_validator_dmg/${{ env.artifact_prefix }}_profile_validator.app/Contents/MacOS/OrcaSlicer_profile_validator" ]; then
+            create_dmg "${{ env.artifact_prefix }} Profile Validator" ${{ github.workspace }}/build/universal/OrcaSlicer_profile_validator_dmg OrcaSlicer_profile_validator_Mac_universal_${{ env.ver }}.dmg
           fi
 
       # Delete the per-arch bundles only after signing/DMG creation succeeded, so a
@@ -663,7 +660,7 @@ jobs:
           # Both were packed from resources/ before the caches existed, so the
           # AppImage is unpacked first and the caches shipped into it and into
           # the package tree; the source tree keeps its JSONs for later steps.
-          appimage=$(find build -maxdepth 1 -name "OrcaSlicer_Linux_AppImage*.AppImage" | head -1)
+          appimage=$(find build -maxdepth 1 -name "${{ env.artifact_prefix }}_Linux_AppImage*.AppImage" | head -1)
           chmod +x "$appimage"
           "$appimage" --appimage-extract
           ./scripts/build_preset_cache.sh -b build build/package/resources/profiles squashfs-root/resources/profiles

@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop">
+    <id>com.quackslicer.QuackSlicer</id>
+    <launchable type="desktop-id">com.quackslicer.QuackSlicer.desktop</launchable>
+    <name>QuackSlicer</name>
+    <summary>3D printing software with physical filament and order tracking</summary>
+    <developer id="com.quackslicer">
+        <name>Weisni</name>
+    </developer>
+    <url type="homepage">https://github.com/Weisni/OrcaSlicer</url>
+    <url type="help">https://github.com/Weisni/OrcaSlicer</url>
+    <url type="bugtracker">https://github.com/Weisni/OrcaSlicer/issues</url>
+    <url type="vcs-browser">https://github.com/Weisni/OrcaSlicer</url>
+    <metadata_license>0BSD</metadata_license>
+    <project_license>AGPL-3.0-only</project_license>
+    <content_rating type="oars-1.1" />
+    <requires><display_length compare="gt">768</display_length></requires>
+    <recommends><control>keyboard</control><control>pointing</control></recommends>
+    <description>
+        <p>QuackSlicer is an independent OrcaSlicer fork with physical filament
+            inventory, Home Assistant integration and customer order tracking.</p>
+        <p>It builds on OrcaSlicer by SoftFever and the OrcaSlicer contributors,
+            which in turn builds on Bambu Studio, PrusaSlicer and Slic3r.
+            Upstream project information and support for upstream development
+            are available from the OrcaSlicer project.</p>
+    </description>
+</component>

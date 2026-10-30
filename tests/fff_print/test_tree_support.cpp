@@ -10,12 +10,20 @@
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/catch_message.hpp>
+#include <catch2/generators/catch_generators.hpp>
+#include <iterator>
+#include "libslic3r/Model.hpp"
+#include "libslic3r/Polygon.hpp"
+#include "libslic3r/ExPolygon.hpp"
 #include "libslic3r/Layer.hpp"
 #include "libslic3r/TriangleMesh.hpp"
 
 #include "test_helpers.hpp"
 #include "libslic3r/ExtrusionEntityCollection.hpp"
 #include "libslic3r/Print.hpp"
+#include "libslic3r/ClipperUtils.hpp"
+#include "libslic3r/BoundingBox.hpp"
+#include "libslic3r/Support/TreeSupport.hpp"
 
 using namespace Slic3r::Test;
 using namespace Slic3r;
@@ -112,6 +120,62 @@ TEST_CASE("Tree support is generated for an overhang and not for a plain cube", 
 {
     REQUIRE(support_point_count(scaled(TestMesh::overhang, 2.f), "tree_slim") > 1000);
     REQUIRE(support_point_count(Slic3r::Test::cube(20), "tree_slim") == 0);
+}
+
+TEST_CASE("Tree support preserves uncovered overhang islands beside wave coverage", "[TreeSupport][WaveOverhangs][Regression]")
+{
+    const bool wave_enabled = GENERATE(false, true);
+    const bool subtract_coverage = GENERATE(false, true);
+    const bool has_coverage = GENERATE(false, true);
+    DynamicPrintConfig config = DynamicPrintConfig::full_print_config();
+    config.set_deserialize_strict({
+        {"enable_support", true}, {"support_type", "tree(auto)"}, {"support_style", "tree_slim"},
+        {"layer_height", 0.2}, {"initial_layer_print_height", 0.2},
+        {"support_threshold_angle", 30}, {"support_remove_small_overhang", false},
+        {"max_bridge_length", 0.0}, {"support_critical_regions_only", false},
+        {"wave_overhangs", wave_enabled},
+        {"support_remaining_areas_after_wave_overhangs", subtract_coverage}
+    });
+    TriangleMesh geometry = two_tier_mesh();
+    TriangleMesh second = two_tier_mesh();
+    second.translate(80.f, 0.f, 0.f);
+    geometry.merge(second);
+    Print baseline, candidate;
+    Model baseline_model, candidate_model;
+    init_print({geometry}, baseline, baseline_model, config);
+    init_print({geometry}, candidate, candidate_model, config);
+    auto &original = *baseline.get_object(0);
+    auto &tested = *candidate.get_object(0);
+    original.slice();
+    tested.slice();
+    TreeSupport original_support(original, original.slicing_parameters());
+    original_support.detect_overhangs();
+    const auto layer_it = std::find_if(original.layers().begin(), original.layers().end(), [](const Layer *layer) {
+        return layer->loverhangs.size() >= 2 && layer->cantilevers.size() >= 2;
+    });
+    REQUIRE(layer_it != original.layers().end());
+    const size_t layer_index = size_t(std::distance(original.layers().begin(), layer_it));
+    const Layer &reference = **layer_it;
+    BoundingBox covered = get_extents(reference.loverhangs);
+    covered.offset(scale_(1.));
+    covered.max.x() = (covered.min.x() + covered.max.x()) / 2;
+    const Polygons footprint{covered.polygon()};
+    // Supply the perimeter stage's coverage at its actual pipeline boundary.
+    // Only the left island is covered; the right island still needs branches.
+    if (has_coverage)
+        tested.get_layer(layer_index)->wave_overhang_covered_polygons = footprint;
+    TreeSupport tested_support(tested, tested.slicing_parameters());
+    tested_support.detect_overhangs();
+    const bool active = wave_enabled && subtract_coverage && has_coverage;
+    const auto expected_overhangs = active ? diff_ex(reference.loverhangs, footprint) : reference.loverhangs;
+    const auto expected_cantilevers = active ? diff_ex(reference.cantilevers, footprint) : reference.cantilevers;
+    REQUIRE_FALSE(expected_overhangs.empty());
+    REQUIRE_FALSE(expected_cantilevers.empty());
+    const Layer &actual = *tested.get_layer(layer_index);
+    CHECK(diff_ex(expected_overhangs, actual.loverhangs).empty());
+    CHECK(diff_ex(actual.loverhangs, expected_overhangs).empty());
+    CHECK(diff_ex(expected_cantilevers, actual.cantilevers).empty());
+    CHECK(diff_ex(actual.cantilevers, expected_cantilevers).empty());
 }
 
 TEST_CASE("Restricting tree support to the build plate changes what is generated", "[TreeSupport]")

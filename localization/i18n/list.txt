@@ -91,6 +91,7 @@ src/slic3r/GUI/FilamentManagerPanel.cpp
 src/slic3r/GUI/GUI_AuxiliaryList.cpp
 src/slic3r/GUI/GUI_Init.cpp
 src/slic3r/GUI/GUI_Factories.cpp
+src/slic3r/GUI/HaMaterialSyncDialog.hpp
 src/slic3r/GUI/GUI_ObjectList.cpp
 src/slic3r/GUI/GUI_ObjectSettings.cpp
 src/slic3r/GUI/GUI_ObjectLayers.cpp

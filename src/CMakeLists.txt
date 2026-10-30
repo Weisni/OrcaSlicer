@@ -120,12 +120,12 @@ if(ORCA_TOOLS)
         add_executable(OrcaSlicer_profile_validator MACOSX_BUNDLE dev-utils/OrcaSlicer_profile_validator.cpp)
         set_target_properties(OrcaSlicer_profile_validator PROPERTIES
             MACOSX_BUNDLE TRUE
-            MACOSX_BUNDLE_BUNDLE_NAME "OrcaSlicer Profile Validator"
+            MACOSX_BUNDLE_BUNDLE_NAME "${SLIC3R_APP_NAME} Profile Validator"
             MACOSX_BUNDLE_BUNDLE_VERSION "${SLIC3R_VERSION}"
             MACOSX_BUNDLE_SHORT_VERSION_STRING "${SLIC3R_VERSION}"
-            MACOSX_BUNDLE_IDENTIFIER "com.orcaslicer.OrcaSlicer.profile-validator"
+            MACOSX_BUNDLE_IDENTIFIER "com.quackslicer.${SLIC3R_APP_KEY}.profile-validator"
             MACOSX_BUNDLE_COPYRIGHT "© 2026 OrcaSlicer Pte Ltd All Rights Reserved"
-            MACOSX_BUNDLE_GUI_IDENTIFIER "com.orcaslicer.OrcaSlicer.profile-validator"
+            MACOSX_BUNDLE_GUI_IDENTIFIER "com.quackslicer.${SLIC3R_APP_KEY}.profile-validator"
         )
     else()
         add_executable(OrcaSlicer_profile_validator dev-utils/OrcaSlicer_profile_validator.cpp)
@@ -156,6 +156,8 @@ endif (MINGW)
 # further down. Dead entries are skipped by the loader.
 # OrcaSlicer_profile_validator links libslic3r only (no Python).
 if (APPLE)
+    set_target_properties(OrcaSlicer PROPERTIES
+        MACOSX_BUNDLE_GUI_IDENTIFIER "com.quackslicer.${SLIC3R_APP_KEY}")
     # A linker flag rather than the BUILD_RPATH property because the release
     # flow uses the Xcode generator, which does not honor BUILD_RPATH.
     target_link_options(OrcaSlicer PRIVATE "LINKER:-rpath,@executable_path/python/lib")
@@ -370,7 +372,7 @@ else ()
             set(BIN_DIR "${CMAKE_CURRENT_BINARY_DIR}/OrcaSlicer.app/Contents/MacOS")
         endif()
         set(MACOSX_BUNDLE_ICON_FILE Icon.icns)
-        set(MACOSX_BUNDLE_BUNDLE_NAME "OrcaSlicer")
+        set(MACOSX_BUNDLE_BUNDLE_NAME "${SLIC3R_APP_NAME}")
         set(MACOSX_BUNDLE_SHORT_VERSION_STRING ${SoftFever_VERSION})
         set(MACOSX_BUNDLE_COPYRIGHT "Copyright(C) 2022-2024 Li Jiang All Rights Reserved")
         if (XCODE)

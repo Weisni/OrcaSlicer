@@ -4564,20 +4564,31 @@ void remap_model_filament_slots(Model &model, const std::map<int, int> &slot_rel
     }
 
     auto remap_extruder_config = [&one_based_slots](ModelConfig &config) -> bool {
-        const auto it = config.has("extruder") ? one_based_slots.find(config.extruder()) : one_based_slots.end();
-        if (it == one_based_slots.end())
-            return false;
-        config.set("extruder", it->second);
-        return true;
+        bool changed = false;
+        for (const auto *key : {"extruder", "support_filament", "support_interface_filament"}) {
+            if (!config.has(key)) continue;
+            if (const auto it = one_based_slots.find(config.opt_int(key)); it != one_based_slots.end()) {
+                config.set(key, it->second);
+                changed = true;
+            }
+        }
+        return changed;
     };
 
     for (ModelObject *object : model.objects) {
         remap_extruder_config(object->config);
+        for (auto &range : object->layer_config_ranges)
+            remap_extruder_config(range.second);
         for (ModelVolume *volume : object->volumes) {
             remap_extruder_config(volume->config);
             volume->mmu_segmentation_facets.remap_states(*volume, paint_state_map);
         }
     }
+    for (auto &plate : model.plates_custom_gcodes)
+        for (auto &item : plate.second.gcodes)
+            if (item.type == CustomGCode::ToolChange)
+                if (const auto moved = one_based_slots.find(item.extruder); moved != one_based_slots.end())
+                    item.extruder = moved->second;
 }
 
 #ifndef NDEBUG

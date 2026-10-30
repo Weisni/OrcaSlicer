@@ -1,5 +1,6 @@
 //#include "slic3r/Utils/Serial.hpp"
 #include "Tab.hpp"
+#include "libslic3r/HaMaterialSource.hpp"
 #include "HaMaterialProvider.hpp"
 #include "PresetHints.hpp"
 #include "libslic3r/IMEXHelpers.hpp"
@@ -155,7 +156,11 @@ static void ha_load_changed_nozzle(const std::string &previous_context,
     try {
         auto &bundle = *wxGetApp().preset_bundle;
         const auto context = HaMaterialContext::key(HaMaterialProvider::profile_context(bundle));
-        if (context == previous_context) return;
+        if (context == previous_context) {
+            BOOST_LOG_TRIVIAL(info) << "HA nozzle refresh: context unchanged";
+            return;
+        }
+        BOOST_LOG_TRIVIAL(info) << "HA nozzle refresh: scheduling " << targets.size() << " material(s)";
         const auto expected_presets = bundle.filament_presets;
         std::vector<std::string> expected_digests(expected_presets.size());
         for (const auto &[index, binding] : targets) {
@@ -168,17 +173,29 @@ static void ha_load_changed_nozzle(const std::string &previous_context,
             if (!wxGetApp().plater() || !HaMaterialProvider::enabled()) return;
             try {
                 auto &current = *wxGetApp().preset_bundle;
-                if (HaMaterialContext::key(HaMaterialProvider::profile_context(current)) != context) return;
+                if (HaMaterialContext::key(HaMaterialProvider::profile_context(current)) != context) {
+                    BOOST_LOG_TRIVIAL(info) << "HA nozzle refresh: superseded context";
+                    return;
+                }
                 const auto snapshot = HaMaterialProvider::snapshot();
-                if (snapshot.is_null()) return;
+                if (snapshot.is_null()) {
+                    BOOST_LOG_TRIVIAL(info) << "HA nozzle refresh: no provider snapshot";
+                    return;
+                }
                 const auto rows = HaMaterialCatalog::available(snapshot);
                 for (const auto &[index, original] : targets) {
                     if (index >= current.filament_presets.size() || index >= expected_presets.size() ||
-                        current.filament_presets[index] != expected_presets[index]) continue;
+                        current.filament_presets[index] != expected_presets[index]) {
+                        BOOST_LOG_TRIVIAL(info) << "HA nozzle refresh: selection changed at index " << index;
+                        continue;
+                    }
                     const auto &edited = current.filaments.get_edited_preset();
                     const auto *preset = edited.name == expected_presets[index] ? &edited : current.filaments.find_preset(expected_presets[index]);
                     if (!preset || expected_digests[index].empty() ||
-                        HaMaterialProfile::digest(HaMaterialProfile::capture(*preset)) != expected_digests[index]) continue;
+                        HaMaterialProfile::digest(HaMaterialProfile::capture(*preset)) != expected_digests[index]) {
+                        BOOST_LOG_TRIVIAL(info) << "HA nozzle refresh: material changed at index " << index;
+                        continue;
+                    }
                     const auto bindings = HaMaterialBinding::read(current.project_config, current.filament_presets.size());
                     if (bindings[index].spool_uuid != original.spool_uuid || bindings[index].source != original.source ||
                         bindings[index].printer_id != original.printer_id) continue;
@@ -188,12 +205,20 @@ static void ha_load_changed_nozzle(const std::string &previous_context,
                     if (row == rows.end()) continue;
                     const auto assignment = HaMaterialProvider::for_printer(current, row->assignment);
                     // Unknown variants require an explicit picker, never a guessed automatic profile.
-                    if (HaMaterialSource::variant_profile(assignment).is_null()) continue;
-                    wxGetApp().plater()->sidebar().sync_ha_material_demo(false, original.spool_uuid, int(index));
+                    if (HaMaterialSource::variant_profile(assignment).is_null()) {
+                        BOOST_LOG_TRIVIAL(info) << "HA nozzle refresh: no published variant at index " << index;
+                        continue;
+                    }
+                    const bool refreshed = wxGetApp().plater()->sidebar().sync_ha_material_demo(false, original.spool_uuid, int(index));
+                    BOOST_LOG_TRIVIAL(info) << "HA nozzle refresh: index " << index << (refreshed ? " applied" : " declined");
                 }
-            } catch (const std::exception &) { /* Explicit refresh/selection reports transport or compatibility errors. */ }
+            } catch (const std::exception &) {
+                BOOST_LOG_TRIVIAL(info) << "HA nozzle refresh: selection failed; explicit synchronization is available";
+            }
         });
-    } catch (const std::exception &) { /* Unsupported nozzle configurations remain explicit. */ }
+    } catch (const std::exception &) {
+        BOOST_LOG_TRIVIAL(info) << "HA nozzle refresh: unsupported nozzle configuration";
+    }
 }
 
 namespace
@@ -2190,6 +2215,8 @@ void Tab::on_value_change(const std::string& opt_key, const boost::any& value)
     auto ha_targets = ha_nozzle_changed ? ha_clean_nozzle_bindings() :
         std::vector<std::pair<size_t, HaMaterialBinding::Binding>>{};
     const std::string ha_previous_context = ha_targets.empty() ? std::string() : ha_targets.front().second.profile_context;
+    if (ha_nozzle_changed)
+        BOOST_LOG_TRIVIAL(info) << "HA nozzle refresh: captured " << ha_targets.size() << " unchanged bound material(s)";
     // The bed-area point option cannot store collision-volume syntax. Offer to
     // copy it to the volume setting while retaining the area's previous value.
     if (opt_key == "bed_exclude_area" && m_type == Preset::TYPE_PRINTER) {
@@ -7739,7 +7766,7 @@ bool Tab::select_preset(
         bool 			   new_preset_compatible = is_compatible_with_print(dependent.get_edited_preset_with_vendor_profile(),
         	m_presets->get_preset_with_vendor_profile(*m_presets->find_preset(preset_name, true)), printer_profile);
         if (! canceled)
-            canceled = old_preset_dirty && ! may_discard_current_dirty_preset(&dependent, preset_name) && ! new_preset_compatible && !force_select;
+            canceled = old_preset_dirty && !new_preset_compatible && !force_select && !may_discard_current_dirty_preset(&dependent, preset_name);
         if (! canceled) {
             // The preset will be switched to a different, compatible preset, or the '-- default --'.
             m_dependent_tabs.emplace_back((printer_technology == ptFFF) ? Preset::Type::TYPE_FILAMENT : Preset::Type::TYPE_SLA_MATERIAL);
@@ -7784,7 +7811,7 @@ bool Tab::select_preset(
                 pu.old_preset_dirty = (old_printer_technology == pu.technology) && pu.presets->current_is_dirty();
                 pu.new_preset_compatible = (new_printer_technology == pu.technology) && is_compatible_with_printer(pu.presets->get_edited_preset_with_vendor_profile(), new_printer_preset_with_vendor_profile);
                 if (!canceled)
-                    canceled = pu.old_preset_dirty && !may_discard_current_dirty_preset(pu.presets, preset_name, false, no_transfer_variant) && !pu.new_preset_compatible && !force_select;
+                    canceled = pu.old_preset_dirty && !pu.new_preset_compatible && !force_select && !may_discard_current_dirty_preset(pu.presets, preset_name, false, no_transfer_variant);
             }
             if (!canceled) {
                 for (PresetUpdate &pu : updates) {

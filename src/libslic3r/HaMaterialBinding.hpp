@@ -1,4 +1,9 @@
 #pragma once
+#include "Config.hpp"
+#include "Preset.hpp"
+#include "HaMaterialProfilePayload.hpp"
+#include <cstddef>
+#include <exception>
 
 #include "HaMaterialSource.hpp"
 #include "HaMaterialProfile.hpp"
@@ -15,12 +20,54 @@ struct Binding {
     std::string profile_context, profile_name, profile_sha256;
 };
 
-inline bool preserves_override(const Binding &binding, const Preset *effective)
+template<class Lookup>
+std::string cached_display_name(const Binding &binding, const std::string &preset_name,
+                               const std::string &source, const std::string &device,
+                               const nlohmann::json &snapshot, Lookup lookup)
+{
+    // Presentation only: an expired roster may name an existing project binding,
+    // but must never authorize a new roll selection, synchronization or dispatch.
+    try {
+        if (source.empty() || device.empty() || binding.spool_uuid.empty() || binding.source != source ||
+            !HaMaterialProfile::is_managed_name(binding.profile_name) ||
+            (preset_name != binding.profile_name &&
+             (!HaMaterialProfile::is_managed_project_name(preset_name) ||
+              preset_name.substr(0, 78) != binding.profile_name)) ||
+            snapshot.at("printer_id") != binding.printer_id || snapshot.at("provider_printer_id") != device)
+            return {};
+        for (const auto &spool : snapshot.at("spools")) {
+            if (spool.at("uuid") != binding.spool_uuid) continue;
+            auto summary = spool.value("material_profile", nlohmann::json());
+            if (!binding.profile_context.empty()) {
+                // A matching legacy base does not prove this nozzle context was published.
+                if (!spool.contains("material_profile_variants")) return {};
+                const auto &variants = spool.at("material_profile_variants");
+                if (!variants.is_object()) return {};
+                const auto variant = variants.find(binding.profile_context);
+                if (variant == variants.end()) return {};
+                summary = *variant;
+            }
+            if (summary.is_null()) return {};
+            const auto payload = lookup(summary);
+            if (payload.is_null() || HaMaterialProfile::profile_summary(payload) !=
+                (summary.contains("settings") ? HaMaterialProfile::profile_summary(summary) : summary) ||
+                HaMaterialProfile::managed_name(payload) != binding.profile_name)
+                return {};
+            return payload.at("name").template get<std::string>();
+        }
+    } catch (const std::exception &) { /* Preserve the existing fallback for incomplete offline metadata. */ }
+    return {};
+}
+
+inline bool preserves_override(const Binding &binding, const Preset *effective, const Preset *baseline = nullptr)
 {
     if (effective && HaMaterialProfile::is_managed_name(binding.profile_name)) {
         const bool same_baseline = effective->name == binding.profile_name ||
             (HaMaterialProfile::is_managed_project_name(effective->name) &&
              effective->name.substr(0, 78) == binding.profile_name);
+        if (!binding.profile_context.empty() && same_baseline && baseline &&
+            baseline->name == binding.profile_name && HaMaterialProfile::matches_managed_baseline(*effective, *baseline))
+            return false;
         return binding.profile_context.empty() || !same_baseline ||
             HaMaterialProfile::managed_name(HaMaterialProfile::capture(*effective)) != binding.profile_name;
     }

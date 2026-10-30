@@ -55,3 +55,34 @@ TEST_CASE("Authoritative imports write only changed rows and roll back invalid g
     REQUIRE_NOTHROW(store.import_authoritative_ha_bundle(removed.dump(),ack(updated)));
     CHECK(Json::parse(store.export_ha_demo_bundle()) == removed);
 }
+
+TEST_CASE("Authoritative imports preserve unknown allocation actuals omitted by HA", "[HaInventoryImport][Regression]")
+{
+    const auto path = std::filesystem::temp_directory_path() / ("ha-null-actuals-" +
+        std::to_string(std::chrono::high_resolution_clock::now().time_since_epoch().count()) + ".sqlite3");
+    struct Cleanup { std::filesystem::path path; ~Cleanup() { std::error_code error; std::filesystem::remove(path,error); } } cleanup{path};
+    Store store(path.string());
+    SpoolInput spool;
+    spool.name = "Test roll"; spool.manufacturer = "Test"; spool.material_type = "PLA";
+    spool.color_hex = "#123456"; spool.nominal_capacity_mg = 1000000; spool.initial_weight_mg = 1000000;
+    const auto roll = store.create_spool(spool);
+    PrintJobInput job; job.idempotency_key = "unknown-actuals"; job.job_name = "Test job";
+    store.reserve_job(job, {{roll.id, 0, 5000}});
+    const auto initial = Json::parse(store.export_ha_demo_bundle());
+    const auto ack = [](const Json &before) { return Json{{"explicit_sync",true},{"revision",1},{"_expected_local",before}}.dump(); };
+    auto omitted = initial;
+    omitted["tables"]["allocations"][0].erase("actual_weight_mg");
+    omitted["tables"]["allocations"][0].erase("actual_material_cost_micros");
+    REQUIRE_NOTHROW(store.import_authoritative_ha_bundle(omitted.dump(),ack(initial)));
+    CHECK(Json::parse(store.export_ha_demo_bundle()) == initial);
+    auto measured = initial;
+    measured["tables"]["allocations"][0]["actual_weight_mg"] = 4000;
+    measured["tables"]["allocations"][0]["actual_material_cost_micros"] = 80000;
+    REQUIRE_NOTHROW(store.import_authoritative_ha_bundle(measured.dump(),ack(initial)));
+    REQUIRE_NOTHROW(store.import_authoritative_ha_bundle(omitted.dump(),ack(measured)));
+    CHECK(Json::parse(store.export_ha_demo_bundle()) == initial);
+    auto incomplete = omitted;
+    incomplete["tables"]["allocations"][0].erase("estimated_weight_mg");
+    CHECK_THROWS(store.import_authoritative_ha_bundle(incomplete.dump(),ack(initial)));
+    CHECK(Json::parse(store.export_ha_demo_bundle()) == initial);
+}

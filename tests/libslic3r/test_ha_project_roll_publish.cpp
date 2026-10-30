@@ -1,4 +1,8 @@
 #include <catch2/catch_test_macros.hpp>
+#include <vector>
+#include "libslic3r/HaMaterialProfilePayload.hpp"
+#include "libslic3r/HaMaterialContext.hpp"
+#include "libslic3r/HaMaterialBinding.hpp"
 #include "libslic3r/HaProjectRollPublish.hpp"
 #include "libslic3r/HaProjectMaterialDifferences.hpp"
 
@@ -26,6 +30,64 @@ static Slic3r::HaProjectMaterialSync::Project project()
 static RollPublish existing()
 {
     return {0, roll_id, 600000};
+}
+
+static Json activation_profile()
+{
+    return Slic3r::HaMaterialProfile::seal({{"schema_version", 1}, {"name", "Published PLA"}, {"material_type", "PLA"},
+        {"dependencies", {{"inherits", ""}, {"filament_id", ""}, {"vendor", ""}}},
+        {"settings", {{"filament_type", "PLA"}, {"filament_flow_ratio", "1.03"}}}});
+}
+
+TEST_CASE("A confirmed profile activates every identical use of its physical roll", "[HaProjectRollPublish][Regression]")
+{
+    const auto profile = activation_profile();
+    const auto context = Slic3r::HaMaterialContext::make("Bambu Lab P2S", 0.4, "high_flow");
+    Slic3r::HaProjectMaterialSync::Project current{{"first clone", "second clone"}, {"#112233", "#112233"}, {profile, profile}};
+    auto selection = existing();
+    selection.profile_only = true;
+    selection.profile_context = context;
+    const auto changes = publish_roll_changes(current, remote_rolls(), {selection});
+    const std::vector<Slic3r::HaMaterialBinding::Binding> bindings(2, {roll_id, "endpoint", "printer"});
+    const auto indices = profile_activation_indices(current, bindings, "endpoint", "printer", context, changes);
+    REQUIRE(indices.size() == 2);
+    CHECK(indices[0].first == 0);
+    CHECK(indices[1].first == 1);
+    CHECK(indices[0].second == 0);
+    CHECK(indices[1].second == 0);
+}
+
+TEST_CASE("Frozen profile retries preserve newer local overrides and unrelated bindings", "[HaProjectRollPublish][Regression]")
+{
+    const auto profile = activation_profile();
+    const auto context = Slic3r::HaMaterialContext::make("Bambu Lab P2S", 0.4, "high_flow");
+    Slic3r::HaProjectMaterialSync::Project current{{"clone"}, {"#112233"}, {profile}};
+    auto selection = existing();
+    selection.profile_only = true;
+    selection.profile_context = context;
+    // A restart restores the confirmed request without its original UI indices.
+    const auto frozen = Json::parse(publish_roll_changes(current, remote_rolls(), {selection}).dump());
+    auto changed = profile;
+    changed["settings"]["filament_flow_ratio"] = "1.07";
+    changed = Slic3r::HaMaterialProfile::seal(changed);
+    current.presets = {"new override", "matching clone", "other source", "other printer", "other roll"};
+    current.colors.assign(5, "#112233");
+    current.profiles = {changed, profile, profile, profile, profile};
+    const std::vector<Slic3r::HaMaterialBinding::Binding> bindings{
+        {roll_id, "endpoint", "printer"}, {roll_id, "endpoint", "printer"},
+        {roll_id, "other", "printer"}, {roll_id, "endpoint", "other"}, {new_id, "endpoint", "printer"}};
+    const auto indices = profile_activation_indices(current, bindings, "endpoint", "printer", context, frozen);
+    REQUIRE(indices.size() == 1);
+    CHECK(indices[0].first == 1);
+    CHECK(indices[0].second == 0);
+    CHECK(profile_activation_indices(current, bindings, "endpoint", "printer",
+        Slic3r::HaMaterialContext::make("Bambu Lab P2S", 0.4, "standard"), frozen).empty());
+    CHECK(frozen[0]["material_profile"] == profile);
+    CHECK(profile_activation_indices(current, bindings, "endpoint", "printer", context, Json::array()).empty());
+    auto color_selection = existing();
+    color_selection.color_only = true;
+    const auto color_changes = publish_roll_changes(project(), remote_rolls(), {color_selection});
+    CHECK(profile_activation_indices(current, bindings, "endpoint", "printer", context, color_changes).empty());
 }
 
 TEST_CASE("Nozzle profile publication preserves the legacy association and all stock fields", "[HaProjectRollPublish]")

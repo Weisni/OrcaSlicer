@@ -1,5 +1,8 @@
 #include <catch2/catch_test_macros.hpp>
+#include "libslic3r/Config.hpp"
 #include "libslic3r/HaMaterialBinding.hpp"
+#include "libslic3r/HaMaterialProfile.hpp"
+#include "libslic3r/HaMaterialProfilePayload.hpp"
 #include "libslic3r/PresetBundle.hpp"
 
 using namespace Slic3r;
@@ -324,4 +327,100 @@ TEST_CASE("HA preflight rejects malformed saved identity", "[HaMaterialBinding]"
     config.set_key_value(config_key,new ConfigOptionStrings{"{invalid"});
     CHECK_THROWS(read(config,1));
     CHECK_THROWS(set(config,0,{"fake",source,"duck-poop-demo"},1));
+}
+
+TEST_CASE("Existing HA bindings retain verified display names from an expired offline roster", "[HaMaterialBinding][Regression]")
+{
+    const auto payload = HaMaterialProfile::seal({{"schema_version", 1}, {"name", "Offline PLA nozzle profile"},
+        {"material_type", "PLA"}, {"dependencies", {{"inherits", ""}, {"filament_id", ""}, {"vendor", ""}}},
+        {"settings", {{"filament_type", "PLA"}, {"filament_flow_ratio", "1.03"}}}});
+    const auto summary = HaMaterialProfile::profile_summary(payload);
+    const auto name = HaMaterialProfile::managed_name(payload);
+    const std::string context = "Bambu Lab P2S|0.4|high_flow";
+    const Binding binding{roll_a, source, "printer", context, name, HaMaterialProfile::digest(payload)};
+    const nlohmann::json snapshot{{"printer_id", "printer"}, {"provider_printer_id", "device"}, {"captured_unix", 1},
+        {"spools", {{{"uuid", roll_a}, {"material_profile_variants", {{context, summary}}}}}}};
+    auto lookup = [&](const nlohmann::json &requested) { return requested == summary ? payload : nlohmann::json(); };
+    CHECK(cached_display_name(binding, name, source, "device", snapshot, lookup) == "Offline PLA nozzle profile");
+    CHECK(cached_display_name(binding, name + " [project filament 1]", source, "device", snapshot, lookup) == "Offline PLA nozzle profile");
+    CHECK(cached_display_name(binding, name, "other-source", "device", snapshot, lookup).empty());
+    CHECK(cached_display_name(binding, name, source, "other-device", snapshot, lookup).empty());
+    auto other = binding;
+    other.spool_uuid = roll_b;
+    CHECK(cached_display_name(other, name, source, "device", snapshot, lookup).empty());
+    other = binding;
+    other.profile_context = "Bambu Lab P2S|0.6|standard";
+    CHECK(cached_display_name(other, name, source, "device", snapshot, lookup).empty());
+    auto matching_base = snapshot;
+    matching_base["spools"][0]["material_profile"] = summary;
+    CHECK(cached_display_name(other, name, source, "device", matching_base, lookup).empty());
+    matching_base["spools"][0].erase("material_profile_variants");
+    CHECK(cached_display_name(binding, name, source, "device", matching_base, lookup).empty());
+    CHECK(cached_display_name(binding, name, source, "device", snapshot,
+        [](const nlohmann::json &) { return nlohmann::json(); }).empty());
+    auto changed = payload;
+    changed["settings"]["filament_flow_ratio"] = "1.07";
+    changed = HaMaterialProfile::seal(changed);
+    CHECK(cached_display_name(binding, name, source, "device", snapshot,
+        [&](const nlohmann::json &) { return changed; }).empty());
+    CHECK(snapshot.at("captured_unix") == 1);
+}
+
+TEST_CASE("Broadcast nozzle variants follow their verified HA baseline while real edits remain local", "[HaMaterialBinding][Regression]")
+{
+    PresetBundle bundle;
+    auto original = bundle.filaments.get_edited_preset();
+    original.config.set_key_value("filament_extruder_variant", new ConfigOptionStrings{
+        "Direct Drive Standard", "Direct Drive High Flow"});
+    original.config.set_key_value("filament_flow_ratio", new ConfigOptionFloats{1.02});
+    original.config.set_key_value("pressure_advance", new ConfigOptionFloats{0.02});
+    original.config.set_key_value("filament_retraction_length", new ConfigOptionFloatsNullable{ConfigOptionFloatsNullable::nil_value()});
+    const auto payload = HaMaterialProfile::capture(original);
+    original.name = HaMaterialProfile::managed_name(payload);
+    const Binding binding{roll_a, source, "duck-poop-demo", "Bambu Lab P2S|0.4|high_flow", original.name,
+        HaMaterialProfile::digest(payload)};
+    auto expanded = original;
+    expanded.config.set_key_value("filament_flow_ratio", new ConfigOptionFloats{1.02, 1.02});
+    expanded.config.set_key_value("pressure_advance", new ConfigOptionFloats{0.02, 0.02});
+    expanded.config.set_key_value("filament_retraction_length", new ConfigOptionFloatsNullable{
+        ConfigOptionFloatsNullable::nil_value(), ConfigOptionFloatsNullable::nil_value()});
+    CHECK_FALSE(preserves_override(binding, &expanded, &original));
+
+    auto edited = expanded;
+    edited.config.set_key_value("filament_flow_ratio", new ConfigOptionFloats{1.02, 0.98});
+    CHECK(preserves_override(binding, &edited, &original));
+    edited = expanded;
+    edited.config.set_key_value("filament_extruder_variant", new ConfigOptionStrings{
+        "Direct Drive High Flow", "Direct Drive Standard"});
+    CHECK(preserves_override(binding, &edited, &original));
+    edited = expanded;
+    edited.config.set_key_value("filament_retraction_length", new ConfigOptionFloatsNullable{
+        ConfigOptionFloatsNullable::nil_value(), 0.0});
+    CHECK(preserves_override(binding, &edited, &original));
+    auto invalid_baseline = original;
+    invalid_baseline.config.set_key_value("pressure_advance", new ConfigOptionFloats{0.03});
+    CHECK(preserves_override(binding, &expanded, &invalid_baseline));
+}
+
+TEST_CASE("Native preset switching treats verified HA broadcasts as unchanged and preserves real edits", "[HaMaterialBinding][Regression]")
+{
+    PresetBundle bundle;
+    auto original = bundle.filaments.get_edited_preset();
+    original.config.set_key_value("filament_extruder_variant", new ConfigOptionStrings{
+        "Direct Drive Standard", "Direct Drive High Flow"});
+    original.config.set_key_value("filament_flow_ratio", new ConfigOptionFloats{1.02});
+    original.name = HaMaterialProfile::managed_name(HaMaterialProfile::capture(original));
+    auto expanded = original;
+    expanded.config.set_key_value("filament_flow_ratio", new ConfigOptionFloats{1.02, 1.02});
+    CHECK_FALSE(PresetCollection::is_dirty(&expanded, &original));
+    CHECK(PresetCollection::dirty_options(&expanded, &original, true).empty());
+    expanded.config.set_key_value("filament_flow_ratio", new ConfigOptionFloats{1.02, 0.98});
+    CHECK(PresetCollection::is_dirty(&expanded, &original));
+    CHECK_FALSE(PresetCollection::dirty_options(&expanded, &original, true).empty());
+
+    auto unverified = original;
+    unverified.config.set_key_value("filament_flow_ratio", new ConfigOptionFloats{0.98});
+    expanded = unverified;
+    expanded.config.set_key_value("filament_flow_ratio", new ConfigOptionFloats{0.98, 0.98});
+    CHECK(PresetCollection::is_dirty(&expanded, &unverified));
 }

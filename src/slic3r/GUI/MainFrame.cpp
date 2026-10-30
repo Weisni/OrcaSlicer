@@ -113,6 +113,9 @@
 #include "../Utils/PrintHost.hpp"
 
 #include "GUI_App.hpp"
+#include "TaskManager.hpp"
+#include <cstdlib>
+#include <wx/msgdlg.h>
 #include "ImGuiWrapper.hpp"
 #include "OpenGLManager.hpp"
 #include "Shortcuts.hpp"
@@ -736,6 +739,18 @@ DPIFrame(NULL, wxID_ANY, "", wxDefaultPosition, wxDefaultSize, BORDERLESS_FRAME_
         //}
     #endif
 
+        if (auto *tasks = wxGetApp().getTaskManager(); tasks && !tasks->try_detach_agent()) {
+            if (event.CanVeto()) {
+                event.Veto();
+                wxMessageBox(_L("A queued print is still being sent. Wait for the transfer to finish before closing the application."),
+                             _L("Print transfer in progress"), wxOK | wxICON_INFORMATION, this);
+                return;
+            }
+            // Forced OS shutdown cannot wait on a vendor DLL that may need the GUI.
+            // Skip unsafe object/SDK destruction, as the existing exit watchdog does.
+            BOOST_LOG_TRIVIAL(error) << "Forced shutdown during a native dispatch; physical outcome remains uncertain";
+            std::_Exit(EXIT_FAILURE);
+        }
         MarkdownTip::ExitTip();
         // Prevent queued selection/UI refresh work from running as normal during reset.
         wxGetApp().set_closing(true);

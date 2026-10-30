@@ -74,6 +74,36 @@ separate maintainers and release channels.
 
 ## Development progress and open tasks
 
+### QuackSlicer 2.5.25 release validation
+
+The user authorized release publication after final validation. The candidate
+integrates the official Orca 2.5.0 Beta while retaining Quack workflows. The
+regular release remains gated until the exact source commit, full hosted build
+matrix and final package checks pass.
+
+- [x] Repeat 436 HA Python tests, 11 JavaScript test files and test-profile
+  credential/endpoint regressions.
+- [x] Exercise STL/3MF CLI slicing, standard-3MF material roundtrips and GUI
+  STEP import, automatic arrangement and slicing in separate project copies.
+- [x] Review the remaining 52 shared merge paths and seven critical integration
+  paths; fix partial Wave Overhang coverage removing uncovered tree-support areas.
+- [x] Check A4 on physical filament 1, A3 on 2 and the virtual mix on 3 after
+  restart, with no outgoing HA profile/color differences; retain their bindings
+  and the 50/50 mix through a 0.4/0.6/0.4 nozzle roundtrip.
+- [x] Correct platform application identities and strengthen release matrix,
+  tag/source and asset-digest checks.
+- [x] Build regular 2.5.25, pass all 3,088 native registrations (nine environment
+  skips), check 46 changed plus five new C++ files with Clang-tidy and restart
+  the updated local runtime with A4/A3 and the virtual mix intact.
+- [x] Verify HA multi-printer rejection in the isolated GUI and queue/dispatch
+  policy tests, retaining parallel native sends when HA is off.
+- [ ] Pass the complete hosted platform CI and verify the final release assets.
+
+See the [German acceptance report](docs/RELEASE_ACCEPTANCE_2.5.25_DE.md)
+and [candidate release notes](docs/releases/2.5.25.md). Physical printer,
+external-service and platform runtime acceptance remain explicitly separate;
+these local checks do not establish exhaustive upstream feature parity.
+
 ### HA incremental synchronization (implementation checkout)
 
 HA owns committed material profiles and roll associations. Generation/revision
@@ -423,3 +453,118 @@ See the [German test handoff](docs/QUACK_BETA_LOCAL_TEST_2026-10-30_DE.md),
 [comparison matrix](docs/upstream/quack-orca-standard-comparison.md),
 [Beta coverage ledger](docs/upstream/orca-2.5.0-beta-coverage.csv) and
 [implementation plan](docs/superpowers/plans/2026-10-30-orca-alpha-integration.md).
+
+#### HA connection correction (2026-10-30)
+
+- [x] Diagnose the local test profile's omitted HA address: the dialog fell back to
+  loopback port 8765, whose unrelated local service returned HTTP 404.
+- [x] Retain credential-free HA endpoint URLs when preparing future test profiles;
+  preserve disabled-by-default networking and isolated credentials. Two Python
+  regression tests pass, including rejection of credentials/query tokens in URLs.
+- [x] Correct the running test profile to the saved Home Assistant server address.
+- [x] Confirm authenticated read-only HA access using the saved test credential.
+  Production credentials were not copied; GUI import acceptance is tracked below.
+
+#### HA legacy material compatibility correction (2026-10-30)
+
+- [x] Accept the exact 149-setting Quack 2.5.24 material schema alongside Beta's
+  151-setting schema. The two absent toolchange overrides inherit printer values
+  (`nil`); unrelated missing or unknown settings remain rejected.
+- [x] Preserve original payload hashes, cached content and unchanged legacy profile
+  identities; explicit Beta overrides remain part of the synchronized content.
+- [x] Reproduce the decode/cache failures before the fix; pass 25 focused cases
+  with 299 assertions and the complete 3,047-test registration (zero failures,
+  nine environment skips). Independent review found no blocking issue.
+- [x] Rebuild and update the local runtime; save/reopen the active test project.
+- [x] Confirm authenticated roster display after the import compatibility fixes below.
+
+Correction: credential metadata confirms that the token was saved. The manual
+restart changed the data-path spelling (`/` versus `\`), which changes the current
+credential service hash. The local starter now consistently uses the original
+absolute `/` spelling. The acceptance fixes below now normalize directory identity
+and migrate matching legacy keys; the previous session-only explanation was incorrect.
+
+#### HA unknown-consumption import correction (2026-10-30)
+
+- [x] Diagnose the graph-integrity failure with a read-only live snapshot: one of
+  459 allocations omits its unknown actual weight and material cost. SQLite
+  exports these fields as null; all other supplied fields round-trip unchanged.
+- [x] Normalize only these two optional allocation fields to null before import
+  and integrity hashing. Preserve measured values, atomic rollback, stock and
+  reservation checks; reject unrelated incomplete rows.
+- [x] Reproduce the original error in a regression test; pass 19 import/transport
+  cases with 102 assertions, including removal of stale actual values.
+- [x] Preserve HA snapshot vector lengths when reloading root filament files:
+  ordinary preset variant expansion otherwise changes their content identity.
+  Reload regressions cover legacy/current profiles with Standard/High Flow variants.
+- [x] Pass 44 focused cases with 406 assertions; independent review found no
+  blocking issue. Runtime displays all six mounted slots and opens the sync
+  chooser without either previous error, using the saved credential automatically.
+- [x] Complete the final full native regression run after the preset-loader fix:
+  3,049 registered tests, zero failures, nine environment skips.
+
+#### HA workflow and native nozzle controls acceptance (2026-10-30)
+
+- [x] Remove the competing Quack flow selector from the Variant card. The native
+  Beta nozzle control owns concrete extruder flow and plate mapping, retaining
+  connected-printer hardware restrictions.
+- [x] Exercise mounted-roll dropdown selection, batch import of equal profiles
+  with different roll UUIDs, and Standard/High Flow plus 0.4/0.6 mm changes in GUI.
+- [x] Preserve genuine local overrides while treating verified native broadcast
+  expansion as unchanged. Correct short nullable-value getters and transfer-dialog ordering.
+- [x] Exercise explicit profile publication, HTTP 409, a lost successful response
+  and idempotent retry against the local synthetic HA service. Stock stays unchanged.
+- [x] Verify saved credentials after restart with a backslash/parent-segment data
+  path; read all six live mounted slots without entering a token or publishing profiles.
+- [x] Restore readable existing-binding names from verified offline cache without
+  authorizing selections or dispatch from an expired roster.
+- [x] Run 3,063 native registrations with zero failures and nine environment skips,
+  436 HA Python tests, 11 JS test files and clang-tidy on 26 changed C++ files.
+- [ ] Live HA profile-upload acceptance and physical printer/AMS/preheat acceptance
+  remain separate; this task uses read-only live HA and synthetic local writes.
+
+Detailed observed chains, evidence and limits: [German HA acceptance report](docs/HA_BETA_ACCEPTANCE_2026-10-30_DE.md).
+
+#### Mixed-filament preservation on nozzle changes (2026-10-30)
+
+- [x] Keep all seven project mix arrays when the printer/nozzle switch preserves
+  project slots; do not replace unsaved definitions with the target printer snapshot.
+- [x] Preserve normal per-printer snapshot restoration when project slots are not retained.
+- [x] Reproduce the reset in a native regression, then pass 28 mixer/color cases
+  with 673 assertions and all 3,064 native registrations (zero failures, nine skips).
+- [x] Verify GUI changes 0.2 -> 0.4 -> 0.6 -> 0.2 mm retain the recovered 90/10 mix,
+  including a target variant that previously stored a different mix; save/read back the 3MF.
+- [x] Update the local Release runtime; clang-tidy passes on 28 changed C++ files.
+
+The pre-fix user state and recovered 90/10 and 67/33 definitions are separate
+project copies. See the [updated local handoff](docs/QUACK_BETA_LOCAL_TEST_2026-10-30_DE.md).
+
+#### Physical HA slots and virtual mixed colors (2026-10-30)
+
+- [x] Reproduce A3 sharing logical slot 2 with a self-referencing mixture;
+  keep physical roll colors separate from computed mixed colors.
+- [x] Reject virtual HA import targets and exclude virtual slots from uploads;
+  normalize appended physical slots before mixed slots, including material,
+  support, painted-face, plate sequence and tool-change references.
+- [x] Clear missing mixed metadata when loading ordinary projects and preserve
+  the physical/mixed boundary across printer snapshot changes.
+- [x] Pass 77 focused cases / 962 assertions, all 3,077 native registrations
+  (zero failures, nine environment skips), and clang-tidy on 35 tracked plus
+  two new C++ files. Build and stage the Release runtime.
+- [x] Reselect live A3 read-only, recreate the 50/50 mixture as slot 3, save and
+  restart: A3 stays white and has no outgoing color difference.
+- [x] Fix A3's remaining restart profile difference by expanding per-profile
+  variant broadcasts before packing and verifying unchanged managed baselines
+  on load. Preserve real local overrides and distinct nozzle temperatures.
+- [x] Pass 79 focused cases / 1,241 assertions, all 3,078 native registrations
+  (zero failures, nine environment skips), and clang-tidy on 35 tracked C++
+  files. Verify HA import, save, restart and outgoing comparison in the GUI.
+- [x] Retain the user's explicit A4 choice for physical slot 1 and A3 for slot 2;
+  reopen the saved copy and verify no outgoing profile/color differences or
+  initial-profile warning. Preserve the unbound virtual 50/50 mix on slot 3.
+- [x] Label virtual mixtures as `Mixed Filament 3` in both material context menus.
+  Reject initial profile publication when the project/physical roll material
+  families disagree; show an assignment error instead of an initial-save hint.
+- [x] Build and stage the updated runtime; pass 80 focused cases / 1,244 assertions,
+  all 3,079 native registrations (zero failures, nine skips), clang-tidy on 36
+  tracked C++ files and extraction of the new UI strings.

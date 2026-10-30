@@ -2,10 +2,84 @@
 #include <string>
 #include <algorithm>
 #include <cctype>
+#include <cstddef>
 #include <map>
+#include <filesystem>
+#include <system_error>
+#include <vector>
 #include "nlohmann/json.hpp"
 
 namespace Slic3r::HaCredentialPolicy {
+inline std::string normalized_credential_directory(const std::string &directory)
+{
+    if (directory.empty()) return {};
+    std::error_code error;
+    auto path = std::filesystem::absolute(std::filesystem::u8path(directory), error);
+    if (error) return directory;
+    const auto resolved = std::filesystem::weakly_canonical(path, error);
+    path = error ? path.lexically_normal() : resolved;
+    if (path.filename().empty() && path.has_relative_path()) path = path.parent_path();
+    return path.generic_u8string();
+}
+
+inline std::string credential_directory_identity(const std::string &directory)
+{
+    auto normalized = normalized_credential_directory(directory);
+#ifdef _WIN32
+    // Windows directory spelling is case insensitive; POSIX names remain case sensitive.
+    std::transform(normalized.begin(), normalized.end(), normalized.begin(), [](unsigned char c) {
+        return c >= 'A' && c <= 'Z' ? char(c + ('a' - 'A')) : char(c);
+    });
+#endif
+    return normalized;
+}
+
+inline std::vector<std::string> credential_directory_aliases(const std::string &directory)
+{
+    const auto canonical = credential_directory_identity(directory);
+    if (canonical.empty()) return {};
+    std::vector<std::string> aliases{canonical};
+    const auto add = [&](const std::string &candidate) {
+        if (std::find(aliases.begin(), aliases.end(), candidate) == aliases.end() &&
+            credential_directory_identity(candidate) == canonical)
+            aliases.push_back(candidate);
+    };
+    // Only bounded spellings of this directory: never enumerate credential slots
+    // or guess other data directories. Keep old entries for rollback.
+    for (const auto &path : {directory, normalized_credential_directory(directory), canonical}) {
+        add(path);
+        add(path + '/');
+#ifdef _WIN32
+        auto native = path;
+        std::replace(native.begin(), native.end(), '/', '\\');
+        add(native);
+        add(native + '\\');
+#endif
+    }
+    return aliases;
+}
+
+inline bool valid_token(const std::string &token)
+{
+    if (token.empty() || token.size() > 8192) return false;
+    for (unsigned char c : token) if (c <= 32 || c >= 127) return false;
+    return true;
+}
+
+template<class Load, class Save>
+std::string load_saved_token(const std::string &directory, Load load, Save save)
+{
+    const auto aliases = credential_directory_aliases(directory);
+    for (std::size_t i = 0; i < aliases.size(); ++i) {
+        auto token = load(aliases[i]);
+        if (!valid_token(token)) continue;
+        // A failed migration must not make an otherwise valid legacy login unusable.
+        if (i != 0) save(aliases.front(), token);
+        return token;
+    }
+    return {};
+}
+
 // Credentials belong to one server, and only to this integration's endpoints.
 inline std::string origin(const std::string &url)
 {

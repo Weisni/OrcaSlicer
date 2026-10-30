@@ -25,8 +25,13 @@ inline std::optional<size_t> replacement_index(const std::vector<std::string>& b
         for (size_t i = 0; i < before.size(); ++i)
             if (before[i] == edited_name && after[i] != after[*index])
                 throw std::runtime_error("These project filaments share temporary material settings. Load the same HA profile for all of them, or keep their current profile.");
+        // Managed HA destinations can isolate the retained edit group from
+        // other rolls sharing their immutable base. The caller must perform
+        // that isolation before merging settings into the incoming profile.
+        const bool isolated_ha_rebase = HaMaterialProfile::is_managed_project_name(edited_name) ||
+            (HaMaterialProfile::is_managed_name(edited_name) && HaMaterialProfile::is_managed_name(after[*index]));
         for (size_t i = 0; i < after.size(); ++i)
-            if (!HaMaterialProfile::is_managed_project_name(edited_name) &&
+            if (!isolated_ha_rebase &&
                 after[i] == after[*index] && (i >= before.size() || before[i] != edited_name))
                 throw std::runtime_error("The new HA profile is also used by another project filament. Keep distinct profile assignments to preserve temporary settings.");
     }

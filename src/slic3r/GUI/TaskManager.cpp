@@ -3,6 +3,8 @@
 #include "bambu_networking.hpp"
 #include "libslic3r/Thread.hpp"
 #include "libslic3r/LifecycleEvents.hpp"
+#include "libslic3r/AppConfig.hpp"
+#include "libslic3r/NativePrintDispatch.hpp"
 #include "nlohmann/json.hpp"
 #include "MainFrame.hpp"
 #include "GUI_App.hpp"
@@ -20,6 +22,13 @@
 #include <vector>
 #include <map>
 #include <utility>
+#include <future>
+#include <memory>
+#include <optional>
+#include <wx/app.h>
+#include <wx/thread.h>
+#include <mutex>
+#include <shared_mutex>
 
 using namespace nlohmann;
 
@@ -28,6 +37,35 @@ wxDEFINE_EVENT(EVT_MULTI_SEND_LIMIT, wxCommandEvent);
 
 int TaskManager::MaxSendingAtSameTime = 5;
 int TaskManager::SendingInterval = 180;
+
+static std::optional<NativePrintDispatch::Mode> native_print_mode_on_main_thread()
+{
+    if (!wxTheApp || GUI::wxGetApp().is_closing())
+        return std::nullopt;
+    const auto *config = GUI::wxGetApp().app_config;
+    if (!config)
+        return std::nullopt;
+    return NativePrintDispatch::Mode{config->get_bool("ha_material_demo_enabled"),
+                                     config->get_bool("ha_material_provider_enabled")};
+}
+
+static std::optional<NativePrintDispatch::Mode> fresh_native_print_mode()
+{
+    if (wxIsMainThread())
+        return native_print_mode_on_main_thread();
+    if (!wxTheApp)
+        return std::nullopt;
+    auto response = std::make_shared<std::promise<std::optional<NativePrintDispatch::Mode>>>();
+    auto result = response->get_future();
+    // A late callback owns only its response, never a TaskManager or task pointer.
+    GUI::wxGetApp().CallAfter([response] {
+        try { response->set_value(native_print_mode_on_main_thread()); }
+        catch (...) { response->set_exception(std::current_exception()); }
+    });
+    if (result.wait_for(std::chrono::seconds(5)) != std::future_status::ready)
+        return std::nullopt;
+    return result.get();
+}
 
 std::string get_task_state_enum_str(TaskState ts)
 {
@@ -173,17 +211,29 @@ TaskManager::TaskManager(NetworkAgent* agent)
 
 void TaskManager::set_agent(NetworkAgent* agent)
 {
+    std::unique_lock<std::shared_mutex> lease(m_agent_lifetime_mutex);
     m_agent = agent;
+}
+
+bool TaskManager::try_detach_agent()
+{
+    return NativePrintDispatch::try_detach(m_agent_lifetime_mutex, m_agent);
 }
 
 
 int TaskManager::start_print(const std::vector<PrintParams>& params, TaskSettings* settings)
 {
+    // Refuse before changing queue state; pending tasks recheck at the agent call.
+    if (NativePrintDispatch::run(fresh_native_print_mode, [] { return 0; }) != 0) {
+        BOOST_LOG_TRIVIAL(error) << "task_manager: refusing untracked dispatch in Home Assistant material mode";
+        return -1;
+    }
     BOOST_LOG_TRIVIAL(info) << "task_manager: start_print size = " << params.size();
-    TaskManager::MaxSendingAtSameTime = settings->max_sending_at_same_time;
-    TaskManager::SendingInterval = settings->sending_interval;
+    const TaskSettings effective_settings = settings ? *settings : TaskSettings{};
+    TaskManager::MaxSendingAtSameTime = effective_settings.max_sending_at_same_time;
+    TaskManager::SendingInterval = effective_settings.sending_interval;
     m_map_mutex.lock();
-    TaskGroup task_group(*settings);
+    TaskGroup task_group(effective_settings);
     task_group.tasks.reserve(params.size());
     for (auto it = params.begin(); it != params.end(); it++) {
         TaskStateInfo* new_item = new TaskStateInfo(*it);
@@ -222,10 +272,6 @@ static int start_print_test(PrintParams& params, OnUpdateStatusFn update_fn, Was
 
 int TaskManager::schedule(TaskStateInfo* task)
 {
-    if (!m_agent) {
-        assert(false);
-        return -1;
-    }
     if (task->state() != TaskState::TS_PENDING)
         return 0;
     assert(task->state() == TaskState::TS_PENDING);
@@ -245,24 +291,25 @@ int TaskManager::schedule(TaskStateInfo* task)
             fire_lifecycle_event(LifecycleEvent::PrintJobStarted, start_ctx);
 
             int result = -1;
-            NetworkAgent* agent = m_agent;
-            if (!agent) {
-                BOOST_LOG_TRIVIAL(trace) << "task_manager: NetworkAgent is nullptr";
-            }
-            else {
-                assert(agent);
-                try {
+            try {
 // DEBUG FOR TEST
 #if 0
-                    result = start_print_test(task->get_params(), task->update_status_fn, task->cancel_fn, task->wait_fn);
+                result = start_print_test(task->get_params(), task->update_status_fn, task->cancel_fn, task->wait_fn);
 #else
-                    result = agent->start_print(task->get_params(), task->update_status_fn, task->cancel_fn, task->wait_fn);
+                result = NativePrintDispatch::run(fresh_native_print_mode, [&] {
+                    // Acquire the lifetime lease only AFTER the GUI snapshot. Reload may
+                    // detach/delete the previous agent while that snapshot is pending.
+                    return NativePrintDispatch::with_agent(m_agent_lifetime_mutex, m_agent, [&](NetworkAgent &agent) {
+                        return agent.start_print(task->get_params(), task->update_status_fn, task->cancel_fn, task->wait_fn);
+                    });
+                });
+                if (result == -1)
+                    BOOST_LOG_TRIVIAL(error) << "task_manager: dispatch failed or Home Assistant material mode rejected the pending task";
 #endif
-                } catch (const std::exception& ex) {
-                    BOOST_LOG_TRIVIAL(error) << "task_manager: start_print threw: " << ex.what();
-                } catch (...) {
-                    BOOST_LOG_TRIVIAL(error) << "task_manager: start_print threw an unknown exception";
-                }
+            } catch (const std::exception& ex) {
+                BOOST_LOG_TRIVIAL(error) << "task_manager: start_print threw: " << ex.what();
+            } catch (...) {
+                BOOST_LOG_TRIVIAL(error) << "task_manager: start_print threw an unknown exception";
             }
             if (result == 0) {
                 last_sent_timestamp = std::chrono::system_clock::now();
@@ -369,13 +416,14 @@ std::map<int, TaskStateInfo*> TaskManager::get_local_task_list()
 std::map<std::string, TaskStateInfo> TaskManager::get_task_list(int curr_page, int page_count, int& total)
 {
     std::map<std::string, TaskStateInfo> out;
-    NetworkAgent* agent = m_agent;
-    if (agent) {
+    {
         TaskQueryParams task_query_params;
         task_query_params.limit = page_count;
         task_query_params.offset = curr_page * page_count;
         std::string task_info;
-        int result = agent->get_user_tasks(task_query_params, &task_info, GUI::wxGetApp().get_printer_cloud_provider());
+        int result = NativePrintDispatch::with_agent(m_agent_lifetime_mutex, m_agent, [&](NetworkAgent &agent) {
+            return agent.get_user_tasks(task_query_params, &task_info, GUI::wxGetApp().get_printer_cloud_provider());
+        });
         BOOST_LOG_TRIVIAL(trace) << "task_manager: get_task_list task_info=" << task_info;
         if (result == 0) {
             try {

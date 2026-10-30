@@ -1109,7 +1109,12 @@ boost::any ConfigOptionsGroup::get_config_value(const DynamicPrintConfig& config
             }
             break;
         }
-        case coBools: ret = config.option<ConfigOptionBoolsNullable>(opt_key)->values[idx]; break;
+        case coBools: {
+            // Keep the nullable byte (including nil), and broadcast short HA/profile vectors.
+            const auto &values = config.option<ConfigOptionBoolsNullable>(opt_key)->values;
+            ret = values.empty() ? ConfigOptionBoolsNullable::nil_value() : values[idx < values.size() ? idx : 0];
+            break;
+        }
         case coInts: ret = config.option<ConfigOptionIntsNullable>(opt_key)->get_at(idx); break;
         case coEnums: ret = config.option<ConfigOptionEnumsGenericNullable>(opt_key)->get_at(idx); break;
         default: break;
@@ -1148,7 +1153,7 @@ boost::any ConfigOptionsGroup::get_config_value(const DynamicPrintConfig& config
         if (opt_key == "extruder_printable_height") {
             auto opt_values = dynamic_cast<const ConfigOptionFloatsNullable*>(config.option(opt_key))->values;
             if (!opt_values.empty()) {
-                double val = opt_values[idx];
+                double val = opt_values[idx < opt_values.size() ? idx : 0];
                 ret        = double_to_string(val);
             }
         } else {
@@ -1263,7 +1268,12 @@ boost::any ConfigOptionsGroup::get_config_value2(const DynamicPrintConfig& confi
             }
             break;
         }
-        case coBools: ret = config.option<ConfigOptionBoolsNullable>(opt_key)->values[idx]; break;
+        case coBools: {
+            // Keep the nullable byte (including nil), and broadcast short HA/profile vectors.
+            const auto &values = config.option<ConfigOptionBoolsNullable>(opt_key)->values;
+            ret = values.empty() ? ConfigOptionBoolsNullable::nil_value() : values[idx < values.size() ? idx : 0];
+            break;
+        }
         case coInts: ret = config.option<ConfigOptionIntsNullable>(opt_key)->get_at(idx); break;
         default: break;
         }

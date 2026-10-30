@@ -14,7 +14,8 @@ inline bool publish_ha_project_materials(wxWindow *parent, const std::string &en
                                          const nlohmann::json &snapshot, const nlohmann::json &changes,
                                          const std::function<void()> &validate_project,
                                          const std::vector<std::string> &selected_uuids = {},
-                                         bool reviewed_in_dialog = false)
+                                         bool reviewed_in_dialog = false,
+                                         nlohmann::json *acknowledged_changes = nullptr)
 {
     using Json = nlohmann::json;
     const std::string suffix = "/materials";
@@ -125,6 +126,7 @@ inline bool publish_ha_project_materials(wxWindow *parent, const std::string &en
             HaInventoryAuthority::refresh(fresh);
             if (!cache_only && !wxRemoveFile(from_u8(journal)))
                 throw std::runtime_error("HA accepted the material save; its journal remains for a safe explicit retry");
+            if (acknowledged_changes) *acknowledged_changes = payload.at("changes");
             return true;
         }
         std::vector<HaInventorySelection::Selection> selected;
@@ -157,6 +159,7 @@ inline bool publish_ha_project_materials(wxWindow *parent, const std::string &en
         if (accepted) throw std::runtime_error(std::string("HA accepted the transfer; local completion is pending. Retry the saved request. ") + error.what());
         throw;
     }
+    if (acknowledged_changes) *acknowledged_changes = payload.at("changes");
     return true;
 }
 

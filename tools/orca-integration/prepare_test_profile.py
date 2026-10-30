@@ -5,6 +5,7 @@ import hashlib
 import json
 import sqlite3
 from pathlib import Path
+from urllib.parse import urlsplit
 
 SAFE_APP = set("language dark_color_mode curr_bed_type user_mode units use_inches show_axes show_labels show_plate_gridlines show_build_edges show_3d_navigator show_printable_box show_outline show_overhang use_perspective_camera auto_calculate_flush filaments_area_preferred_count group_filament_presets".split())
 SAFE_ROOT = set("presets models filaments orca_presets nozzle_volume_types custom_color_list arrange".split())
@@ -33,6 +34,17 @@ def main():
     original, _ = json.JSONDecoder().raw_decode(raw.lstrip())
     config = {key: scrub(value) for key, value in original.items() if key in SAFE_ROOT}
     config["app"] = {key: value for key, value in original.get("app", {}).items() if key in SAFE_APP}
+    # Keep the server address so reconnecting does not silently target the local
+    # demo port. Credentials and connection activation remain isolated.
+    endpoint = original.get("app", {}).get("ha_material_demo_endpoint", "")
+    try:
+        address = urlsplit(endpoint)
+        if (address.scheme in ("http", "https") and address.hostname and
+                address.username is None and address.password is None and
+                not address.query and not address.fragment):
+            config["app"]["ha_material_demo_endpoint"] = endpoint
+    except ValueError:
+        pass
     config["app"].update({
         "ha_material_provider_enabled": "0", "ha_material_demo_enabled": "0",
         "passive_chamber_preheat": False, "sync_user_preset": False,

@@ -121,3 +121,20 @@ Source: user instructions and the root `AGENTS.md`, recorded 2026-09-24.
   outcomes and unresolved custom behavior; no removal is implied by planning.
 
 - The 2026-10-30 follow-up authorizes executing the integration plan and preparing an isolated local test build. The user selected the newer Orca 2.5.0 Beta. Retain production app/configuration/credentials and all custom behavior pending replacement decisions. This does not authorize production HA deployment, heating, physical sends or publishing.
+
+- The 2026-10-30 acceptance follow-up requests connected HA checks across material
+  selection, profile synchronization, local edits, nozzle/flow context and restart.
+  Test the complete user-visible chains in the isolated Beta package, using a
+  loopback fixture for writes and fault injection. Preserve the user's active
+  project in a separate copy before changing its test state. The duplicated
+  custom nozzle/flow control may be replaced by the native Beta control while
+  preserving device restrictions, plate mapping and HA UUID/profile authority.
+- For the 2026-10-30 material acceptance project, the user explicitly chose A4
+  for physical filament 1; retain A3 on filament 2 and the virtual 50/50 mix on
+  filament 3. This replaces the earlier pending Copper-versus-ASA clarification
+  for this test project only. Preserve a separate copy of the current user state.
+- On 2026-10-30 the user authorized extensive application validation followed by
+  release publication only after the final checks pass. This supersedes the
+  earlier local-build-only publication restriction. It does not authorize live
+  HA installation, physical heating/printing or changing production profiles.
+- The release-channel reply explicitly selects QuackSlicer 2.5.25 as a regular release, superseding the provisional 2.5.25-beta preparation. Keep the Orca Beta source basis explicit in the release notes; final publication still requires the agreed checks.

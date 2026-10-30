@@ -1,6 +1,11 @@
 #pragma once
+#include "HaMaterialContext.hpp"
+#include <vector>
+#include "HaMaterialProfilePayload.hpp"
 
 #include "HaProjectMaterialSync.hpp"
+#include "HaMaterialBinding.hpp"
+#include <utility>
 
 namespace Slic3r::HaProjectRollPublish {
 using Json = nlohmann::json;
@@ -136,6 +141,32 @@ inline void validate_payload(const Json &payload)
         throw std::runtime_error("An explicit confirmed project transfer is required");
     validate_changes(payload.at("changes"));
     if (payload.dump().size() > 2000000) throw std::runtime_error("Project transfer exceeds the HA size limit");
+}
+
+// Replays use their frozen changes rather than today's dialog selection. Only
+// project uses still matching the published content and context adopt its base.
+inline std::vector<std::pair<size_t, size_t>> profile_activation_indices(
+    const HaProjectMaterialSync::Project &project, const std::vector<HaMaterialBinding::Binding> &bindings,
+    const std::string &endpoint, const std::string &printer_id, const Json &active_context, const Json &changes)
+{
+    std::vector<std::pair<size_t, size_t>> result;
+    if (changes.empty()) return result;
+    validate_changes(changes);
+    if (project.profiles.size() != project.presets.size()) return result;
+    const auto context = HaMaterialContext::key(active_context);
+    for (size_t change_index = 0; change_index < changes.size(); ++change_index) {
+        const auto &change = changes[change_index];
+        if (!change.contains("material_profile") || !change.contains("profile_context") ||
+            HaMaterialContext::key(change.at("profile_context")) != context) continue;
+        for (size_t index = 0; index < project.profiles.size() && index < bindings.size(); ++index) {
+            const auto &binding = bindings[index];
+            if (binding.source != endpoint || binding.printer_id != printer_id ||
+                binding.spool_uuid != change.at("spool_uuid") ||
+                HaMaterialProfile::digest(project.profiles[index]) != HaMaterialProfile::digest(change.at("material_profile"))) continue;
+            result.emplace_back(index, change_index);
+        }
+    }
+    return result;
 }
 
 // Only the selected physical rolls are changed. Current HA stock is the

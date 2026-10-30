@@ -27,6 +27,8 @@
 #include <initializer_list>
 
 #include "Config.hpp"
+#include "HaMaterialProfile.hpp"
+#include "HaMaterialProfilePayload.hpp"
 #include "Exception.hpp"
 #include "Preset.hpp"
 #include "PresetBundle.hpp"
@@ -1953,7 +1955,11 @@ PresetCollection::UserPresetLoad PresetCollection::resolve_user_preset(
             // Find a default preset for the config. The PrintPresetCollection provides different default preset based on the "printer_technology" field.
             preset.config = default_preset.config;
             preset.config.apply(std::move(config));
-            extend_default_config_length(preset.config, true, default_preset.config);
+            // HA root presets are complete content-addressed snapshots, just as
+            // on initial download. Expanding broadcast variant values here
+            // changes their identity and falsely reports unsaved local edits.
+            if (m_type != Preset::TYPE_FILAMENT || !HaMaterialProfile::is_managed_name(canonical_name))
+                extend_default_config_length(preset.config, true, default_preset.config);
         }
 
         Preset::normalize(preset.config);
@@ -3054,7 +3060,22 @@ std::pair<Preset*, bool> PresetCollection::load_external_preset(
             }
             return nullptr;
         }, &keys);
-    std::string                 &inherits = Preset::inherits(cfg);
+    if (found && m_type == Preset::TYPE_FILAMENT && HaMaterialProfile::is_managed_name(it->name)) {
+        Preset candidate = *it;
+        candidate.config = cfg;
+        if (!filament_id.empty()) candidate.filament_id = filament_id;
+        // Combined project configs omit compatibility lists. Use the saved
+        // metadata only to prove that every material setting still matches.
+        for (const auto *key : {"compatible_printers", "compatible_prints"}) {
+            const auto *incoming = combined_config.option<ConfigOptionStrings>(key);
+            const auto *original = it->config.option(key);
+            if (original && (!incoming || incoming->empty()) && !different_settings_list.count(key))
+                candidate.config.set_key_value(key, original->clone());
+        }
+        if (HaMaterialProfile::matches_managed_baseline(candidate, *it))
+            cfg = it->config;
+    }
+    std::string &inherits = Preset::inherits(cfg);
 
     //BBS: add config related logs
     BOOST_LOG_TRIVIAL(debug) << __FUNCTION__ << boost::format(" enter, type %1% , path %2%, name %3%, original_name %4%, inherits %5%")%Preset::get_type_string(m_type) %path %name %original_name %inherits;
@@ -4182,9 +4203,20 @@ static constexpr const std::initializer_list<const char*> optional_keys { "compa
 //BBS: skip these keys for dirty check
 static std::set<std::string> skipped_in_dirty = {"printer_settings_id", "print_settings_id", "filament_settings_id"};
 
+static bool unchanged_managed_material(const Preset &edited, const Preset &reference)
+{
+    if (!HaMaterialProfile::matches_managed_baseline(edited, reference)) return false;
+    const auto material_keys = HaMaterialProfile::setting_keys();
+    // Keep native treatment of dependency metadata and any non-material options.
+    for (const auto &key : reference.config.diff(edited.config))
+        if (!material_keys.count(key) && !skipped_in_dirty.count(key)) return false;
+    return true;
+}
+
 bool PresetCollection::is_dirty(const Preset *edited, const Preset *reference)
 {
     if (edited != nullptr && reference != nullptr) {
+        if (unchanged_managed_material(*edited, *reference)) return false;
         // Only compares options existing in both configs.
         if (! reference->config.equals(edited->config, &skipped_in_dirty))
             return true;
@@ -4202,6 +4234,7 @@ std::vector<std::string> PresetCollection::dirty_options(const Preset *edited, c
 {
     std::vector<std::string> changed;
     if (edited != nullptr && reference != nullptr) {
+        if (unchanged_managed_material(*edited, *reference)) return changed;
         // Only compares options existing in both configs.
         changed = deep_compare ?
                 deep_diff(edited->config, reference->config) :
@@ -4221,6 +4254,7 @@ std::vector<std::string> PresetCollection::dirty_options_without_option_list(con
 {
     std::vector<std::string> changed;
     if (edited != nullptr && reference != nullptr) {
+        if (unchanged_managed_material(*edited, *reference)) return changed;
         // Only compares options existing in both configs.
         changed = deep_compare ?
                 deep_diff(edited->config, reference->config) :

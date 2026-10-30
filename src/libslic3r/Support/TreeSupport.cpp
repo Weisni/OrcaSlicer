@@ -1271,8 +1271,7 @@ void TreeSupport::detect_overhangs(bool check_support_necessity/* = false*/)
             m_object->remove_bridges_from_contacts(lower_layer, layer, extrusion_width_scaled, &layer->loverhangs, max_bridge_length, break_bridge);
         }
 
-        // Orca: on layers where wave overhangs generated coverage, clear detected
-        // overhangs + cantilevers so tree support doesn't seed trunks there.
+        // Keep support for uncovered islands when wave paths cover only part of a layer.
         // Enforcers are appended AFTER this point and therefore unaffected.
         // Gate: any printing region with wave_overhangs && support_remaining_areas_after_wave_overhangs.
         if (!layer->wave_overhang_covered_polygons.empty()) {
@@ -1285,8 +1284,8 @@ void TreeSupport::detect_overhangs(bool check_support_necessity/* = false*/)
                 }
             }
             if (wave_support_gate) {
-                layer->loverhangs.clear();
-                layer->cantilevers.clear();
+                layer->loverhangs = diff_ex(layer->loverhangs, layer->wave_overhang_covered_polygons);
+                layer->cantilevers = diff_ex(layer->cantilevers, layer->wave_overhang_covered_polygons);
             }
         }
 

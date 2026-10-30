@@ -113,9 +113,7 @@ private:
         if (profile_summary(payload) != expected)
             throw std::runtime_error("The downloaded HA material content does not match its requested digest");
         if (!m_keys.empty()) {
-            std::set<std::string> keys;
-            for (const auto& setting : payload.at("settings").items()) keys.insert(setting.key());
-            if (keys != m_keys) throw std::runtime_error("The HA material profile uses a different settings schema; resynchronize it with this Quack version");
+            if (!compatible_setting_keys(payload.at("settings"), m_keys)) throw std::runtime_error("The HA material profile uses a different settings schema; resynchronize it with this Quack version");
         }
     }
     std::filesystem::path entry_path(const std::string& endpoint, const Json& summary) const

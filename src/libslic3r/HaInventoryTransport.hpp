@@ -140,13 +140,24 @@ inline void validate_bundle(const Json &bundle)
     if (bundle.dump().size() > max_bundle_bytes) throw std::runtime_error("HA inventory exceeds its supported byte budget");
 }
 
+inline void normalize_allocation_actuals(Json &row)
+{
+    // Older HA projections omit unknown actuals. SQLite represents them as
+    // NULL, never zero or a previously cached measurement.
+    for (const auto *key : {"actual_weight_mg", "actual_material_cost_micros"})
+        if (!row.contains(key)) row[key] = nullptr;
+}
+
 // Row order is a storage detail, so restart integrity compares stable identities.
 inline Json canonical_bundle(const Json &bundle)
 {
     Json result = Json::object();
     for(const auto &table : tables) {
         result[table] = Json::object();
-        for(const auto &[key,row] : index(table,bundle.at("tables").at(table))) result[table][key] = *row;
+        for(const auto &[key,row] : index(table,bundle.at("tables").at(table))) {
+            result[table][key] = *row;
+            if (table == "allocations") normalize_allocation_actuals(result[table][key]);
+        }
     }
     return result;
 }

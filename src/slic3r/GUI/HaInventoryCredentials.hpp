@@ -4,6 +4,7 @@
 #include <iomanip>
 #include <sstream>
 #include <wx/secretstore.h>
+#include <wx/string.h>
 #include <wx/utils.h>
 #include <boost/uuid/detail/sha1.hpp>
 #include <boost/nowide/fstream.hpp>
@@ -53,21 +54,24 @@ inline bool connection_persisted(AppConfig &config)
 
 inline bool valid_token(const std::string &token)
 {
-    if (token.empty() || token.size() > 8192) return false;
-    for (unsigned char c : token) if (c <= 32 || c >= 127) return false;
-    return true;
+    return HaCredentialPolicy::valid_token(token);
 }
 
-inline wxString service(const std::string &origin)
+inline wxString service_for_directory(const std::string &origin, const std::string &directory)
 {
     // The hash names a credential slot; it does not encrypt the token.
-    const auto identity = data_dir() + "\n" + origin;
+    const auto identity = directory + "\n" + origin;
     boost::uuids::detail::sha1 hash;
     hash.process_bytes(identity.data(), identity.size());
     unsigned int digest[5]; hash.get_digest(digest);
     std::ostringstream name; name << "QuackSlicer.HomeAssistant." << std::hex << std::setfill('0');
     for (auto part : digest) name << std::setw(8) << part;
     return wxString::FromUTF8(name.str().c_str());
+}
+
+inline wxString service(const std::string &origin)
+{
+    return service_for_directory(origin, HaCredentialPolicy::credential_directory_identity(data_dir()));
 }
 
 inline void stage(const std::string &endpoint, const std::string &token)
@@ -103,10 +107,18 @@ inline std::string ha_inventory_token(const std::string &endpoint)
     std::string token;
 #if wxUSE_SECRETSTORE
     auto store = wxSecretStore::GetDefault();
-    wxString username;
-    wxSecretValue secret;
-    if (store.IsOk() && store.Load(HaInventoryCredentials::service(origin), username, secret) && secret.IsOk())
-        token.assign(static_cast<const char *>(secret.GetData()), secret.GetSize());
+    if (store.IsOk()) {
+        token = HaCredentialPolicy::load_saved_token(data_dir(), [&](const std::string &directory) {
+            wxString username;
+            wxSecretValue secret;
+            if (!store.Load(HaInventoryCredentials::service_for_directory(origin, directory), username, secret) || !secret.IsOk())
+                return std::string();
+            return std::string(static_cast<const char *>(secret.GetData()), secret.GetSize());
+        }, [&](const std::string &directory, const std::string &value) {
+            return store.Save(HaInventoryCredentials::service_for_directory(origin, directory), "home-assistant",
+                              wxSecretValue(wxString::FromUTF8(value.c_str())));
+        });
+    }
 #endif
     if (!HaInventoryCredentials::valid_token(token)) {
         token.clear();

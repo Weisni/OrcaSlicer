@@ -1,5 +1,12 @@
 #include <catch2/catch_test_macros.hpp>
+#include <cstddef>
+#include <map>
+#include <string>
+#include "libslic3r/Config.hpp"
+#include "libslic3r/PresetBundle.hpp"
+#include "libslic3r/HaMaterialBinding.hpp"
 #include "libslic3r/HaProjectMaterialSync.hpp"
+#include "libslic3r/HaProjectMaterialDifferences.hpp"
 
 using namespace Slic3r::HaProjectMaterialSync;
 
@@ -7,6 +14,135 @@ static std::vector<Row> ha_project_rows()
 {
     return {{{"A1", "roll-a", "Vendor", "PLA", "PLA", "#FFFFFF", "Special PLA", 3}, "Special PLA"},
             {{"A2", "roll-b", "Vendor", "PETG", "PETG", "#123456", "", 4}, "Generic PETG"}};
+}
+
+TEST_CASE("Physical HA rolls cannot replace virtual project materials", "[HaProjectMaterialSync][Regression]")
+{
+    const Project project{{"Physical", "Mixed"}, {"#112233", "#79879E"}, {}, {false, true}};
+    const auto rows = ha_project_rows();
+    for (const auto &selection : std::vector<Selection>{{0, 1, false}, {0, 1, true}, {0, 1, false, true}}) {
+        CHECK_THROWS(stage(project, rows, rows, {selection}));
+    }
+    CHECK_THROWS(stage(project, rows, rows, {{0, 0, false}, {1, 1, false}}));
+    CHECK(project.colors == std::vector<std::string>{"#112233", "#79879E"});
+    const auto physical = stage(project, rows, rows, {{0, 0, false}});
+    CHECK(physical.colors == std::vector<std::string>{"#FFFFFF", "#79879E"});
+    CHECK(physical.is_mixed == project.is_mixed);
+}
+
+TEST_CASE("Virtual project bindings cannot publish generated colors to physical HA rolls", "[HaProjectMaterialSync][Regression]")
+{
+    const Project project{{"Special PLA", "Generic PETG"}, {"#ABCDEF", "#79879E"}, {}, {false, true}};
+    const auto rows = ha_project_rows();
+    const std::vector<Slic3r::HaMaterialBinding::Binding> bindings{
+        {"roll-a", "endpoint", "printer"}, {"roll-b", "endpoint", "printer"}};
+    const auto differences = Slic3r::HaProjectMaterialDifferences::compare(project, rows, bindings, "endpoint", "printer");
+    REQUIRE(differences.size() == 1);
+    CHECK(differences.front().project_index == 0);
+    CHECK(differences.front().field == Slic3r::HaProjectMaterialDifferences::Field::Color);
+    CHECK(differences.front().after == "#ABCDEF");
+}
+
+TEST_CASE("Appended physical HA materials move before mixed slots with all metadata", "[HaProjectMaterialSync][Regression]")
+{
+    Slic3r::PresetBundle bundle;
+    bundle.set_num_filaments(4, "#FFFFFF");
+    bundle.filament_presets = {"Physical A", "Physical B", "Mixed", "New HA"};
+    auto &config = bundle.project_config;
+    config.option<Slic3r::ConfigOptionBools>("filament_is_mixed")->values = {false, false, true, false};
+    config.option<Slic3r::ConfigOptionStrings>("filament_mixed_components")->values = {"", "", "1,4", ""};
+    config.option<Slic3r::ConfigOptionStrings>("filament_mixed_sublayer_ratios")->values = {"", "", "0.25,0.75", ""};
+    config.option<Slic3r::ConfigOptionBools>("filament_mixed_gradient")->values = {false, false, true, false};
+    config.option<Slic3r::ConfigOptionStrings>("filament_mixed_gradient_range")->values = {"", "", "0.9,0.1", ""};
+    config.option<Slic3r::ConfigOptionStrings>("filament_mixed_gradient_curve")->values = {"", "", "custom curve", ""};
+    config.option<Slic3r::ConfigOptionBools>("filament_mixed_gradient_per_part")->values = {false, false, true, false};
+    config.option<Slic3r::ConfigOptionStrings>("filament_colour")->values = {"#112233", "#445566", "#79879E", "#FFFFFF"};
+    config.option<Slic3r::ConfigOptionStrings>("filament_colour_type")->values = {"1", "1", "0", "1"};
+    config.option<Slic3r::ConfigOptionStrings>("filament_multi_colour")->values = {"#112233", "#445566", "#79879E;#112233", "#FFFFFF"};
+    config.option<Slic3r::ConfigOptionInts>("filament_map")->values = {1, 2, 3, 4};
+    config.option<Slic3r::ConfigOptionInts>("filament_nozzle_map")->values = {4, 3, 2, 1};
+    config.option<Slic3r::ConfigOptionInts>("filament_volume_map")->values = {0, 1, 2, 3};
+    config.option<Slic3r::ConfigOptionStrings>("ha_material_bindings")->values = {"roll-a", "roll-b", "", "roll-new"};
+    bundle.ams_multi_color_filment = {{"a"}, {"b"}, {"mix"}, {"new"}};
+    std::vector<double> matrix{0, 1, 2, 3, 10, 11, 12, 13, 20, 21, 22, 23, 30, 31, 32, 33};
+    for (size_t i = 0; i < 16; ++i) matrix.push_back(matrix[i] + 100);
+    config.option<Slic3r::ConfigOptionFloats>("flush_volumes_matrix")->values = matrix;
+    config.option<Slic3r::ConfigOptionFloats>("flush_multiplier")->values = {1., 1.5};
+    config.option<Slic3r::ConfigOptionFloats>("flush_volumes_vector")->values = {0, 1, 10, 11, 20, 21, 30, 31};
+    config.set_key_value("support_filament", new Slic3r::ConfigOptionInt(3));
+    config.set_key_value("support_interface_filament", new Slic3r::ConfigOptionInt(4));
+    const auto remap = normalize_slot_order(bundle);
+    CHECK(remap == std::map<int, int>{{2, 3}, {3, 2}});
+    CHECK(bundle.filament_presets == std::vector<std::string>{"Physical A", "Physical B", "New HA", "Mixed"});
+    CHECK(config.option<Slic3r::ConfigOptionStrings>("filament_colour")->values == std::vector<std::string>{"#112233", "#445566", "#FFFFFF", "#79879E"});
+    CHECK(config.option<Slic3r::ConfigOptionStrings>("filament_colour_type")->values == std::vector<std::string>{"1", "1", "1", "0"});
+    CHECK(config.option<Slic3r::ConfigOptionStrings>("filament_multi_colour")->values[3] == "#79879E;#112233");
+    CHECK(config.option<Slic3r::ConfigOptionStrings>("ha_material_bindings")->values == std::vector<std::string>{"roll-a", "roll-b", "roll-new", ""});
+    CHECK(config.option<Slic3r::ConfigOptionBools>("filament_is_mixed")->values == std::vector<unsigned char>{false, false, false, true});
+    CHECK(config.option<Slic3r::ConfigOptionStrings>("filament_mixed_components")->values[3] == "1,3");
+    CHECK(config.option<Slic3r::ConfigOptionStrings>("filament_mixed_sublayer_ratios")->values[3] == "0.25,0.75");
+    CHECK(config.option<Slic3r::ConfigOptionBools>("filament_mixed_gradient")->values[3]);
+    CHECK(config.option<Slic3r::ConfigOptionStrings>("filament_mixed_gradient_range")->values[3] == "0.9,0.1");
+    CHECK(config.option<Slic3r::ConfigOptionStrings>("filament_mixed_gradient_curve")->values[3] == "custom curve");
+    CHECK(config.option<Slic3r::ConfigOptionBools>("filament_mixed_gradient_per_part")->values[3]);
+    CHECK(config.option<Slic3r::ConfigOptionInts>("filament_map")->values == std::vector<int>{1, 2, 4, 3});
+    CHECK(config.option<Slic3r::ConfigOptionInts>("filament_nozzle_map")->values == std::vector<int>{4, 3, 1, 2});
+    CHECK(config.option<Slic3r::ConfigOptionInts>("filament_volume_map")->values == std::vector<int>{0, 1, 3, 2});
+    CHECK(bundle.ams_multi_color_filment == std::vector<std::vector<std::string>>{{"a"}, {"b"}, {"new"}, {"mix"}});
+    const std::vector<size_t> order{0, 1, 3, 2};
+    const auto &actual_matrix = config.option<Slic3r::ConfigOptionFloats>("flush_volumes_matrix")->values;
+    for (size_t nozzle = 0; nozzle < 2; ++nozzle)
+        for (size_t row = 0; row < 4; ++row)
+            for (size_t col = 0; col < 4; ++col)
+                CHECK(actual_matrix[nozzle * 16 + row * 4 + col] == matrix[nozzle * 16 + order[row] * 4 + order[col]]);
+    CHECK(config.option<Slic3r::ConfigOptionFloats>("flush_multiplier")->values == std::vector<double>{1., 1.5});
+    CHECK(config.option<Slic3r::ConfigOptionFloats>("flush_volumes_vector")->values == std::vector<double>{0, 1, 10, 11, 30, 31, 20, 21});
+    CHECK(config.option<Slic3r::ConfigOptionInt>("support_filament")->value == 4);
+    CHECK(config.option<Slic3r::ConfigOptionInt>("support_interface_filament")->value == 3);
+    const auto unchanged = config;
+    CHECK(normalize_slot_order(bundle).empty());
+    CHECK(config == unchanged);
+}
+
+TEST_CASE("Projects without mixed slots keep their exact ordering and configuration", "[HaProjectMaterialSync][Regression]")
+{
+    Slic3r::PresetBundle bundle;
+    bundle.set_num_filaments(2, "#FFFFFF");
+    const auto config = bundle.project_config;
+    const auto presets = bundle.filament_presets;
+    CHECK(normalize_slot_order(bundle).empty());
+    CHECK(bundle.project_config == config);
+    CHECK(bundle.filament_presets == presets);
+}
+
+TEST_CASE("Physical slot normalization pads missing optional metadata without inheriting another slot", "[HaProjectMaterialSync][Regression]")
+{
+    Slic3r::PresetBundle bundle;
+    bundle.set_num_filaments(4, "#FFFFFF");
+    auto &config = bundle.project_config;
+    config.option<Slic3r::ConfigOptionBools>("filament_is_mixed")->values = {false, false, true};
+    config.option<Slic3r::ConfigOptionStrings>("filament_mixed_components")->values = {"", "", "1,2"};
+    config.option<Slic3r::ConfigOptionStrings>("ha_material_bindings")->values = {"a", "b"};
+    config.option<Slic3r::ConfigOptionBools>("filament_mixed_gradient")->values = {false, false, true};
+    CHECK(normalize_slot_order(bundle) == std::map<int, int>{{2, 3}, {3, 2}});
+    CHECK(config.option<Slic3r::ConfigOptionStrings>("ha_material_bindings")->values == std::vector<std::string>{"a", "b", "", ""});
+    CHECK(config.option<Slic3r::ConfigOptionStrings>("filament_mixed_components")->values == std::vector<std::string>{"", "", "", "1,2"});
+    CHECK(config.option<Slic3r::ConfigOptionBools>("filament_mixed_gradient")->values == std::vector<unsigned char>{false, false, false, true});
+}
+
+TEST_CASE("Material reference remapping preserves automatic support and absent settings", "[HaProjectMaterialSync][Regression]")
+{
+    Slic3r::DynamicPrintConfig config;
+    const std::map<int, int> remap{{2, 3}, {3, 2}};
+    config.set_key_value("support_filament", new Slic3r::ConfigOptionInt(0));
+    remap_material_references(config, remap);
+    CHECK(config.option<Slic3r::ConfigOptionInt>("support_filament")->value == 0);
+    CHECK_FALSE(config.has("support_interface_filament"));
+    config.option<Slic3r::ConfigOptionInt>("support_filament")->value = 3;
+    config.set_key_value("support_interface_filament", new Slic3r::ConfigOptionInt(4));
+    remap_material_references(config, remap);
+    CHECK(config.option<Slic3r::ConfigOptionInt>("support_filament")->value == 4);
+    CHECK(config.option<Slic3r::ConfigOptionInt>("support_interface_filament")->value == 3);
 }
 
 TEST_CASE("Selected HA mappings preserve all unchecked project filaments and their indices", "[HaProjectMaterialSync]")

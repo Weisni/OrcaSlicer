@@ -1640,6 +1640,15 @@ void PlaterPresetComboBox::update()
             const auto bindings = HaMaterialBinding::read(m_preset_bundle->project_config, m_preset_bundle->filament_presets.size());
             const auto &binding = bindings.at(m_filament_idx);
             if (!binding.spool_uuid.empty()) {
+                // Existing project names remain available offline. Only current
+                // mounted-slot decoration depends on a fresh provider roster.
+                const bool locally_edited = selected_filament_preset->is_dirty ||
+                    HaMaterialLocalOverride::has_local_edits(*selected_filament_preset);
+                const auto project_profile = from_u8((locally_edited ? Preset::suffix_modified() : std::string()) +
+                    HaMaterialProvider::display_name(*m_preset_bundle, size_t(m_filament_idx), *selected_filament_preset));
+                SetTextLabel(project_profile);
+                tooltip = from_u8(binding.spool_uuid + "\n") + project_profile;
+                ShowBadge(false);
                 const auto data = HaMaterialProvider::snapshot();
                 if (!data.is_null()) {
                     const auto rolls = HaMaterialCatalog::available(data);
@@ -1649,10 +1658,6 @@ void PlaterPresetComboBox::update()
                         const auto slot = roll.slot.empty() ? _L("Inventory") : from_u8(roll.slot);
                         // Keep the effective project profile visible, including local
                         // overrides, instead of replacing it with only the physical roll.
-                        const bool locally_edited = selected_filament_preset->is_dirty ||
-                            HaMaterialLocalOverride::has_local_edits(*selected_filament_preset);
-                        const auto project_profile = from_u8((locally_edited ? Preset::suffix_modified() : std::string()) +
-                            HaMaterialProvider::display_name(*m_preset_bundle, size_t(m_filament_idx), *selected_filament_preset));
                         auto compact_profile = project_profile.BeforeFirst('@').Trim();
                         if (compact_profile.IsEmpty()) compact_profile = project_profile;
                         SetTextLabel(compact_profile + " | " + slot + " - " + from_u8(roll.product));

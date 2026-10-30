@@ -1,4 +1,4 @@
-app-id: com.orcaslicer.OrcaSlicer
+app-id: com.quackslicer.QuackSlicer
 runtime: org.gnome.Platform
 runtime-version: "50"
 sdk: org.gnome.Sdk
@@ -6,7 +6,7 @@ sdk-extensions:
   - org.freedesktop.Sdk.Extension.llvm21
 command: entrypoint
 separate-locales: true
-rename-icon: OrcaSlicer
+rename-icon: QuackSlicer
 build-options:
   append-path: /usr/lib/sdk/llvm21/bin
   prepend-ld-library-path: /usr/lib/sdk/llvm21/lib
@@ -33,8 +33,8 @@ finish-args:
   # Allow read-only access to OrcaSlicer's legacy config and cache directories (if they exist) for migration purposes.
   - --filesystem=~/.var/app/io.github.softfever.OrcaSlicer:ro
   # Allow OrcaSlicer to own and talk to instance-check D-Bus names (InstanceCheck.cpp)
-  - --talk-name=com.orcaslicer.OrcaSlicer.InstanceCheck.*
-  - --own-name=com.orcaslicer.OrcaSlicer.InstanceCheck.*
+  - --talk-name=com.quackslicer.QuackSlicer.InstanceCheck.*
+  - --own-name=com.quackslicer.QuackSlicer.InstanceCheck.*
   - --system-talk-name=org.freedesktop.UDisks2
   - --env=SPNAV_SOCKET=/run/spnav.sock
 
@@ -389,8 +389,9 @@ modules:
     post-install:
 
       - | # Desktop integration files
-        install -Dm644 -t /app/share/icons/hicolor/scalable/apps/ resources/images/OrcaSlicer.svg
-        install -Dm644 ${FLATPAK_ID}.metainfo.xml /app/share/metainfo/${FLATPAK_ID}.metainfo.xml
+        install -Dm644 resources/images/OrcaSlicer.svg /app/share/icons/hicolor/scalable/apps/QuackSlicer.svg
+        install -Dm644 com.quackslicer.QuackSlicer.metainfo.xml /app/share/metainfo/${FLATPAK_ID}.metainfo.xml
+        desktop-file-edit --set-key=Name --set-value=QuackSlicer /app/share/applications/${FLATPAK_ID}.desktop
         desktop-file-edit --set-key=Exec --set-value="entrypoint %U" /app/share/applications/${FLATPAK_ID}.desktop
         install -Dm755 entrypoint /app/bin
         install -Dm755 umount /app/bin
@@ -442,7 +443,7 @@ modules:
 
       # AppData metainfo for GNOME Software & Co.
       - type: file
-        path: com.orcaslicer.OrcaSlicer.metainfo.xml
+        path: com.quackslicer.QuackSlicer.metainfo.xml
 
       # Startup script
       - type: file

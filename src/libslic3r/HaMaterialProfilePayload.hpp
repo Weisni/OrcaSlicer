@@ -8,6 +8,25 @@
 
 namespace Slic3r::HaMaterialProfile {
 using Json = nlohmann::json;
+// Quack 2.5.24 publishes 149 material settings. Orca 2.5.0 Beta adds
+// two nullable filament overrides; omitting both retains printer-level behavior.
+inline const std::set<std::string>& beta_toolchange_setting_keys()
+{
+    static const std::set<std::string> keys{
+        "filament_retract_length_toolchange", "filament_retract_restart_extra_toolchange"};
+    return keys;
+}
+inline bool compatible_setting_keys(const Json& settings, const std::set<std::string>& current)
+{
+    std::set<std::string> supplied;
+    for (const auto& setting : settings.items()) supplied.insert(setting.key());
+    if (supplied == current) return true;
+    auto legacy = current;
+    for (const auto& key : beta_toolchange_setting_keys())
+        if (legacy.erase(key) != 1) return false;
+    return supplied == legacy;
+}
+
 inline void require_text(const Json& value, size_t maximum, bool allow_empty = false)
 {
     if (!value.is_string()) throw std::runtime_error("Invalid material profile text");

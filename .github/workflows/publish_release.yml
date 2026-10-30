@@ -26,6 +26,12 @@ on:
         required: true
         type: string
 
+# One publisher for the repository, across manual and workflow-run triggers.
+# Never cancel a publisher halfway through a release mutation.
+concurrency:
+  group: release-publisher
+  cancel-in-progress: false
+
 permissions:
   contents: write   # upload release assets
   actions: read     # download artifacts from another run
@@ -88,6 +94,10 @@ jobs:
             exit 1
           fi
           is_draft=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq '.isDraft')
+          if [[ "$TAG" == *-* ]] && [ "$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isPrerelease --jq '.isPrerelease')" != true ]; then
+            echo "::error::A prerelease version requires a prerelease draft."
+            exit 1
+          fi
           if [ "$is_draft" != "true" ]; then
             echo "::error::Release '$TAG' is published, not a draft. Aborting to avoid touching a live release."
             exit 1
@@ -114,10 +124,30 @@ jobs:
             echo "::error::Source run did not conclude 'success' ($conclusion). Refusing to publish an incomplete release."
             exit 1
           fi
+          # The HA job belongs to this exact source run, so an unrelated green
+          # workflow or a historical build without the gate cannot qualify.
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/jobs?filter=latest&per_page=100" --paginate \
+            --jq '.jobs[] | select(.name | startswith("Home Assistant materials regression gate /")) | .conclusion' > ha-gate-results
+          if [ "$(cat ha-gate-results)" != success ]; then
+            echo "::error::The exact source build lacks a successful HA materials gate."
+            exit 1
+          fi
+          echo "RELEASE_HEAD_SHA=$head_sha" >> "$GITHUB_ENV"
           if [ "$head_sha" != "$release_target_sha" ]; then
             echo "::error::Source run SHA $head_sha does not match draft release target $release_target_sha ($release_target)."
             exit 1
           fi
+
+      - name: Checkout verified release source
+        if: ${{ env.PUBLISH == 'true' }}
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ env.RELEASE_HEAD_SHA }}
+          persist-credentials: false
+
+      - name: Verify existing immutable tag
+        if: ${{ env.PUBLISH == 'true' }}
+        run: python3 scripts/verify_release_target.py --repo "$GITHUB_REPOSITORY" --tag "$TAG" --head "$RELEASE_HEAD_SHA"
 
       - name: Download release artifacts from build run
         if: ${{ env.PUBLISH == 'true' }}
@@ -127,7 +157,9 @@ jobs:
             -p 'QuackSlicer_Windows_V*' \
             -p 'QuackSlicer_Mac_universal_*' \
             -p 'QuackSlicer_Linux_ubuntu_*' \
-            -p 'PDB'
+            -p 'QuackSlicer-Linux-flatpak_*' \
+            -p 'PDB' \
+            -p 'release-matrix'
           echo "Downloaded artifact folders:"
           ls -1 artifacts
 
@@ -149,7 +181,7 @@ jobs:
           # macOS universal DMG (profile-validator DMG isn't downloaded).
           find artifacts -type f -name '*.dmg' -path '*QuackSlicer_Mac_universal_*' -exec cp -v {} upload/ \;
           # Linux AppImage.
-          find artifacts -type f -name '*.AppImage' -exec cp -v {} upload/ \;
+          find artifacts -type f \( -name '*.AppImage' -o -name '*.flatpak' \) -exec cp -v {} upload/ \;
           # Windows debug symbols (PDB archive, for developers).
           find artifacts -type f -name 'Debug_PDB_*.7z' -exec cp -v {} upload/ \;
 
@@ -171,15 +203,41 @@ jobs:
             exit 1
           fi
 
+      - name: Verify complete asset matrix and SHA-256 checksums
+        if: ${{ env.PUBLISH == 'true' }}
+        run: |
+          python3 scripts/validate_release_assets.py upload --tag "$TAG" \
+            --matrix-file artifacts/release-matrix/release-matrix.json --head "$RELEASE_HEAD_SHA"
+          (cd upload && sha256sum --check SHA256SUMS)
+
       - name: Upload assets to draft release
         if: ${{ env.PUBLISH == 'true' }}
         run: |
+          python3 scripts/verify_release_target.py --repo "$GITHUB_REPOSITORY" --tag "$TAG" --head "$RELEASE_HEAD_SHA" --create-tag
           gh release upload "$TAG" upload/* --repo "$GITHUB_REPOSITORY" --clobber
           echo "Uploaded to draft release: $TAG"
           gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name'
 
+      - name: Verify uploaded asset digests
+        if: ${{ env.PUBLISH == 'true' }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" > release-assets.json
+          python3 scripts/validate_release_assets.py upload --tag "$TAG" \
+            --matrix-file artifacts/release-matrix/release-matrix.json --head "$RELEASE_HEAD_SHA" \
+            --remote-json release-assets.json
+
       - name: Publish verified release
         if: ${{ env.PUBLISH == 'true' && github.event_name == 'workflow_run' }}
         run: |
-          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest
+          is_prerelease=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isPrerelease --jq '.isPrerelease')
+          latest=true
+          if [[ "$TAG" == *-* ]]; then
+            if [ "$is_prerelease" != true ]; then
+              echo "::error::A prerelease version requires a prerelease draft."
+              exit 1
+            fi
+          fi
+          if [ "$is_prerelease" = true ]; then latest=false; fi
+          python3 scripts/verify_release_target.py --repo "$GITHUB_REPOSITORY" --tag "$TAG" --head "$RELEASE_HEAD_SHA" --require-tag
+          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest="$latest"
           echo "Published release: $TAG"

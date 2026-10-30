@@ -28,7 +28,8 @@ inline bool preserves_override(const PresetBundle &bundle, size_t index, const H
     const auto &name = bundle.filament_presets[index];
     const auto &edited = bundle.filaments.get_edited_preset();
     const auto *preset = edited.name == name ? &edited : bundle.filaments.find_preset(name);
-    return HaMaterialBinding::preserves_override(binding, preset);
+    const auto *baseline = HaMaterialProfile::stored_preset(bundle.filaments, binding.profile_name);
+    return HaMaterialBinding::preserves_override(binding, preset, baseline);
 }
 inline bool enabled() { return wxGetApp().app_config->get_bool("ha_material_provider_enabled"); }
 inline std::string endpoint() { return wxGetApp().app_config->get("ha_material_demo_endpoint"); }
@@ -158,21 +159,18 @@ inline std::string display_name(const PresetBundle& bundle, size_t index, const 
     if (!HaMaterialProfile::is_managed_name(preset.name)) return fallback;
     const auto bindings = HaMaterialBinding::read(bundle.project_config, bundle.filament_presets.size());
     if (index >= bindings.size() || bindings[index].source != endpoint()) return fallback;
-    const auto data = snapshot();
-    if (data.is_null()) return fallback;
-    for (const auto& roll : HaMaterialCatalog::available(data)) {
-        if (roll.assignment.spool_uuid != bindings[index].spool_uuid) continue;
-        const auto assignment = for_printer(bundle, roll.assignment);
-        if (assignment.material_profile.is_null()) return fallback;
-        const auto base = profile_name(assignment);
-        // Identical settings may share a cache entry but retain distinct
-        // publication names. Read the selected roll's own display metadata.
-        if (preset.name == base || (HaMaterialProfile::is_managed_project_name(preset.name) &&
-            preset.name.compare(0, base.size(), base) == 0))
-            return assignment.material_profile.at("name");
-        return fallback;
+    auto data = snapshot();
+    if (data.is_null() && enabled()) {
+        // attach() restores this graph only after its persisted digest matches
+        // the inventory database. Keep expired metadata out of the live provider.
+        auto &authority = HaInventoryAuthority::state();
+        std::lock_guard<std::mutex> lock(authority.mutex);
+        if (authority.endpoint == endpoint()) data = authority.snapshot;
     }
-    return fallback;
+    if (data.is_null()) return fallback;
+    const auto label = HaMaterialBinding::cached_display_name(bindings[index], preset.name, endpoint(),
+        physical_device_id(), data, [&](const Json &summary) { return profile_cache().find(endpoint(), summary); });
+    return label.empty() ? fallback : label;
 }
 
 inline std::string install_payload(PresetBundle &bundle, const Json& payload, bool selection = true) {

@@ -18,6 +18,7 @@
 #include <shared_mutex>
 
 #include "libslic3r/AppConfig.hpp"
+#include "libslic3r/CustomGCode.hpp"
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
@@ -2765,6 +2766,71 @@ TEST_CASE("Mixed-color filament metadata is snapshotted per printer, with its fi
         CHECK(app_config.get_printer_setting(printer_name, "filament_mixed_components") == "|1,2");
         CHECK(app_config.get_printer_setting(printer_name, "filament_mixed_sublayer_ratios") == "|0.5,0.5");
     }
+}
+
+TEST_CASE("Nozzle changes preserve project mixes instead of restoring another printer snapshot", "[Preset][Bundle][FilamentMixer][ProjectColors]")
+{
+    const bool remembered_mix = GENERATE(false, true);
+    const size_t target_slots = GENERATE(1u, 5u);
+    PresetBundle bundle;
+    AppConfig app_config;
+    add_inmemory_preset(bundle.filaments, "Test PLA");
+    bundle.filaments.select_preset_by_name("Test PLA", true);
+    for (const std::string diameter : {"0.4", "0.6"}) {
+        const auto name = "Test Printer " + diameter;
+        auto &printer = add_inmemory_preset(bundle.printers, name);
+        printer.config.set_key_value("printer_model", new ConfigOptionString("Test Printer"));
+        printer.config.set_key_value("printer_variant", new ConfigOptionString(diameter));
+        printer.config.option<ConfigOptionFloats>("nozzle_diameter")->values = {std::stod(diameter)};
+        app_config.set_printer_setting(name, PRESET_PRINT_NAME, bundle.prints.get_selected_preset_name());
+        app_config.set_printer_setting(name, PRESET_FILAMENT_NAME, "Test PLA");
+    }
+    for (size_t i = 1; i < target_slots; ++i) {
+        const auto key = i < 10 ? "filament_0" + std::to_string(i) : "filament_" + std::to_string(i);
+        app_config.set_printer_setting("Test Printer 0.6", key, "Test PLA");
+    }
+    if (remembered_mix) {
+        app_config.set_printer_setting("Test Printer 0.6", "filament_is_mixed", "0,1,0");
+        app_config.set_printer_setting("Test Printer 0.6", "filament_mixed_components", "|1,1|");
+    }
+    bundle.printers.select_preset_by_name("Test Printer 0.4", true);
+    bundle.set_num_filaments(3u, std::string("#778899"));
+    auto &config = bundle.project_config;
+    config.option<ConfigOptionBools>("filament_is_mixed")->values = {false, false, true};
+    config.option<ConfigOptionStrings>("filament_mixed_components")->values = {"", "", "1,2"};
+    config.option<ConfigOptionStrings>("filament_mixed_sublayer_ratios")->values = {"", "", "0.6,0.4"};
+    config.option<ConfigOptionBools>("filament_mixed_gradient")->values = {false, false, true};
+    config.option<ConfigOptionStrings>("filament_mixed_gradient_range")->values = {"", "", "0.1,0.9"};
+    config.option<ConfigOptionStrings>("filament_mixed_gradient_curve")->values = {"", "", "0,0.1|0.5,0.7|1,0.9"};
+    config.option<ConfigOptionBools>("filament_mixed_gradient_per_part")->values = {false, false, true};
+    const DynamicPrintConfig original(config);
+    const auto check_mix = [&] {
+        CHECK(bundle.is_mixed_filament(2));
+        CHECK_FALSE(bundle.is_mixed_filament(1));
+        for (const auto *key : kMixedKeys) {
+            CAPTURE(key, remembered_mix, target_slots);
+            const auto *current = dynamic_cast<const ConfigOptionVectorBase *>(config.option(key));
+            const auto *saved = dynamic_cast<const ConfigOptionVectorBase *>(original.option(key));
+            REQUIRE(current != nullptr);
+            REQUIRE(saved != nullptr);
+            const auto values = current->vserialize();
+            const auto expected = saved->vserialize();
+            REQUIRE(values.size() == bundle.filament_presets.size());
+            CHECK(std::vector<std::string>(values.begin(), values.begin() + 3) == expected);
+            for (size_t i = 3; i < values.size(); ++i)
+                CHECK(values[i] == (std::string(key) == "filament_is_mixed" ||
+                    std::string(key) == "filament_mixed_gradient" ||
+                    std::string(key) == "filament_mixed_gradient_per_part" ? "0" : ""));
+        }
+    };
+    bundle.printers.select_preset_by_name("Test Printer 0.6", true);
+    bundle.update_selections(app_config, true);
+    CHECK(bundle.filament_presets.size() == 3);
+    check_mix();
+    bundle.export_selections(app_config);
+    bundle.printers.select_preset_by_name("Test Printer 0.4", true);
+    bundle.update_selections(app_config, true);
+    check_mix();
 }
 
 // The gradient curve is the one mixed array whose values contain '|' themselves — it separates the
@@ -5760,6 +5826,11 @@ TEST_CASE("Loading incomplete mixed metadata normalizes slots before adding a fi
     Preset::normalize(config);
 
     PresetBundle bundle;
+    bundle.set_num_filaments(3u, std::string("#808080"));
+    for (const auto &key : bool_keys)
+        bundle.project_config.option<ConfigOptionBools>(key)->values = {false, false, true};
+    for (const auto &key : string_keys)
+        bundle.project_config.option<ConfigOptionStrings>(key)->values = {"", "", "1,2"};
     bundle.load_config_model("test.3mf", std::move(config), Semver());
     const auto presets = bundle.filament_presets;
     REQUIRE(presets.size() == colors.size());
@@ -6067,8 +6138,14 @@ TEST_CASE("remap_model_filament_slots repoints extruder configs and color painti
         Model model;
         ModelObject *object_a = model.add_object();
         object_a->name        = "relocated mix";
+        object_a->config.set("support_filament", 5);
+        object_a->config.set("support_interface_filament", 0);
+        object_a->layer_config_ranges[{0., 1.}].set("extruder", 5);
+        object_a->layer_config_ranges[{0., 1.}].set("support_filament", 5);
+        object_a->layer_config_ranges[{1., 2.}].set("extruder", 2);
         ModelVolume *vol_a    = object_a->add_volume(make_cube(10., 10., 10.));
         vol_a->config.set_key_value("extruder", new ConfigOptionInt(5)); // author slot 5 (0-based 4)
+        vol_a->config.set("support_interface_filament", 5);
         // Author painted one facet with the mix (slot 5) and another with a physical (slot 2).
         {
             TriangleSelector selector(vol_a->mesh());
@@ -6095,10 +6172,20 @@ TEST_CASE("remap_model_filament_slots repoints extruder configs and color painti
     const std::map<int, int> relocations = {{4, 5}};
 
     Model model = make_model();
+    model.plates_custom_gcodes[0].gcodes.push_back({1., CustomGCode::ToolChange, 5, "", ""});
+    model.plates_custom_gcodes[0].gcodes.push_back({2., CustomGCode::ColorChange, 5, "", ""});
     Slic3r::remap_model_filament_slots(model, relocations);
+    CHECK(model.plates_custom_gcodes[0].gcodes[0].extruder == 6);
+    CHECK(model.plates_custom_gcodes[0].gcodes[1].extruder == 5);
 
     const ModelVolume *vol_a = model.objects[0]->volumes.front();
     CHECK(vol_a->config.extruder() == 6); // author slot 5 -> final slot 6
+    CHECK(model.objects[0]->config.opt_int("support_filament") == 6);
+    CHECK(model.objects[0]->config.opt_int("support_interface_filament") == 0);
+    CHECK(vol_a->config.opt_int("support_interface_filament") == 6);
+    CHECK(model.objects[0]->layer_config_ranges.at({0., 1.}).opt_int("support_filament") == 6);
+    CHECK(model.objects[0]->layer_config_ranges.at({0., 1.}).extruder() == 6);
+    CHECK(model.objects[0]->layer_config_ranges.at({1., 2.}).extruder() == 2);
     // Painted states follow: the mix facet moved 5 -> 6, the physical one is untouched.
     REQUIRE(TriangleSelector::has_facets(vol_a->mmu_segmentation_facets.get_data(), EnforcerBlockerType(6)));
     REQUIRE_FALSE(TriangleSelector::has_facets(vol_a->mmu_segmentation_facets.get_data(), EnforcerBlockerType(5)));

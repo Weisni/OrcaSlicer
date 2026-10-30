@@ -1,6 +1,11 @@
 #pragma once
 #include "HaMaterialProfilePayload.hpp"
 #include "Preset.hpp"
+#include "Config.hpp"
+#include "PrintConfig.hpp"
+#include <algorithm>
+#include <cstddef>
+#include <exception>
 
 namespace Slic3r::HaMaterialProfile {
 inline const Preset* stored_preset(const PresetCollection& presets, const std::string& name)
@@ -49,9 +54,63 @@ inline Json capture(const Preset& preset, const Json& authority = nullptr)
             deps = authority.at("dependencies");
         }
     }
-    return seal({{"schema_version", 1}, {"name", name},
+    auto captured = seal({{"schema_version", 1}, {"name", name},
         {"material_type", preset.config.opt_string("filament_type", 0u)},
         {"settings", std::move(settings)}, {"dependencies", std::move(deps)}});
+    if (is_managed_name(preset.name) || !authority.is_null()) {
+        bool defaults_only = true;
+        for (const auto& key : beta_toolchange_setting_keys())
+            defaults_only = defaults_only && preset.config.option(key)->is_nil();
+        if (defaults_only) {
+            auto legacy = captured;
+            for (const auto& key : beta_toolchange_setting_keys()) legacy["settings"].erase(key);
+            legacy = seal(std::move(legacy));
+            const auto canonical = managed_name(legacy);
+            const bool same_identity = preset.name == canonical ||
+                (is_managed_project_name(preset.name) && preset.name.compare(0, canonical.size(), canonical) == 0);
+            // Preserve the published legacy identity only when the effective
+            // settings still match it. Explicit Beta overrides are never omitted.
+            if (same_identity || (!authority.is_null() && digest(legacy) == digest(authority)))
+                return legacy;
+        }
+    }
+    return captured;
+}
+
+// Native controls may expand a broadcast value without changing effective settings.
+// Accept that equivalence only against content verified by its canonical HA identity.
+inline bool matches_managed_baseline(const Preset& effective, const Preset& baseline)
+{
+    if (effective.type != Preset::TYPE_FILAMENT || baseline.type != Preset::TYPE_FILAMENT ||
+        !is_managed_name(baseline.name) || is_managed_project_name(baseline.name) ||
+        (effective.name != baseline.name &&
+         !(is_managed_project_name(effective.name) && effective.name.substr(0, 78) == baseline.name)) ||
+        effective.filament_id != baseline.filament_id)
+        return false;
+    try {
+        if (managed_name(capture(baseline)) != baseline.name) return false;
+        for (const auto &key : setting_keys()) {
+            const auto *current = effective.config.option(key);
+            const auto *original = baseline.config.option(key);
+            if (!current || !original) return false;
+            if (current->serialize() == original->serialize()) continue;
+            const auto *current_vector = dynamic_cast<const ConfigOptionVectorBase *>(current);
+            const auto *original_vector = dynamic_cast<const ConfigOptionVectorBase *>(original);
+            if (key == "filament_extruder_variant" || !filament_options_with_variant.count(key) ||
+                !current_vector || !original_vector || current_vector->size() == 0 || original_vector->size() == 0)
+                return false;
+            const auto current_values = current_vector->vserialize();
+            const auto original_values = original_vector->vserialize();
+            for (size_t i = 0; i < std::max(current_values.size(), original_values.size()); ++i)
+                if (current_values[i < current_values.size() ? i : 0] !=
+                    original_values[i < original_values.size() ? i : 0])
+                    return false;
+        }
+        return true;
+    } catch (const std::exception &) {
+        // Missing or unrecognized schema fields never justify discarding edits.
+        return false;
+    }
 }
 
 inline DynamicPrintConfig decode_config(const Json& payload)
@@ -59,7 +118,7 @@ inline DynamicPrintConfig decode_config(const Json& payload)
     validate(payload);
     const auto keys = setting_keys();
     const auto& settings = payload.at("settings");
-    if (settings.size() != keys.size())
+    if (!compatible_setting_keys(settings, keys))
         throw std::runtime_error("The HA material profile uses a different settings schema; resynchronize it with this Quack version");
     DynamicPrintConfig config;
     for (auto it = settings.begin(); it != settings.end(); ++it) {
@@ -67,6 +126,9 @@ inline DynamicPrintConfig decode_config(const Json& payload)
             throw std::runtime_error("Unknown or non-material setting in HA profile: " + it.key());
         config.set_deserialize_strict(it.key(), it.value().get<std::string>());
     }
+    for (const auto& key : beta_toolchange_setting_keys())
+        if (!settings.contains(key))
+            config.set_deserialize_strict(key, "nil");
     if (config.opt_string("filament_type", 0u) != payload.at("material_type"))
         throw std::runtime_error("The HA profile material type does not match its settings");
     config.set_key_value("inherits", new ConfigOptionString());

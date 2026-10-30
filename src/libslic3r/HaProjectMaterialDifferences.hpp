@@ -4,6 +4,7 @@
 #include <map>
 
 #include "HaMaterialBinding.hpp"
+#include "HaMaterialSource.hpp"
 #include "HaProjectRollPublish.hpp"
 
 namespace Slic3r::HaProjectMaterialDifferences {
@@ -14,6 +15,7 @@ struct Difference {
     Field field;
     std::string before, after, problem;
     std::string before_profile_sha256, after_profile_sha256;
+    bool material_type_mismatch = false;
 };
 
 namespace detail {
@@ -50,6 +52,9 @@ inline std::vector<Difference> compare(const HaProjectMaterialSync::Project &pro
     std::vector<Group> groups;
     std::map<std::string, size_t> by_uuid;
     for (size_t i = 0; i < project.presets.size() && i < bindings.size(); ++i) {
+        // Old projects may retain a physical binding on a virtual slot. Its
+        // generated color and material settings must never be sent to that roll.
+        if (i < project.is_mixed.size() && project.is_mixed[i]) continue;
         const auto &binding = bindings[i];
         if (binding.source != endpoint || binding.printer_id != printer_id || binding.spool_uuid.empty()) continue;
         const auto found = by_uuid.find(binding.spool_uuid);
@@ -80,6 +85,10 @@ inline std::vector<Difference> compare(const HaProjectMaterialSync::Project &pro
                     difference.after = profile.at("name").get<std::string>();
                     difference.before_profile_sha256 = HaMaterialProfile::digest(HaMaterialSource::variant_profile(row.assignment));
                     difference.after_profile_sha256 = HaMaterialProfile::digest(profile);
+                    if (!HaMaterialSource::same_material_family(profile.at("material_type"), row.assignment.material_type)) {
+                        difference.material_type_mismatch = true;
+                        difference.problem = "The project material type does not match the assigned HA roll.";
+                    }
                     for (const auto index : group.project_indices) {
                         HaMaterialProfile::validate(project.profiles.at(index));
                         if (HaMaterialProfile::digest(project.profiles.at(index)) != difference.after_profile_sha256) {

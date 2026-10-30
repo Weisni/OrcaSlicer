@@ -35,7 +35,9 @@ python tools/orca-integration/prepare_test_profile.py --source "$env:APPDATA/Qua
 The profile output must not exist. The source configuration is read only; SQLite's
 backup API reads the committed source state through a read-only connection.
 Only allowlisted preferences and saved JSON presets are copied, credential fields
-are removed, and HA/preheat/network sync start disabled. Presets whose parents
+are removed, and HA/preheat/network sync start disabled. The credential-free saved
+HA endpoint is retained so the dialog does not silently fall back to the local demo
+port; authentication must be configured separately for the test profile. Presets whose parents
 exist only in an un-copied cloud/HA context may require explicit reselection.
 Never point a trial app at the production data directory.
 
@@ -56,3 +58,9 @@ the application may reopen console output instead of respecting pipe redirection
 
 See `docs/QUACK_BETA_LOCAL_TEST_2026-10-30_DE.md` and the German comparison guide
 for actual results, boundaries and open acceptance gates.
+
+Profile snapshot regressions (no live service required):
+
+```powershell
+python -m unittest discover -s tools/orca-integration -p test_prepare_test_profile.py
+```

@@ -123,6 +123,29 @@ TEST_CASE("check_mixed_filament_integrity flags dangling component references", 
     }
 }
 
+TEST_CASE("mixed filament integrity rejects self references within the physical count", "[FilamentMixer][Regression]")
+{
+    // A stale mixed flag can occupy a physical sidebar slot after a project import.
+    REQUIRE(check_mixed_filament_integrity({0, 1}, {"", "1,2"}, 2) == std::vector<size_t>{1});
+}
+
+TEST_CASE("mixed filament integrity rejects other mixed component slots", "[FilamentMixer][Regression]")
+{
+    // The physical count alone cannot establish that a referenced slot is physical.
+    REQUIRE(check_mixed_filament_integrity({0, 1, 1}, {"", "1,1", "1,2"}, 3) == std::vector<size_t>{2});
+}
+
+TEST_CASE("mixed filament integrity accepts physical references beyond a partial mixed flag array", "[FilamentMixer]")
+{
+    REQUIRE(check_mixed_filament_integrity({0, 1}, {"", "1,3"}, 3).empty());
+}
+
+TEST_CASE("mixed filament integrity preserves duplicate physical component references", "[FilamentMixer]")
+{
+    // Strict parameter validation handles duplicates separately from broken references.
+    REQUIRE(check_mixed_filament_integrity({0, 0, 1}, {"", "", "1,1"}, 2).empty());
+}
+
 TEST_CASE("remap_mixed_components_on_delete rewrites ids around the deleted slot", "[FilamentMixer]")
 {
     const std::vector<unsigned char> is_mixed = {0, 0, 0, 1};

@@ -1360,6 +1360,13 @@ void GUI_App::shutdown()
     if (m_is_recreating_gui) return;
     stop_http_server();
     set_closing(true);
+    if (m_task_manager) {
+        m_task_manager->stop();
+        if (!m_task_manager->try_detach_agent()) {
+            BOOST_LOG_TRIVIAL(error) << "Forced shutdown during a native dispatch; physical outcome remains uncertain";
+            std::_Exit(EXIT_FAILURE);
+        }
+    }
     Slic3r::PluginManager::instance().set_shutting_down();
 
     if (m_agent)
@@ -1929,6 +1936,11 @@ int GUI_App::install_plugin(std::string name, std::string package_name, InstallP
 
 void GUI_App::restart_networking()
 {
+    if (m_task_manager && !m_task_manager->try_detach_agent()) {
+        wxMessageBox(_L("The network plug-in cannot be reloaded while a queued print is being sent. Wait for the transfer to finish, then try again."),
+                     _L("Network plug-in busy"), wxOK | wxICON_INFORMATION, mainframe);
+        return;
+    }
     BOOST_LOG_TRIVIAL(info) << __FUNCTION__<< boost::format(" enter, mainframe %1%")%mainframe;
     on_init_network(true);
     StaticBambuLib::reset();
@@ -2096,6 +2108,12 @@ void GUI_App::migrate_network_plugin_config()
 
 bool GUI_App::hot_reload_network_plugin()
 {
+    // Refuse before callbacks, module state or the current agent are changed.
+    if (m_task_manager && !m_task_manager->try_detach_agent()) {
+        wxMessageBox(_L("The network plug-in cannot be reloaded while a queued print is being sent. Wait for the transfer to finish, then try again."),
+                     _L("Network plug-in busy"), wxOK | wxICON_INFORMATION, mainframe);
+        return false;
+    }
     BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << ": starting hot reload";
 
     wxBusyCursor busy;
@@ -3000,6 +3018,14 @@ bool GUI_App::OnInit()
 
 int GUI_App::OnExit()
 {
+    set_closing(true);
+    if (m_task_manager) {
+        m_task_manager->stop();
+        if (!m_task_manager->try_detach_agent()) {
+            BOOST_LOG_TRIVIAL(error) << "Forced shutdown during a native dispatch; physical outcome remains uncertain";
+            std::_Exit(EXIT_FAILURE);
+        }
+    }
     HaMaterialProvider::shutdown_refresh();
     stop_http_server();
     stop_sync_user_preset();

@@ -1,8 +1,107 @@
 #include <catch2/catch_test_macros.hpp>
+#include <map>
 #include "libslic3r/HaCredentialPolicy.hpp"
 #include "libslic3r/CloudCredentialPolicy.hpp"
 
 using namespace Slic3r::HaCredentialPolicy;
+
+TEST_CASE("HA credentials survive equivalent data directory spellings", "[HaCredentialPolicy][Regression]")
+{
+#ifdef _WIN32
+    CHECK(credential_directory_identity("C:/Users/Example/Test-Profile") == "c:/users/example/test-profile");
+    CHECK(credential_directory_identity("c:\\users\\EXAMPLE\\temporary\\..\\test-profile\\") == "c:/users/example/test-profile");
+    CHECK(credential_directory_identity("C:/Users/Example/./Test-Profile/") == "c:/users/example/test-profile");
+    CHECK(credential_directory_identity("C:/Users/Example/Production") != "c:/users/example/test-profile");
+#else
+    CHECK(credential_directory_identity("/Users/Example/temporary/../Test-Profile/") == "/Users/Example/Test-Profile");
+    CHECK(credential_directory_identity("/Users/Example/./Test-Profile") == "/Users/Example/Test-Profile");
+    CHECK(credential_directory_identity("/Users/example/Test-Profile") != "/Users/Example/Test-Profile");
+    CHECK(credential_directory_identity("/Users/Example/Test\\Profile") != "/Users/Example/Test/Profile");
+#endif
+}
+
+TEST_CASE("HA credentials migrate a valid same-directory legacy slot without deleting it", "[HaCredentialPolicy][Regression]")
+{
+#ifdef _WIN32
+    const std::string requested = "C:\\Users\\Example\\Test-Profile\\";
+    const std::string legacy = "C:/Users/Example/Test-Profile";
+    const std::string canonical = "c:/users/example/test-profile";
+#else
+    const std::string requested = "/Users/Example/./Test-Profile/";
+    const std::string legacy = "/Users/Example/Test-Profile/";
+    const std::string canonical = "/Users/Example/Test-Profile";
+#endif
+    std::map<std::string, std::string> store{{legacy, "synthetic-token"}};
+    auto load = [&](const std::string &directory) { const auto found = store.find(directory); return found == store.end() ? std::string() : found->second; };
+    auto save = [&](const std::string &directory, const std::string &token) { store[directory] = token; return true; };
+    CHECK(load_saved_token(requested, load, save) == "synthetic-token");
+    CHECK(store.at(legacy) == "synthetic-token");
+    REQUIRE(store.count(canonical) == 1);
+    CHECK(store.at(canonical) == "synthetic-token");
+}
+
+TEST_CASE("HA credential fallback never searches a different profile or migrates invalid data", "[HaCredentialPolicy][Regression]")
+{
+#ifdef _WIN32
+    const std::string requested = "C:\\Users\\Example\\Test-Profile\\";
+    const std::string legacy = "C:/Users/Example/Test-Profile";
+    const std::string other = "C:/Users/Example/Production";
+#else
+    const std::string requested = "/Users/Example/./Test-Profile/";
+    const std::string legacy = "/Users/Example/Test-Profile/";
+    const std::string other = "/Users/Example/Production";
+#endif
+    std::map<std::string, std::string> store{{legacy, "invalid token"}, {other, "synthetic-production-token"}};
+    const auto original = store;
+    auto load = [&](const std::string &directory) { const auto found = store.find(directory); return found == store.end() ? std::string() : found->second; };
+    auto save = [&](const std::string &directory, const std::string &token) { store[directory] = token; return true; };
+    CHECK(load_saved_token(requested, load, save).empty());
+    CHECK(store == original);
+}
+
+TEST_CASE("HA credentials remain usable when a legacy-slot migration cannot be saved", "[HaCredentialPolicy][Regression]")
+{
+#ifdef _WIN32
+    const std::string requested = "C:\\Users\\Example\\Test-Profile\\";
+    const std::string legacy = "C:/Users/Example/Test-Profile";
+#else
+    const std::string requested = "/Users/Example/./Test-Profile/";
+    const std::string legacy = "/Users/Example/Test-Profile/";
+#endif
+    std::map<std::string, std::string> store{{legacy, "synthetic-token"}};
+    auto load = [&](const std::string &directory) { const auto found = store.find(directory); return found == store.end() ? std::string() : found->second; };
+    auto save = [](const std::string &, const std::string &) { return false; };
+    CHECK(load_saved_token(requested, load, save) == "synthetic-token");
+    CHECK(store.at(legacy) == "synthetic-token");
+    CHECK(store.size() == 1);
+}
+
+TEST_CASE("HA credentials prefer the canonical slot and leave legacy tokens unchanged", "[HaCredentialPolicy][Regression]")
+{
+#ifdef _WIN32
+    const std::string requested = "C:/Users/Example/Test-Profile";
+    const std::string canonical = "c:/users/example/test-profile";
+#else
+    const std::string requested = "/Users/Example/./Test-Profile/";
+    const std::string canonical = "/Users/Example/Test-Profile";
+#endif
+    std::map<std::string, std::string> store{{requested, "legacy-token"}, {canonical, "current-token"}};
+    const auto original = store;
+    auto load = [&](const std::string &directory) { const auto found = store.find(directory); return found == store.end() ? std::string() : found->second; };
+    auto save = [&](const std::string &directory, const std::string &token) { store[directory] = token; return true; };
+    CHECK(load_saved_token(requested, load, save) == "current-token");
+    CHECK(store == original);
+    CHECK(credential_directory_aliases(requested).size() <= 13);
+}
+
+TEST_CASE("HA credentials do not access storage without a data directory", "[HaCredentialPolicy][Regression]")
+{
+    int accesses = 0;
+    auto load = [&](const std::string &) { ++accesses; return std::string("synthetic-token"); };
+    auto save = [&](const std::string &, const std::string &) { ++accesses; return true; };
+    CHECK(load_saved_token("", load, save).empty());
+    CHECK(accesses == 0);
+}
 
 TEST_CASE("HA credentials follow a normalized server origin only", "[ha][credentials]")
 {

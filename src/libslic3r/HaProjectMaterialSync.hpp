@@ -1,6 +1,17 @@
 #pragma once
 
+#include <algorithm>
+#include <cstddef>
 #include <cstdint>
+#include <initializer_list>
+#include <map>
+#include <memory>
+#include <set>
+#include <stdexcept>
+#include <string>
+#include <vector>
+#include "Config.hpp"
+#include "FilamentMixer.hpp"
 #include "HaMaterialSource.hpp"
 #include "HaInventorySelection.hpp"
 #include "PresetBundle.hpp"
@@ -27,6 +38,8 @@ struct Selection {
 struct Project {
     std::vector<std::string> presets, colors;
     std::vector<nlohmann::json> profiles;
+    // Missing entries describe physical slots, including legacy project snapshots.
+    std::vector<unsigned char> is_mixed;
 };
 
 inline std::vector<Selection> all_occupied_selections(const std::vector<Row> &rows)
@@ -61,6 +74,101 @@ inline void extend_project(PresetBundle &bundle, const Project &staged)
     std::copy(old_multi.begin(), old_multi.end(), bundle.project_config.option<ConfigOptionStrings>("filament_multi_colour")->values.begin());
 }
 
+inline void remap_material_references(DynamicPrintConfig &config, const std::map<int, int> &remap)
+{
+    for (const auto *key : {"support_filament", "support_interface_filament"}) {
+        auto *option = config.option<ConfigOptionInt>(key);
+        if (!option || option->value <= 0) continue;
+        const auto moved = remap.find(option->value - 1);
+        if (moved != remap.end()) option->value = moved->second + 1;
+    }
+}
+
+// Return changed zero-based slot IDs for the caller's model/plate remapping.
+// Physical slots keep their relative order and precede all virtual mixed slots.
+inline std::map<int, int> normalize_slot_order(PresetBundle &bundle)
+{
+    const size_t count = bundle.filament_presets.size();
+    const auto *mixed = bundle.project_config.option<ConfigOptionBools>("filament_is_mixed");
+    std::vector<size_t> order;
+    order.reserve(count);
+    for (const bool want_mixed : {false, true})
+        for (size_t i = 0; i < count; ++i)
+            if (bool(mixed && i < mixed->values.size() && mixed->values[i]) == want_mixed)
+                order.push_back(i);
+    std::map<int, int> remap;
+    for (size_t i = 0; i < count; ++i)
+        if (order[i] != i) remap.emplace(int(order[i]), int(i));
+    if (remap.empty()) return remap;
+
+    // Stage the complete permutation so malformed parallel metadata cannot leave
+    // even the caller's private bundle partially reordered.
+    auto config = bundle.project_config;
+    for (const auto *key : {"filament_is_mixed", "filament_mixed_gradient", "filament_mixed_gradient_per_part"})
+        config.option<ConfigOptionBools>(key, true)->values.resize(count, false);
+    for (const auto *key : {"filament_mixed_components", "filament_mixed_sublayer_ratios", "filament_mixed_gradient_range",
+                            "filament_mixed_gradient_curve", "ha_material_bindings"})
+        config.option<ConfigOptionStrings>(key, true)->values.resize(count);
+    for (const auto *key : {"filament_is_mixed", "filament_mixed_components", "filament_mixed_sublayer_ratios",
+                            "filament_mixed_gradient", "filament_mixed_gradient_range", "filament_mixed_gradient_curve",
+                            "filament_mixed_gradient_per_part", "filament_colour", "filament_multi_colour",
+                            "filament_colour_type", "filament_map", "filament_nozzle_map", "filament_volume_map",
+                            "ha_material_bindings"}) {
+        auto *option = dynamic_cast<ConfigOptionVectorBase *>(config.option(key));
+        if (!option || option->size() != count)
+            throw std::runtime_error("Project filament metadata does not match its material slots");
+        const std::unique_ptr<ConfigOption> original(option->clone());
+        for (size_t i = 0; i < count; ++i) option->set_at(original.get(), i, order[i]);
+    }
+    auto *components = config.option<ConfigOptionStrings>("filament_mixed_components");
+    const auto *ordered_mixed = config.option<ConfigOptionBools>("filament_is_mixed");
+    for (size_t i = 0; i < count; ++i) {
+        if (!ordered_mixed->values[i]) continue;
+        auto ids = parse_mixed_components(components->values[i]);
+        bool changed = false;
+        for (auto &id : ids) {
+            if (id < 1 || id > count) continue;
+            const auto moved = remap.find(int(id - 1));
+            if (moved != remap.end()) { id = unsigned(moved->second + 1); changed = true; }
+        }
+        if (changed) components->values[i] = format_mixed_components(ids);
+    }
+
+    // Each nozzle has a contiguous NxN purge matrix; the input/output vector
+    // instead stores one adjacent pair per material. Nozzle settings stay put.
+    if (auto *matrix = config.option<ConfigOptionFloats>("flush_volumes_matrix")) {
+        const auto original = matrix->values;
+        const size_t block_size = count * count;
+        if (original.size() % block_size != 0)
+            throw std::runtime_error("Project purge matrix does not match its material slots");
+        for (size_t block = 0; block < original.size(); block += block_size)
+            for (size_t row = 0; row < count; ++row)
+                for (size_t col = 0; col < count; ++col)
+                    matrix->values[block + row * count + col] = original[block + order[row] * count + order[col]];
+    }
+    if (auto *volumes = config.option<ConfigOptionFloats>("flush_volumes_vector"); volumes && !volumes->values.empty()) {
+        const auto original = volumes->values;
+        if (original.size() != count * 2)
+            throw std::runtime_error("Project purge volumes do not match its material slots");
+        for (size_t i = 0; i < count; ++i)
+            for (size_t direction = 0; direction < 2; ++direction)
+                volumes->values[2 * i + direction] = original[2 * order[i] + direction];
+    }
+    auto presets = bundle.filament_presets;
+    auto ams_colors = bundle.ams_multi_color_filment;
+    ams_colors.resize(count);
+    const auto original_ams_colors = ams_colors;
+    for (size_t i = 0; i < count; ++i) {
+        presets[i] = bundle.filament_presets[order[i]];
+        ams_colors[i] = original_ams_colors[order[i]];
+    }
+    remap_material_references(config, remap);
+    bundle.project_config.swap(config);
+    bundle.filament_presets.swap(presets);
+    bundle.ams_multi_color_filment.swap(ams_colors);
+    return remap;
+}
+
 // Stage only explicit mappings. Existing indices and unchecked materials remain
 // stable. New full materials may be appended without remapping object/plate indices.
 inline Project stage(const Project &project, const std::vector<Row> &reviewed,
@@ -71,6 +179,9 @@ inline Project stage(const Project &project, const std::vector<Row> &reviewed,
     Project result = project;
     std::set<size_t> sources, targets;
     for (const auto &selection : selections) {
+        if (selection.project_index < project.presets.size() &&
+            selection.project_index < project.is_mixed.size() && project.is_mixed[selection.project_index])
+            throw std::runtime_error("A physical HA roll cannot replace a virtual mixed filament; select a physical project filament");
         if (selection.color_only && selection.profile_only)
             throw std::runtime_error("Select profile, color or both");
         if (selection.source_index >= reviewed.size())

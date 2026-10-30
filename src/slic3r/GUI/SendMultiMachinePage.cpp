@@ -763,6 +763,13 @@ bool SendMultiMachinePage::get_ams_mapping_result(std::string &mapping_array_str
 void SendMultiMachinePage::on_send(wxCommandEvent& event)
 {
     event.Skip();
+    if (app_config->get_bool("ha_material_demo_enabled") || app_config->get_bool("ha_material_provider_enabled")) {
+        MessageDialog dialog(this,
+            _L("Multi-printer dispatch is unavailable while Home Assistant materials are enabled. Use the single-printer print dialog to preserve material reservations and preheating."),
+            _L("Home Assistant materials"), wxOK | wxICON_INFORMATION);
+        dialog.ShowModal();
+        return;
+    }
     BOOST_LOG_TRIVIAL(info) << "SendMultiMachinePage: on_send";
 
     int result = m_plater->send_gcode(m_print_plate_idx, [this](int export_stage, int current, int total, bool& cancel) {
@@ -847,7 +854,12 @@ void SendMultiMachinePage::on_send(wxCommandEvent& event)
 
 
 
-           wxGetApp().getTaskManager()->start_print(print_params, &settings);
+           if (wxGetApp().getTaskManager()->start_print(print_params, &settings) != 0) {
+               MessageDialog dialog(this, _L("The print queue rejected this request. Check the Home Assistant material mode before sending again."),
+                   _L("Print queue"), wxOK | wxICON_WARNING);
+               dialog.ShowModal();
+               return;
+           }
        }
        catch (...)
        {}

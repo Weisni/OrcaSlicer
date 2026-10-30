@@ -1,4 +1,5 @@
 #pragma once
+#include <cstddef>
 #include "HaProjectMaterialDialog.hpp"
 #include "HaMaterialProvider.hpp"
 #include "libslic3r/HaProjectMaterialDifferences.hpp"
@@ -6,6 +7,7 @@
 #include <wx/radiobut.h>
 #include <wx/checkbox.h>
 #include <wx/scrolwin.h>
+#include "I18N.hpp"
 
 namespace Slic3r::GUI {
 // Uses the same slot/color/mapping vocabulary and native controls as AMS sync.
@@ -27,6 +29,9 @@ public:
         directions->Add(download, 0, wxRIGHT, FromDIP(24)); directions->Add(upload);
         layout->Add(directions, 0, wxALIGN_CENTER | wxALL, FromDIP(20));
         const auto bindings = HaMaterialBinding::read(wxGetApp().preset_bundle->project_config, m_project.presets.size());
+        for (size_t i = 0; i < m_project.presets.size(); ++i)
+            if (i >= m_project.is_mixed.size() || !m_project.is_mixed[i])
+                m_project_indices.push_back(i);
         auto *slots = new wxBoxSizer(wxHORIZONTAL);
         for (size_t i = 0; i < m_rows.size(); ++i) {
             const auto &a = m_rows[i].assignment;
@@ -46,12 +51,14 @@ public:
                         0, wxALIGN_CENTER | wxBOTTOM, FromDIP(12));
             auto *mapping = new wxChoice(panel, wxID_ANY, wxDefaultPosition, FromDIP(wxSize(110, -1)));
             mapping->Append(_L("Unmapped"));
-            for (size_t p = 0; p < m_project.presets.size(); ++p) mapping->Append(wxString::Format(_L("Filament %d"), int(p + 1)));
+            for (const auto p : m_project_indices) mapping->Append(wxString::Format(_L("Filament %d"), int(p + 1)));
             mapping->Append(_L("Add filament")); mapping->SetSelection(0);
-            for (size_t p = 0; p < bindings.size(); ++p)
-                if (!a.spool_uuid.empty() && bindings[p].spool_uuid == a.spool_uuid && bindings[p].source == HaMaterialProvider::endpoint()) {
-                    mapping->SetSelection(int(p + 1)); check->SetValue(true); break;
+            for (size_t target = 0; target < m_project_indices.size(); ++target) {
+                const auto p = m_project_indices[target];
+                if (p < bindings.size() && !a.spool_uuid.empty() && bindings[p].spool_uuid == a.spool_uuid && bindings[p].source == HaMaterialProvider::endpoint()) {
+                    mapping->SetSelection(int(target + 1)); check->SetValue(true); break;
                 }
+            }
             mapping->Enable(!a.spool_uuid.empty());
             mapping->SetToolTip(_L("Choose the project filament associated with this physical roll."));
             column->Add(mapping, 0, wxALIGN_CENTER); panel->SetSizer(column);
@@ -82,8 +89,9 @@ public:
         for (const auto &difference : m_differences) {
             const auto &assignment = m_rows.at(difference.source_index).assignment;
             const bool missing_profile = difference.field == HaProjectMaterialDifferences::Field::Profile &&
-                difference.before_profile_sha256.empty() && !difference.after_profile_sha256.empty();
-            const auto field = difference.field == HaProjectMaterialDifferences::Field::Profile ?
+                difference.problem.empty() && difference.before_profile_sha256.empty() && !difference.after_profile_sha256.empty();
+            const auto field = difference.material_type_mismatch ? _L("Check roll assignment") :
+                difference.field == HaProjectMaterialDifferences::Field::Profile ?
                 (missing_profile ? _L("Save full HA profile") : _L("Profile")) : _L("Color");
             const auto location = assignment.slot.empty() ? _L("Inventory") : from_u8(assignment.slot);
             auto *check = new wxCheckBox(changes, wxID_ANY,
@@ -98,7 +106,7 @@ public:
                 _L("Home Assistant:") + " " + before + "\n" + _L("Project:") + " " + from_u8(difference.after));
             values->Wrap(FromDIP(650));
             change_layout->Add(values, 0, wxEXPAND | wxLEFT | wxTOP | wxBOTTOM, FromDIP(7));
-            if (difference.field == HaProjectMaterialDifferences::Field::Profile && !difference.after_profile_sha256.empty()) {
+            if (difference.problem.empty() && difference.field == HaProjectMaterialDifferences::Field::Profile && !difference.after_profile_sha256.empty()) {
                 auto *settings = new wxStaticText(changes, wxID_ANY, difference.before_profile_sha256.empty()
                     ? _L("No complete material profile is saved in Home Assistant for this roll and nozzle configuration. Saving creates it; matching profile names alone do not confirm matching settings.")
                     : _L("Material settings differ. The complete project profile will replace the HA profile for this roll and nozzle configuration."));
@@ -106,7 +114,9 @@ public:
                 change_layout->Add(settings, 0, wxEXPAND | wxLEFT | wxBOTTOM, FromDIP(7));
             }
             if (!difference.problem.empty()) {
-                auto *problem = new wxStaticText(changes, wxID_ANY, from_u8(difference.problem));
+                auto *problem = new wxStaticText(changes, wxID_ANY, difference.material_type_mismatch
+                    ? _L("The project material type does not match the assigned HA roll. Select the correct physical roll before synchronizing.")
+                    : from_u8(difference.problem));
                 problem->Wrap(FromDIP(650));
                 change_layout->Add(problem, 0, wxEXPAND | wxLEFT | wxBOTTOM, FromDIP(7));
             }
@@ -119,7 +129,9 @@ public:
         changes->FitInside();
         upload_layout->Add(changes, 1, wxEXPAND);
         size_t unavailable = 0;
-        for (const auto &binding : bindings) {
+        for (const auto p : m_project_indices) {
+            if (p >= bindings.size()) { ++unavailable; continue; }
+            const auto &binding = bindings[p];
             if (binding.spool_uuid.empty() || binding.source != HaMaterialProvider::endpoint() || binding.printer_id != "duck-poop-demo" ||
                 std::none_of(m_rows.begin(), m_rows.end(), [&](const auto &row) { return row.assignment.spool_uuid == binding.spool_uuid; }))
                 ++unavailable;
@@ -191,8 +203,8 @@ public:
                     if (!m_checks[i]->GetValue()) continue;
                     const int choice = m_mappings[i]->GetSelection();
                     if (choice <= 0) throw std::runtime_error("Map every selected slot to a project filament");
-                    const bool adding = choice > int(m_project.presets.size());
-                    const size_t target = adding ? appended++ : size_t(choice - 1);
+                    const bool adding = choice > int(m_project_indices.size());
+                    const size_t target = adding ? appended++ : m_project_indices.at(size_t(choice - 1));
                     if (!project_indices.insert(target).second) throw std::runtime_error("Map each selected slot to a different project filament");
                     const auto row = m_indices[i];
                     selected.push_back({row, target, scope->GetSelection() == 2, scope->GetSelection() == 1});
@@ -216,6 +228,7 @@ private:
     std::vector<wxCheckBox *> m_checks;
     std::vector<wxChoice *> m_mappings;
     std::vector<size_t> m_indices;
+    std::vector<size_t> m_project_indices;
     std::vector<HaProjectMaterialDifferences::Difference> m_differences;
     std::vector<wxCheckBox *> m_difference_checks;
     bool m_changed = false;

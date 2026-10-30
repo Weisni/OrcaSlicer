@@ -111,4 +111,16 @@ The standalone colored fixture uses the standard material-extension color group
 so both importers expose its palette. See the [German trial guide](../ORCA_STANDARD_COMPARISON_TRIALS_DE.md)
 and [local handoff](../QUACK_BETA_LOCAL_TEST_2026-10-30_DE.md).
 
-All stock replacement user trials and retirement decisions remain pending.
+### Native nozzle control adoption
+
+The user's 2026-10-30 acceptance request explicitly authorizes correcting the
+competing custom nozzle/flow optimization. The Quack flow selector in the Variant
+card is removed in favor of Beta's native per-extruder Nozzle control. Its plate
+mapping is used, while Quack's connected-printer hardware restriction and HA
+roll/profile authority remain. GUI trials cover Standard/High Flow and 0.4/0.6 mm
+with two distinct bound roll UUIDs and contextual profile changes. Existing
+projects remain loadable; the saved project configuration retains native flow
+and material mappings. This is a narrow adopted standard control, not retirement
+of HA authority or other custom functions.
+
+Other stock replacement user trials and retirement decisions remain pending.
