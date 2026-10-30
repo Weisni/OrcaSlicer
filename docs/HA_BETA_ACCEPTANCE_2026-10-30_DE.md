@@ -284,10 +284,10 @@ keine Bestandsänderung und keinen Druck-/Heizauftrag.
 ### Nachtrag Release-Qualifikation 2.5.25
 
 Die später aktualisierte isolierte Test-DLL besitzt SHA-256
-`30a73e642c02086cb8b289c728b1349459d456e71db0169a4970cd3d4f1e26b0`.
+`922e0fd85dae22d7b0e19420a7d22d0a3e8943f7c5e450ec0c286818369cd81a`.
 Dies ersetzt die vorherigen Runtime-Hashes. 3.090 native Registrierungen ohne
 Fehler (neun Umgebungs-Skips), 90 Queue-/Dispatch-Assertions und Clang-tidy
-für 51 geänderte C++-Dateien sind bestanden. Die GUI-Sperre des Mehrdruckerpfads
+für 52 geänderte C++-Dateien sind bestanden. Die GUI-Sperre des Mehrdruckerpfads
 bei passivem Vorheizen wurde unabhängig vom HA-Modus bestätigt.
 Aktueller Umfang und offene Release-Gates stehen in der
 [Abschlussprüfung](RELEASE_ACCEPTANCE_2.5.25_DE.md).

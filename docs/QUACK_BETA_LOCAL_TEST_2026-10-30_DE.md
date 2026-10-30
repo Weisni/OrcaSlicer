@@ -325,9 +325,9 @@ der neuen UI-Texte bestanden. Details im [aktuellen Abnahmenachtrag](HA_BETA_ACC
 
 Die lokale Testanwendung verwendet jetzt die Versionskennung 2.5.25, behält
 aber ihre isolierten Daten- und Credential-Identitäten. Die aktuelle DLL ist
-`30a73e642c02086cb8b289c728b1349459d456e71db0169a4970cd3d4f1e26b0`;
+`922e0fd85dae22d7b0e19420a7d22d0a3e8943f7c5e450ec0c286818369cd81a`;
 dies ersetzt die vorherigen Runtime-Hashes. Der native Gesamtlauf besteht mit
-3.090 Registrierungen, null Fehlern und neun Umgebungs-Skips. Alle 51 geänderten
+3.090 Registrierungen, null Fehlern und neun Umgebungs-Skips. Alle 52 geänderten
 C++-Dateien bestehen Clang-tidy; die geänderten UI-Texte sind extrahiert.
 Die zusätzliche GUI-Sperre bei passivem Vorheizen ohne HA ist bestätigt.
 Release-CI und finale Pakete bleiben separate Gates; siehe

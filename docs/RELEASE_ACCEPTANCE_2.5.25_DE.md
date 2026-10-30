@@ -65,7 +65,7 @@ und besteht danach mit aktivem `-Werror=unused-private-field`. Ein vollständige
 neuer CI-Lauf am korrigierten Commit ist weiterhin erforderlich.
 
 - [x] Finaler Windows-Release-Build mit allen Korrekturen: 3.090 native
-  Registrierungen ohne Fehler, neun Umgebungs-Skips; 51 geänderte
+  Registrierungen ohne Fehler, neun Umgebungs-Skips; 52 geänderte
   C++-Dateien bestehen Clang-tidy. Reguläre EXE-/Produktversion ist 2.5.25.
 - [x] Aktualisierte lokale Testversion gestartet: A4 auf 1, A3 auf 2 und
   virtuelle 50/50-Mischung auf 3 erhalten. Vorheriger HA-/Düsen-Roundtrip
@@ -91,10 +91,15 @@ wählte anschließend ausdrücklich das reguläre Release 2.5.25. Der finale Bui
 mit dieser Versionskennung und den zusätzlichen Desktop-Policytests besteht
 mit 3.088 Registrierungen in 68,18 Sekunden. Nach der zusätzlichen Absicherung
 des lokalen Mehrdruckerpfads bestehen 3.090 Registrierungen in 76,50 Sekunden,
-null Fehler und neun Skips. Clang-tidy besteht für alle 51 geänderten C++-Dateien.
+null Fehler und neun Skips. Der neue Build an `c14cbf0735` nach der Clang-
+Korrektur besteht erneut mit 3.090 Registrierungen in 78,87 Sekunden.
+Clang-tidy besteht für alle 52 geänderten C++-Dateien. Der erneute CLI-Vergleich
+liefert dieselben 4.009 Bewegungsbefehle wie die offizielle Beta; der frische
+HA-Vergleich nach Neustart bestätigt erneut A4 auf 1, A3 auf 2, die virtuelle
+50/50-Mischung auf 3 und keine Profil-/Farbabweichung oder Erstprofil-Warnung.
 
 Aktuelle lokale Test-DLL SHA-256:
-`30a73e642c02086cb8b289c728b1349459d456e71db0169a4970cd3d4f1e26b0`.
+`922e0fd85dae22d7b0e19420a7d22d0a3e8943f7c5e450ec0c286818369cd81a`.
 Aktuelle lokale Test-EXE SHA-256:
 `1d81bf0b0ec9f2e78c1bd8fa7f3d1366edddeaed663a13c9e27daec8eec69741`.
 Diese Dateien verwenden weiterhin ausdrücklich die isolierte Identität
@@ -114,6 +119,8 @@ gleichwertige Orca-Standardfunktion entfernt.
 
 Detailbelege liegen lokal unter `build-test/evidence`, insbesondere
 `release-ha-python-qualified.log`, `release-ha-js-summary.log`,
-`release-cli/verified-results.json`, `release-profile-tool.log`, `support-review-green-workspace-tmp.log`,
+`release-cli-2.5.25/verified-results.json`, `final-c14-cli-smoke.log`,
+`release-c14-full-ctest.log`, `release-clang-inputs-tidy.log`,
+`release-profile-tool.log`, `support-review-green-workspace-tmp.log`,
 `release-critical-shared-review.md`, `release-remaining-shared-review.md` und
 `release-pipeline-audit.md`. Testdaten und Zugangsdaten gehören nicht ins Release.
