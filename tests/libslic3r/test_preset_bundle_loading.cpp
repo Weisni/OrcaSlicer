@@ -157,6 +157,11 @@ struct RenameTestCollection : public PresetCollection
     using PresetCollection::update_map_system_profile_renamed;
 };
 
+struct OwnedPresetCollection final : PresetCollection
+{
+    using PresetCollection::PresetCollection;
+};
+
 struct ScopedPresetDataDir
 {
     ScopedTemporaryDir tmp{"orca-local-bundle-reload"};
@@ -969,7 +974,7 @@ TEST_CASE("A user filament synced to the cloud and back keeps its values and uns
         return parent.config;
     };
     auto make_collection = [] {
-        return std::make_unique<PresetCollection>(Preset::TYPE_FILAMENT, Preset::filament_options(),
+        return std::make_unique<OwnedPresetCollection>(Preset::TYPE_FILAMENT, Preset::filament_options(),
                                                   static_cast<const PrintRegionConfig &>(FullPrintConfig::defaults()));
     };
 
@@ -1367,7 +1372,7 @@ TEST_CASE("Saving another preset over a synced user preset keeps its cloud profi
 TEST_CASE("A cloud update that gives a root user preset a parent leaves no copy of it in base", "[Preset]")
 {
     auto make_collection = [] {
-        auto coll = std::make_unique<PresetCollection>(Preset::TYPE_FILAMENT, Preset::filament_options(),
+        auto coll = std::make_unique<OwnedPresetCollection>(Preset::TYPE_FILAMENT, Preset::filament_options(),
                                                        static_cast<const PrintRegionConfig &>(FullPrintConfig::defaults()));
         Preset &parent    = add_inmemory_preset(*coll, "Base PLA");
         parent.is_system  = true;

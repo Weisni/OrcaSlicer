@@ -160,6 +160,27 @@ Belege: `allocation-cpp17-{red,green}.log`,
 `all-app-clang-final-65e4-summary.log`, `all-app-clang-ci-warnings-summary.log`,
 `all-app-ci-default-followup-summary.log`, `release-cpp17-tidy.log`.
 
+Die zusätzliche Prüfung der 217 eigenen nativen Test-Übersetzungseinheiten
+erkennt noch eine Warnung in einer unveränderten Upstream-Testdatei. Die echte
+Linux-CI bestätigt sie nach erfolgreichem Kompilieren der Filamentzuordnung und
+Linken der GUI-Bibliothek: Zwei Test-Factories besitzen eine polymorphe
+PresetCollection per `unique_ptr`, deren Destruktor nicht virtuell ist. Da jeweils
+genau der erzeugte konkrete Typ gelöscht wird, liegt hier kein belegter
+Derived-Delete-Fehler vor; die strenge Warnung stoppt dennoch den Build.
+Die Besitzer verwenden jetzt eine datenlose finale Test-Fixture mit geerbten
+Konstruktoren. Konstruktorargumente, Basismethoden und eindeutiger Besitz bleiben
+erhalten; die produktive Klasse, VTable und ABI werden nicht geändert.
+
+Im vollständigen Compilerlauf bestehen 216 Testeinheiten; die verbleibende
+Einheit besteht nach der Korrektur mit denselben Optionen. Beide betroffenen
+Profil-/Cloud-Roundtrip-Fälle bestehen mit 18 Assertions. Ein unabhängiges
+Source-Review bestätigt, dass keine Umwandlung zu einem besitzenden Basiszeiger
+stattfindet. Clang-tidy besteht weiterhin für 62 geänderte C++-Dateien. Belege:
+`all-native-test-clang-ci-summary.log`,
+`owned-preset-collection-clang-{red,green}.log`,
+`owned-preset-collection-build.log`, `owned-preset-collection-tests.log`,
+`release-owned-preset-tidy.log`.
+
 - [x] Lokaler Windows-Release-Abnahmesnapshot an `c14cbf0735`: 3.090 native
   Registrierungen ohne Fehler, neun Umgebungs-Skips; 52 geänderte
   C++-Dateien bestehen Clang-tidy. Reguläre EXE-/Produktversion ist 2.5.25.

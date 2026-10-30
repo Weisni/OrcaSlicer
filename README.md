@@ -125,6 +125,11 @@ matrix and final package checks pass.
   error before the fix, check all 739 units with the broader local CI warning
   scope and pass Clang-tidy on 62 changed files. Compiler-version-specific
   extra diagnostics and their unchanged-policy reruns are recorded in the report.
+- [x] Extend the compiler preflight to all 217 own native test translation units.
+  Replace the concrete owners in two upstream preset tests with a final test
+  fixture, preserving constructors and unique ownership without changing the
+  production class ABI. Reproduce the warning, pass the corrected unit and both
+  affected cases (18 assertions); Clang-tidy still passes on 62 changed files.
 - [ ] Pass the complete hosted platform CI and verify the final release assets.
 
 See the [German acceptance report](docs/RELEASE_ACCEPTANCE_2.5.25_DE.md)
