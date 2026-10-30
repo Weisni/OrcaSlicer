@@ -620,3 +620,6 @@ project copies. See the [updated local handoff](docs/QUACK_BETA_LOCAL_TEST_2026-
 - [ ] Complete hosted qualification at the corrected commit, fast-forward main
   only after success, and verify the matching main artifacts before publication.
   External services and physical printer acceptance remain separate open checks.
+- [x] Reproduce the sole Flatpak test-asset failure on both architectures and
+  retain the real Windows resource template required by the version regression.
+  The actual packaging-block fixture fails before and passes after correction.

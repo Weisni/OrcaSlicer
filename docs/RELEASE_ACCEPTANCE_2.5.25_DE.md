@@ -320,3 +320,12 @@ Im tatsächlichen universellen macOS-Kandidaten stimmen beide Architekturen,
 Anwendungsidentität und Kurzversion. Seine leere `CFBundleVersion` wird auf die
 Quack-Versionsnummer gesetzt. Die CMake-Vorlagenprüfung bestätigt die Korrektur;
 die erneute Plattform-CI und die abschließenden Main-Pakete sind noch offen.
+
+Der vollständige Kandidatenlauf `0fb5ea5a3a` besteht die nativen Windows-,
+Linux- und macOS-Tests sowie beide Flatpak-Builds. Die nachgelagerten Flatpak-
+Tests finden auf beiden Architekturen genau einen Fehler: Die Paketbereinigung
+entfernte die vom Versionsregressionstest benötigte Windows-Ressourcenvorlage.
+Das schlanke Testpaket behält jetzt genau diese Quelldatei. Eine Fixture führt
+den tatsächlichen Paketierungsblock aus: Der alte Block reproduziert den Fehler,
+der korrigierte Block besteht denselben unveränderten Test. Andere Quelldateien
+werden weiterhin entfernt. Die vollständige CI bleibt Veröffentlichungsvoraussetzung.
