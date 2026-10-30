@@ -360,9 +360,9 @@ public:
     void        refresh();
 	boost::any	config_value(const std::string& opt_key, int opt_index, bool deserialize);
 	// return option value from config
-	boost::any	get_config_value(const DynamicPrintConfig& config, const std::string& opt_key, int opt_index = -1);
+	static boost::any get_config_value(const DynamicPrintConfig& config, const std::string& opt_key, int opt_index = -1);
 	// BBS: restore all pages in preset
-	boost::any	get_config_value2(const DynamicPrintConfig& config, const std::string& opt_key, int opt_index = -1);
+	static boost::any get_config_value2(const DynamicPrintConfig& config, const std::string& opt_key, int opt_index = -1);
 	// Re-run this group's committed-change path for one of its options without a widget event:
 	// build the option's value from the config this group edits (get_config_value2, the same form
 	// the option's field reports) and dispatch on_change_OG(), so the group's option-specific

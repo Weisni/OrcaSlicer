@@ -51,9 +51,7 @@ TEST_CASE("Nullable nozzle fields broadcast their raw value without changing the
     option->values = {value};
     config.set_key_value("filament_retract_when_changing_layer", option);
     const auto before = config.opt_serialize("filament_retract_when_changing_layer");
-    ConfigOptionsGroup group(nullptr);
-
-    CHECK(boost::any_cast<unsigned char>(group.get_config_value(config, "filament_retract_when_changing_layer", 1)) == value);
-    CHECK(boost::any_cast<unsigned char>(group.get_config_value2(config, "filament_retract_when_changing_layer", 1)) == value);
+    CHECK(boost::any_cast<unsigned char>(ConfigOptionsGroup::get_config_value(config, "filament_retract_when_changing_layer", 1)) == value);
+    CHECK(boost::any_cast<unsigned char>(ConfigOptionsGroup::get_config_value2(config, "filament_retract_when_changing_layer", 1)) == value);
     CHECK(config.opt_serialize("filament_retract_when_changing_layer") == before);
 }

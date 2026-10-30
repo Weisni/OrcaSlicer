@@ -199,6 +199,46 @@ Belege: `ci-final-c932-linux-aarch64-124316139431.log`,
 `release-appimage-permissions-actionlint.log`,
 `release-appimage-permissions-bash.log`.
 
+Die Linux-Pakete an `7691ac38b1` bestehen den korrigierten Repack auf beiden
+Architekturen; auch der Linux-ARM-Profil-Slicetest besteht. Die vorgezogene
+statische Kandidatenprüfung bestätigt je 7.500 öffentliche Datei-/Verzeichnis-
+Rechte, 71 Hersteller-Caches, passende ELF-Architekturen für Laufzeit, Anwendung,
+Python und uv sowie den sauberen eingebetteten Commit `7691ac38`. BBL-Cache-
+Header, CRC und Stamps bestehen. Es wurde kein Paketprogramm gestartet; die
+späteren Main-Pakete benötigen weiterhin eine eigene Abnahme.
+
+Die separaten Linux-Laufzeittests finden anschließend genau einen Fehler unter
+3.081 Registrierungen: Der neue Nullable-Nozzle-Test konstruiert eine
+ConfigOptionsGroup, deren Font-Initialisierung im kopflosen Prozess einen
+GTK-StyleContext benötigt. Beide Architekturen brechen an derselben Stelle ab;
+die übrigen Fälle bestehen beziehungsweise werden regulär übersprungen.
+Die zwei geprüften Konverter benötigen keine Instanzdaten. Ihre Deklarationen
+sind jetzt statisch; der Test ruft beide direkt mit derselben Konfiguration auf
+und behält alle neun Prüfungen für 0, 1 und nil einschließlich der
+Unverändertheitskontrolle. Es gibt weder einen neuen Skip noch einen virtuellen
+Display-Zwang. Der bestehende curr_bed_type-Fallback über wxGetApp bleibt
+GUI-abhängig; die Änderung verspricht keine allgemeine kopflose GUI-API.
+
+Die statische Umstellung ändert die interne Funktionsaufrufkonvention, jedoch
+weder Klassenlayout noch VTable. Alle internen GUI-Aufrufer, die Anwendung und
+Tests werden deshalb kohärent neu gebaut. Ein stabiler öffentlicher Plugin-
+Einstieg dieser beiden Methoden ist nicht belegt. Der vollständige lokale
+Appbuild besteht; alle vier Formatter-Fälle bestehen mit zwölf Assertions,
+Clang-tidy für 63 Dateien ebenfalls. Der Konstruktor-freie Zugriff scheitert
+vor der Deklarationsänderung wie erwartet am Compiler und besteht danach;
+beide vollständigen Funktionsbodies bestehen ebenfalls. Unabhängiges Review
+bestätigt fehlenden Instanzzustand und unveränderte Rückgabewerte. Die echte
+Linux-Laufzeitabnahme folgt im nächsten vollständigen CI-Lauf.
+
+Die beiden macOS-Lanes dieses Zwischenlaufs erhielten trotz mehrerer Versuche
+keinen Hosted Runner und wurden von GitHub wegen Kapazität abgebrochen. Das
+belegt keinen Quellfehler und zählt nicht als bestandene Plattformprüfung.
+
+Belege: `ci-final-7691-unit-{124327457446,124327457541}.log`,
+`candidate-7691-linux-{x64,arm}-inspection/inspection.json`,
+`headless-value-conversion-{red,test-green,source-green,build,tests}.log`,
+`release-headless-value-tidy.log`.
+
 - [x] Lokaler Windows-Release-Abnahmesnapshot an `c14cbf0735`: 3.090 native
   Registrierungen ohne Fehler, neun Umgebungs-Skips; 52 geänderte
   C++-Dateien bestehen Clang-tidy. Reguläre EXE-/Produktversion ist 2.5.25.

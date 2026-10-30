@@ -133,6 +133,10 @@ matrix and final package checks pass.
 - [x] Correct read/execute permissions in the extracted Linux AppDir before
   repacking its preset caches. Preserve executable/data-file distinctions and
   keep appimagetool's permission checks enabled; workflow and Bash syntax pass.
+- [x] Make the two instance-independent option-value converters static so their
+  nullable-nozzle regression checks both paths without constructing GUI fonts.
+  Preserve all nine assertions in that case; rebuild every internal GUI caller,
+  pass all four formatter cases (12 assertions) and Clang-tidy on 63 files.
 - [ ] Pass the complete hosted platform CI and verify the final release assets.
 
 See the [German acceptance report](docs/RELEASE_ACCEPTANCE_2.5.25_DE.md)
