@@ -9,6 +9,7 @@
 #include <stdexcept>
 
 #include <wx/bitmap.h>
+#include <wx/button.h>
 #include <wx/checkbox.h>
 #include <wx/clipbrd.h>
 #include <wx/choice.h>
@@ -191,7 +192,7 @@ void pdf_spool(std::ostringstream &page, double x, double y,
         return;
     }
     constexpr double k = 0.5522847498;
-    const auto circle = [&page, k](double cx, double cy, double radius) {
+    const auto circle = [&page](double cx, double cy, double radius) {
         page << cx + radius << ' ' << cy << " m "
              << cx + radius << ' ' << cy + k * radius << ' '
              << cx + k * radius << ' ' << cy + radius << ' '

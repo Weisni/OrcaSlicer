@@ -19,7 +19,7 @@ aller Funktionen und Druckermodelle geprüft wurde.
 | A4/A3 und virtuelle Mischung | Erneut nach vollständigem Neustart A4 auf Filament 1, A3 auf 2, ungebundene 50/50-Mischung auf 3; HA-Vergleich ohne Profil-/Farbabweichung und Erstprofil-Hinweis; Düsenwechsel 0,4 → 0,6 → 0,4 erhält Bindung und Mischung | GUI-Nachweis mit Lifecycle-Korrekturen; finale reguläre Versionskennung wird anschließend separat geprüft |
 | Wave Overhangs und Support | Neue Regression reproduziert zwei Fehler vor Korrektur; danach 874 Assertions in 37 Fällen bestanden | Digitale Geometrie-/Pipelineprüfung, keine gedruckte Abnahme |
 | Zusammengeführte Quellpfade | Verbleibende 52 automatisch zusammengeführte Pfade einzeln semantisch geprüft, zusätzlich sieben kritische Pfade | Statische Prüfung ersetzt keine Plattformausführung |
-| Release-Gate | Elf Fixturetests, vier Workflows mit Actionlint, YAML/XML und Bash-Syntax bestanden | Echte vollständige CI-Pakete und deren Upload noch offen |
+| Release-Gate | Zehn Tag-/Target- und zwölf Asset-Fixturetests, vier Workflows mit Actionlint, YAML/XML und Bash-Syntax bestanden | Echte vollständige CI-Pakete und deren Upload noch offen |
 
 Die CAD-Prüfkopie liegt unter
 `build-test/evidence/release-gui-cad-with-project.3mf`. Die vom Benutzer gewünschte
@@ -74,7 +74,19 @@ Lambdabodies und Summenberechnung wurden nicht geändert. Ein unabhängiges
 Source-Review bestätigt die tatsächlichen drei Stellen. Der neue Plattformlauf
 muss diesen Stand noch vollständig bestätigen.
 
-- [x] Finaler Windows-Release-Build mit allen Korrekturen: 3.090 native
+Die Prüfung wurde anschließend auf alle 127 im Windows-Testbuild gebauten
+Quack-Übersetzungseinheiten gegenüber der offiziellen Beta erweitert, jeweils
+ohne vorübersetzte Header. Sie fand drei weitere unbenutzte Captures, vier
+ungenutzte Objektfarb-Dialogfelder sowie fehlende direkte Header. Die Captures
+sind entfernt; Felder, Typen, Reihenfolge und Konstruktorbindungen bleiben mit
+gezielten Attributen erhalten. Die direkten wx-/Kompatibilitätsheader sind
+ergänzt. Alle 127 Einheiten bestehen danach die vollständige Syntaxprüfung mit
+den beiden Warnungskategorien als Fehler; alle 58 geänderten C++-Dateien
+bestehen die Projekt-Clang-tidy-Prüfung. Dies ersetzt weiterhin keine Linux-/
+macOS-Ausführung. Belege: `all-quack-clang-warnings-summary-green.log`,
+`release-all-quack-tidy-final.log` und `obj-color-unused-{red,green}.log`.
+
+- [x] Lokaler Windows-Release-Abnahmesnapshot an `c14cbf0735`: 3.090 native
   Registrierungen ohne Fehler, neun Umgebungs-Skips; 52 geänderte
   C++-Dateien bestehen Clang-tidy. Reguläre EXE-/Produktversion ist 2.5.25.
 - [x] Aktualisierte lokale Testversion gestartet: A4 auf 1, A3 auf 2 und

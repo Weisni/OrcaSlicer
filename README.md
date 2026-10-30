@@ -92,7 +92,7 @@ matrix and final package checks pass.
   and the 50/50 mix through a 0.4/0.6/0.4 nozzle roundtrip.
 - [x] Correct platform application identities and strengthen release matrix,
   tag/source and asset-digest checks.
-- [x] Build regular 2.5.25, pass all 3,090 native registrations (nine environment
+- [x] At local snapshot `c14cbf0735`, build regular 2.5.25 and pass all 3,090 native registrations (nine environment
   skips), check 52 changed C++ files with Clang-tidy and restart
   the updated local runtime with A4/A3 and the virtual mix intact.
 - [x] Verify HA multi-printer rejection in the isolated GUI and queue/dispatch
@@ -106,6 +106,10 @@ matrix and final package checks pass.
 - [x] Remove three genuinely unused lambda captures after a second platform
   compiler failure. Check all 32 changed translation units in full with both
   unused-capture and unused-private-field warnings treated as errors.
+- [x] Extend that warning/syntax check to all 127 compiled Quack translation
+  units differing from official Beta. Correct three further unused captures,
+  retain four unused object-color fields with targeted attributes, add direct
+  headers and pass the project Clang-tidy check on all 58 changed C++ files.
 - [ ] Pass the complete hosted platform CI and verify the final release assets.
 
 See the [German acceptance report](docs/RELEASE_ACCEPTANCE_2.5.25_DE.md)

@@ -33,6 +33,7 @@
 #include <wx/stattext.h>
 #include <wx/textctrl.h>
 #include <wx/tokenzr.h>
+#include <wx/treectrl.h>
 #include <wx/treelist.h>
 #include <wx/wrapsizer.h>
 

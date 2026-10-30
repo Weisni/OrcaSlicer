@@ -1,6 +1,7 @@
 #include "Http.hpp"
 #include "HttpDnsCache.hpp"
 #include "libslic3r_version.h"
+#include "libslic3r/libslic3r.h"
 
 #include <algorithm>
 #include <atomic>

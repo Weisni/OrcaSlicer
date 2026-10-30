@@ -15,6 +15,7 @@
 #include "BitmapComboBox.hpp"
 #include "Widgets/ComboBox.hpp"
 #include "Widgets/DialogButtons.hpp"
+#include <wx/event.h>
 #include <wx/sizer.h>
 #include <wx/settings.h>
 
@@ -269,7 +270,7 @@ ObjColorPanel::ObjColorPanel(wxWindow *parent, Slic3r::ObjDialogInOut &in_out, c
             m_color_cluster_num_by_user_ebox->Bind(wxEVT_TEXT_ENTER, on_apply_color_cluster_text_modify);
             m_color_cluster_num_by_user_ebox->Bind(wxEVT_SPINCTRL, on_apply_color_cluster_text_modify);
 
-            m_color_cluster_num_by_user_ebox->Bind(wxEVT_CHAR, [this](wxKeyEvent &e) {
+            m_color_cluster_num_by_user_ebox->Bind(wxEVT_CHAR, [](wxKeyEvent &e) {
                 int keycode = e.GetKeyCode();
                 wxString input_char = wxString::Format("%c", keycode);
                 long     value;

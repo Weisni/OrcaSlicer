@@ -256,3 +256,16 @@ Python plugins must not directly access authoritative `filament_inventory` data,
 including WAL/SHM/backups. Preserve the audit deny and its regression coverage.
 Native tests can change their numeric CTest IDs after relinking: rerun by stable
 name/tag or run the whole suite; do not interpret stale `--rerun-failed` IDs as proof.
+
+### Superseding 2.5.25 release authorization
+
+Later on 2026-10-30 the user authorized extensive application validation followed
+by publication of **regular QuackSlicer 2.5.25** after the final checks pass.
+They also explicitly selected a direct fast-forward of remote `main` after the
+candidate platform CI succeeds, rather than a pull request. This supersedes the
+earlier local-build-only publication restriction for this release task only.
+The matching main build, exact tag/source versions and complete asset/hash
+verification still gate publication. Preserve the dirty primary checkout.
+The user authorized full available compute for the test build; the historical
+two-worker limit does not apply to this task. Production HA installation,
+physical heating/printing and production profile changes remain unauthorized.

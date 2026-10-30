@@ -221,7 +221,7 @@ void FilamentInventoryService::bind_bambu_job_id(
 {
     if (inventory_job_id.empty() || printer_id.empty() || !usable_external_id(external_job_id))
         return;
-    enqueue([this, inventory_job_id, printer_id, provider = bambu_provider(printer_id),
+    enqueue([inventory_job_id, printer_id, provider = bambu_provider(printer_id),
              external_job_id = trim_copy(external_job_id)](FilamentInventory::Store &store) {
         store.bind_job_identifier(inventory_job_id, provider, "job_id", external_job_id);
     });
