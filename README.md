@@ -113,6 +113,9 @@ matrix and final package checks pass.
 - [x] Reproduce the generated Git metadata/PCH fallback collision and verify
   authoritative commit labels with both Clang and an actual PCH build under
   warnings-as-errors, preserving the legacy CMake path and crash-report consumer.
+- [x] Make the two existing cut-connector copy assignments explicitly defaulted
+  for current Clang, preserving their memberwise semantics. Repeat the complete
+  127-unit warning check with this diagnostic and pass Clang-tidy on 59 files.
 - [ ] Pass the complete hosted platform CI and verify the final release assets.
 
 See the [German acceptance report](docs/RELEASE_ACCEPTANCE_2.5.25_DE.md)

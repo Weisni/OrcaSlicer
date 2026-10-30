@@ -98,6 +98,19 @@ und das Dirty-Label zur Laufzeit. Belege:
 `git-metadata-{pch,real-pch}-{red,green}.log`. Der neue vollständige
 Plattformlauf bleibt ein erforderliches Gate.
 
+Windows ARM64 meldete am selben Zwischenstand außerdem eine aktuelle Clang-
+Diagnose für implizite Copy-Zuweisungen zweier Schnittverbinder-Typen mit
+eigenen Copy-Konstruktoren. Beide erhalten explizit `operator= = default`;
+damit bleibt die vorherige memberweise Zuweisung erhalten, einschließlich
+Layout, Serialisierung und bereits bestehender Move-Unterdrückung. Die echte
+GLGizmoCut-Übersetzungseinheit reproduziert beide Fehler vor der Korrektur und
+besteht danach mit identischem `-Werror`. Die 127 vollständigen Quack-Einheiten
+bestehen zusätzlich mit dieser dritten Diagnosekategorie als Fehler; die
+Projektprüfung besteht für 59 geänderte C++-Dateien. Belege:
+`cut-copy-clang-{red,green}.log`, `all-quack-clang-copy-summary.log` und
+`release-copy-tidy.log`. Die bestehenden `[CutConnectors]`-Geometrieprüfungen
+werden mit dem nachfolgenden vollständigen Neubau ausgeführt.
+
 - [x] Lokaler Windows-Release-Abnahmesnapshot an `c14cbf0735`: 3.090 native
   Registrierungen ohne Fehler, neun Umgebungs-Skips; 52 geänderte
   C++-Dateien bestehen Clang-tidy. Reguläre EXE-/Produktversion ist 2.5.25.

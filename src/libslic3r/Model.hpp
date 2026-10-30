@@ -302,6 +302,8 @@ struct CutConnectorAttributes
     CutConnectorAttributes(const CutConnectorAttributes& rhs) :
         CutConnectorAttributes(rhs.type, rhs.style, rhs.shape) {}
 
+    CutConnectorAttributes& operator=(const CutConnectorAttributes&) = default;
+
     bool operator==(const CutConnectorAttributes& other) const;
 
     bool operator!=(const CutConnectorAttributes& other) const { return !(other == (*this)); }
@@ -338,6 +340,8 @@ struct CutConnector
 
     CutConnector(const CutConnector& rhs) :
         CutConnector(rhs.pos, rhs.rotation_m, rhs.radius, rhs.height, rhs.radius_tolerance, rhs.height_tolerance, rhs.z_angle, rhs.attribs) {}
+
+    CutConnector& operator=(const CutConnector&) = default;
 
     bool operator==(const CutConnector& other) const;
 
