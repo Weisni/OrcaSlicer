@@ -142,3 +142,8 @@ Source: user instructions and the root `AGENTS.md`, recorded 2026-09-24.
   candidate platform CI passes, rather than a pull request review. This applies
   only to the current 2.5.25 release task; subsequent main-build and package
   checks still gate publication. Preserve the dirty primary checkout.
+- For the overnight continuation of the 2.5.25 release task, monitor the account's
+  weekly Codex consumption and stop immediately at 50 percent used, with no
+  further work or reset redemption. Prefer scripted verification and compact
+  CI polling; use manual GUI checks only when automation cannot establish the
+  required behavior. Publication remains conditional on the agreed release gates.

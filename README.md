@@ -608,3 +608,15 @@ project copies. See the [updated local handoff](docs/QUACK_BETA_LOCAL_TEST_2026-
 - [x] Build and stage the updated runtime; pass 80 focused cases / 1,244 assertions,
   all 3,079 native registrations (zero failures, nine skips), clang-tidy on 36
   tracked C++ files and extraction of the new UI strings.
+
+#### Final 2.5.25 package qualification
+
+- [x] Stage the clean `0fb5ea5a3a` local Windows test runtime; all 3,090 native
+  registrations complete with zero failures and nine environment skips.
+  The packaged CLI retains the 4,009-command official Beta comparison result.
+- [x] Inspect candidate Windows portable/installer payloads and macOS universal
+  binaries without installing them. Correct the empty macOS bundle build version
+  and prune the Windows installed preset copy before its source manifests.
+- [ ] Complete hosted qualification at the corrected commit, fast-forward main
+  only after success, and verify the matching main artifacts before publication.
+  External services and physical printer acceptance remain separate open checks.

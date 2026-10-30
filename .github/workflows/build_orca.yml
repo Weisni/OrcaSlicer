@@ -500,7 +500,8 @@ jobs:
         shell: cmd
         # Shipped into both the already-installed tree (portable zip, MSIX) and
         # the checkout cpack re-installs from when it builds the NSIS installer.
-        run: scripts\build_preset_cache.bat --prune-source "%BUILD_DIR%" "resources\profiles" "%BUILD_DIR%\OrcaSlicer\resources\profiles"
+        # Prune the installed copy before removing the source vendor manifests.
+        run: scripts\build_preset_cache.bat --prune-source "%BUILD_DIR%" "%BUILD_DIR%\OrcaSlicer\resources\profiles" "resources\profiles"
 
       - name: Pack unit tests Win
         if: runner.os == 'Windows'

@@ -301,3 +301,22 @@ Detailbelege liegen lokal unter `build-test/evidence`, insbesondere
 `release-profile-tool.log`, `support-review-green-workspace-tmp.log`,
 `release-critical-shared-review.md`, `release-remaining-shared-review.md` und
 `release-pipeline-audit.md`. Testdaten und Zugangsdaten gehören nicht ins Release.
+
+### Abschließende Paketprüfung
+
+Der saubere lokale Stand `0fb5ea5a3a` besteht mit 3.090 nativen Registrierungen,
+null Fehlern und neun Umgebungs-Skips. Das neu bereitgestellte Testpaket besteht
+die Architektur-/Ressourcenprüfung und den CLI-Vergleich mit 4.009 identischen
+Bewegungsbefehlen. Der bisherige Starter verweist auf dieses Paket; das bestehende
+Testprofil und seine separate Zugangsdatenidentität bleiben erhalten. Die letzte
+manuelle GUI-Abnahme gehört weiterhin zum vorherigen Stand `6991`; sie wird nicht
+als erneuter GUI-Test des neueren Pakets ausgegeben.
+
+Die tatsächlichen Windows-x64-Kandidaten enthalten identische gemeinsame
+Nutzdateien und 71 identische Profilcaches. Die Portable-Ausgabe enthielt zusätzlich
+14.612 redundante Profil-JSON-Dateien, weil die Quellmanifeste zu früh entfernt
+wurden. Die Reihenfolge wird korrigiert; Laufzeitdaten bleiben erhalten.
+Im tatsächlichen universellen macOS-Kandidaten stimmen beide Architekturen,
+Anwendungsidentität und Kurzversion. Seine leere `CFBundleVersion` wird auf die
+Quack-Versionsnummer gesetzt. Die CMake-Vorlagenprüfung bestätigt die Korrektur;
+die erneute Plattform-CI und die abschließenden Main-Pakete sind noch offen.
