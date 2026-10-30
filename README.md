@@ -103,6 +103,9 @@ matrix and final package checks pass.
 - [x] Reproduce the platform Clang failure on two retained pre-cooling fields,
   annotate only those fields and rebuild at `c14cbf0735`; repeat the complete
   native suite, matched CLI slicing and the fresh HA comparison after restart.
+- [x] Remove three genuinely unused lambda captures after a second platform
+  compiler failure. Check all 32 changed translation units in full with both
+  unused-capture and unused-private-field warnings treated as errors.
 - [ ] Pass the complete hosted platform CI and verify the final release assets.
 
 See the [German acceptance report](docs/RELEASE_ACCEPTANCE_2.5.25_DE.md)

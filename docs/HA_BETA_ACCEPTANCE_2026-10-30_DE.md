@@ -283,7 +283,7 @@ keine Bestandsänderung und keinen Druck-/Heizauftrag.
 
 ### Nachtrag Release-Qualifikation 2.5.25
 
-Die später aktualisierte isolierte Test-DLL besitzt SHA-256
+Der lokale DLL-Abnahmesnapshot an `c14cbf0735` besitzt SHA-256
 `922e0fd85dae22d7b0e19420a7d22d0a3e8943f7c5e450ec0c286818369cd81a`.
 Dies ersetzt die vorherigen Runtime-Hashes. 3.090 native Registrierungen ohne
 Fehler (neun Umgebungs-Skips), 90 Queue-/Dispatch-Assertions und Clang-tidy

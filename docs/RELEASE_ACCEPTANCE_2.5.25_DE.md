@@ -64,6 +64,16 @@ Muster in `FanMover.hpp`; globale Warnungen bleiben unverändert. Die echte
 und besteht danach mit aktivem `-Werror=unused-private-field`. Ein vollständiger
 neuer CI-Lauf am korrigierten Commit ist weiterhin erforderlich.
 
+Der nächste Plattformlauf an `3ba61cff19` fand anschließend einen unbenutzten
+Lambda-Capture in der Kundensummierung. Eine zusätzliche vollständige Clang-
+Prüfung aller 32 geänderten Übersetzungseinheiten fand außerdem zwei weitere
+unbenutzte Captures im AMS-Button und 3MF-Fortschrittscallback. Alle drei sind
+entfernt; die vollständige Prüfung besteht mit beiden Warnungskategorien als
+Fehler. Die benötigte `this`-Bindung des AMS-Buttons bleibt erhalten. Die
+Lambdabodies und Summenberechnung wurden nicht geändert. Ein unabhängiges
+Source-Review bestätigt die tatsächlichen drei Stellen. Der neue Plattformlauf
+muss diesen Stand noch vollständig bestätigen.
+
 - [x] Finaler Windows-Release-Build mit allen Korrekturen: 3.090 native
   Registrierungen ohne Fehler, neun Umgebungs-Skips; 52 geänderte
   C++-Dateien bestehen Clang-tidy. Reguläre EXE-/Produktversion ist 2.5.25.
@@ -98,12 +108,14 @@ liefert dieselben 4.009 Bewegungsbefehle wie die offizielle Beta; der frische
 HA-Vergleich nach Neustart bestätigt erneut A4 auf 1, A3 auf 2, die virtuelle
 50/50-Mischung auf 3 und keine Profil-/Farbabweichung oder Erstprofil-Warnung.
 
-Aktuelle lokale Test-DLL SHA-256:
+Lokaler DLL-Abnahmesnapshot an `c14cbf0735`, SHA-256:
 `922e0fd85dae22d7b0e19420a7d22d0a3e8943f7c5e450ec0c286818369cd81a`.
-Aktuelle lokale Test-EXE SHA-256:
+Zugehörige lokale Test-EXE SHA-256:
 `1d81bf0b0ec9f2e78c1bd8fa7f3d1366edddeaed663a13c9e27daec8eec69741`.
 Diese Dateien verwenden weiterhin ausdrücklich die isolierte Identität
 „QuackSlicer Beta Test“; produktive Releasepakete werden getrennt durch CI gebaut.
+Spätere lokale Neubauten werden im lokalen `build-manifest.json` sowie in
+`build-test/evidence` mit tatsächlichem Commit und Prüfsummen dokumentiert.
 
 Netzwerk-Reload und normales Schließen werden während aktiver nativer Transfers
 abgelehnt. Ein nicht verhinderbares Beenden durch das Betriebssystem beendet den

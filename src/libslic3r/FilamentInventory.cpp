@@ -3599,8 +3599,7 @@ CostSummary Store::customer_cost_summary(const std::string &customer_id) const
             order_jobs.emplace_back(m_impl->get_job_unlocked(jobs_statement.text(0)));
         CostSummary order_summary = summarize_jobs(order_jobs, currency);
         apply_order_costs(order_summary, order);
-        const auto add = [&summary](MoneyMicros &target, MoneyMicros value,
-                                    const char *context) {
+        const auto add = [](MoneyMicros &target, MoneyMicros value, const char *context) {
             target = checked_add(target, value, context);
         };
         add(summary.estimated_material_cost_micros, order_summary.estimated_material_cost_micros, "Customer cost total");
