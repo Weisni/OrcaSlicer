@@ -480,8 +480,10 @@ Projected and surface-normal paint, Wave Overhangs and per-object towers.
 - [x] Compare a common P2S/PLA CLI slice with official Beta: 4,009 identical movement commands,
   equal calculated 2.40 g consumption; this is one baseline, not broad equivalence proof.
 - [ ] Complete individual stock-replacement user trials and record the user's decisions.
-- [ ] Qualify every feature interaction, all platform packages, external services and hardware
-  before any release. Unpublished primary-checkout changes remain separate.
+- [x] Qualify supported software packages at the exact release commit through full
+  hosted CI and independent artifact checks. Unpublished primary-checkout changes remain separate.
+- [ ] Individually qualify experimental interactions, external services and hardware;
+  software release validation does not establish these results.
 
 Start the local package with `build-test/QuackSlicer-Beta-Test/Start-Quack-Beta-Test.cmd`
 in the integration worktree. It uses `build-test/test-profile`, its own credential
@@ -617,9 +619,15 @@ project copies. See the [updated local handoff](docs/QUACK_BETA_LOCAL_TEST_2026-
 - [x] Inspect candidate Windows portable/installer payloads and macOS universal
   binaries without installing them. Correct the empty macOS bundle build version
   and prune the Windows installed preset copy before its source manifests.
-- [ ] Complete hosted qualification at the corrected commit, fast-forward main
-  only after success, and verify the matching main artifacts before publication.
+- [x] Complete candidate and main qualification at `0017af001e`; the main run
+  passes all 33 acceptance jobs. Verify matching main packages and all 13
+  uploaded and independently downloaded release files, then publish the regular
+  [2.5.25 release](https://github.com/Weisni/OrcaSlicer/releases/tag/v2.5.25).
   External services and physical printer acceptance remain separate open checks.
 - [x] Reproduce the sole Flatpak test-asset failure on both architectures and
   retain the real Windows resource template required by the version regression.
   The actual packaging-block fixture fails before and passes after correction.
+- [ ] Correct draft discovery in `verify_release_target.py` before the next
+  automated release: GitHub's by-tag endpoint returns 404 for an unpublished
+  draft. This release uses an authenticated release-ID lookup while retaining
+  the same source/tag, complete-matrix and SHA-256 checks; no gate is skipped.

@@ -329,3 +329,43 @@ Das schlanke Testpaket behält jetzt genau diese Quelldatei. Eine Fixture führt
 den tatsächlichen Paketierungsblock aus: Der alte Block reproduziert den Fehler,
 der korrigierte Block besteht denselben unveränderten Test. Andere Quelldateien
 werden weiterhin entfernt. Die vollständige CI bleibt Veröffentlichungsvoraussetzung.
+
+### Veröffentlichter Abschluss am 2026-10-31
+
+Das reguläre [Release 2.5.25](https://github.com/Weisni/OrcaSlicer/releases/tag/v2.5.25)
+ist seit 06:16:55 UTC veröffentlicht und als Latest bestätigt. Sein unveränderter
+Tag zeigt auf `0017af001e896514d6e6c99411d17673ed466540`.
+Der vollständige [Kandidatenlauf 41146917976](https://github.com/Weisni/OrcaSlicer/actions/runs/41146917976)
+und der entsprechende [Main-Lauf 41162263408](https://github.com/Weisni/OrcaSlicer/actions/runs/41162263408)
+sind bestanden. Main enthält 33 erfolgreiche Prüfjobs; ausschließlich unbenutzte
+Wartepfade werden übersprungen. Die Testfall-Skips der jeweiligen Umgebungen
+werden dadurch nicht als Einzelabnahme ausgegeben.
+
+Die tatsächlichen Main-Pakete bestätigen Quack-Identität, Version, Quellstand,
+Architekturen und gebündelte Laufzeiten. Windows-Installer und Portable enthalten
+je Architektur 4.062 bytegleiche Nutzdateien. Beide Linux-AppImages bestehen
+zusätzlich die Prüfung von jeweils 7.500 Dateiberechtigungseinträgen und enthalten
+71 Profilcaches. Das universelle macOS-Paket enthält beide Architekturen in
+Anwendung, Python und uv sowie die korrekte Buildnummer 2.5.25.
+
+Die anfangs als x64 gemeldete Windows-ARM64-Laufzeit `vcruntime140_1.dll` ist eine
+gültig von Microsoft signierte ARM64X-Datei. Microsofts `dumpbin` bestätigt
+Hybridformat und Metadaten; der Prüfhelfer berücksichtigt diese tatsächlich
+ARM64-kompatible Laufzeit. Eine normale x64-Laufzeit wird im Gegenvergleich
+weiterhin abgewiesen. Es wurde keine Paketdatei geändert. Siehe
+[Microsofts ARM64X-Dokumentation](https://learn.microsoft.com/en-us/windows/arm/arm64x-pe).
+
+Der automatische Upload-Lauf `41175486444` scheiterte vor dem Upload an der
+Abfrage des unveröffentlichten Entwurfs über GitHubs By-Tag-Endpunkt (HTTP 404).
+Die lokale Zusammenstellung nutzt stattdessen die authentifizierte Release-ID,
+behält sämtliche Prüfungen auf Main-Lauf, HA-Gate, Quellstand, unveränderlichen
+Tag, vollständige Asset-Matrix und SHA-256 bei und prüft den Entwurf vor jeder
+Mutation erneut. Alle 13 hochgeladenen Dateien wurden unabhängig zurückgeladen;
+ursprüngliches Manifest, sämtliche Datei-Hashes und GitHub-Digests stimmen
+überein. Auch der öffentliche, nicht authentifizierte API-Zugriff ist bestätigt.
+Die Korrektur der automatischen Entwurfsabfrage bleibt als Folgeaufgabe offen.
+
+Die lokale Testversion nutzt weiterhin das getrennte Testprofil und die separate
+Zugangsdatenidentität. Keine Produktions-HA-Installation, Heizvorgänge oder
+physischen Drucktests wurden durchgeführt. Die Wochenbelegung lag bei Abschluss
+der Veröffentlichung bei 30 Prozent; die vorgegebene Stoppschwelle wurde eingehalten.

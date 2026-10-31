@@ -257,6 +257,25 @@ including WAL/SHM/backups. Preserve the audit deny and its regression coverage.
 Native tests can change their numeric CTest IDs after relinking: rerun by stable
 name/tag or run the whole suite; do not interpret stale `--rerun-failed` IDs as proof.
 
+### Completed 2.5.25 release handoff
+
+The user subsequently authorized extensive software validation, regular release
+publication and direct main fast-forward after successful candidate CI. These
+task-specific permissions superseded the earlier local-test-only publication
+restriction; they are not standing authorization for future releases or devices.
+
+Release `v2.5.25` was published on 2026-10-31 at immutable commit
+`0017af001e896514d6e6c99411d17673ed466540`. Candidate run `41146917976`
+and matching main run `41162263408` pass; all 13 release assets were independently
+downloaded and hash-verified. Do not move the tag. Read the final qualification
+in `docs/RELEASE_ACCEPTANCE_2.5.25_DE.md` and retain its external/physical limits.
+
+Before the next automated release, correct draft discovery in
+`scripts/verify_release_target.py`: GitHub's by-tag endpoint returns 404 for
+unpublished drafts. This release used its authenticated release ID with the same
+immutable-source/tag, complete asset matrix and digest validators. Never publish
+an empty draft to work around this lookup issue.
+
 ### Superseding 2.5.25 release authorization
 
 Later on 2026-10-30 the user authorized extensive application validation followed
