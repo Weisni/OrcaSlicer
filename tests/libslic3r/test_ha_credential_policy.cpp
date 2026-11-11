@@ -170,4 +170,6 @@ TEST_CASE("Quack cloud credential stores cannot read or delete Orca sessions", "
     CHECK(std::string(service_name(true)) == "QuackSlicerBetaTest/Auth");
     CHECK(std::string(service_name(false)) != service_name(true));
     CHECK(std::string(service_name(false)) != "OrcaSlicer/Auth");
+    CHECK(std::string(service_name(true, "QuackSlicerNativeTest/Auth")) != service_name(true));
+    CHECK(std::string(service_name(false, "QuackSlicerNativeTest/Auth")) == service_name(false));
 }

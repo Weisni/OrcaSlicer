@@ -9,7 +9,7 @@ from pathlib import Path
 SCRIPT = Path(__file__).with_name("prepare_test_profile.py")
 
 class ProfileSnapshotTests(unittest.TestCase):
-    def snapshot(self, endpoint):
+    def snapshot(self, endpoint, variant="Beta", version="2.5.24"):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             source, output = root / "source", root / "test"
@@ -23,8 +23,9 @@ class ProfileSnapshotTests(unittest.TestCase):
             config_path = source / "QuackSlicer.conf"
             config_path.write_text(original, encoding="utf-8")
             subprocess.run([sys.executable, str(SCRIPT), "--source", str(source),
-                            "--output", str(output)], check=True, capture_output=True)
-            text = (output / "QuackSlicerBetaTest.conf").read_text(encoding="utf-8")
+                            "--output", str(output), "--variant", variant,
+                            "--version", version], check=True, capture_output=True)
+            text = (output / f"QuackSlicer{variant}Test.conf").read_text(encoding="utf-8")
             self.assertNotIn("MUST_NOT_BE_COPIED", text)
             self.assertEqual(config_path.read_text(encoding="utf-8"), original)
             data, _ = json.JSONDecoder().raw_decode(text)
@@ -35,6 +36,9 @@ class ProfileSnapshotTests(unittest.TestCase):
     def test_valid_ha_address_survives_without_enabling_connection(self):
         endpoint = "http://homeassistant.local:8123/api/quack_material_demo/materials"
         self.assertEqual(self.snapshot(endpoint).get("ha_material_demo_endpoint"), endpoint)
+
+    def test_native_variant_uses_its_own_config_name_and_version(self):
+        self.assertEqual(self.snapshot("", "Native", "2.5.25")["version"], "2.5.25")
 
     def test_endpoint_credentials_and_query_tokens_are_not_copied(self):
         for endpoint in (

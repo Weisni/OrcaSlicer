@@ -37,6 +37,8 @@ Consider them before every command, together with the applicable `AGENTS.md`.
   and extrusion-volume intersection with the model. Layer/path counts alone
   do not establish correct placement. Preserve source project snapshots and
   recheck the latest saved project when its settings or instances change.
+  Check the configured layer count on the selected interface filament when
+  using separate base and interface filaments.
 - For standard 3MF color-import corrections, preserve the original input file
   and check object-level filament defaults alongside volume and painted-face
   assignments. A complete filament list alone does not establish correct mapping.
@@ -119,6 +121,9 @@ Source: user instructions and the root `AGENTS.md`, recorded 2026-09-24.
   document full/partial coverage, missing behavior and adapter/plugin needs,
   and let the user choose adoption or custom-code retirement. Preserve required
   outcomes and unresolved custom behavior; no removal is implied by planning.
+- Home Assistant material management is required for any move to stock Orca or
+  plugins. Preserve HA ownership of rolls, stock, reservations, settlement and
+  saved profiles when evaluating a replacement.
 
 - The 2026-10-30 follow-up authorizes executing the integration plan and preparing an isolated local test build. The user selected the newer Orca 2.5.0 Beta. Retain production app/configuration/credentials and all custom behavior pending replacement decisions. This does not authorize production HA deployment, heating, physical sends or publishing.
 
@@ -147,3 +152,17 @@ Source: user instructions and the root `AGENTS.md`, recorded 2026-09-24.
   further work or reset redemption. Prefer scripted verification and compact
   CI polling; use manual GUI checks only when automation cannot establish the
   required behavior. Publication remains conditional on the agreed release gates.
+
+- On 2026-11-11 the user authorized adopting verified Orca standard paths in a
+  new local Quack build while continuing to use the previous build. Retain
+  Quack-specific capabilities and HA authority. Use a separate app identity
+  and a profile snapshot from the installed version for parallel testing.
+
+- The HA material import must honor Orca's automatic flushing preference and
+  use its existing flushing calculator after applying the selected project
+  colors and profiles. Preserve manually set values for unaffected material
+  pairs and verify with a separate local test build.
+
+- The user confirmed the HA flushing fix and requested it together with the
+  preceding test-build changes for the next regular QuackSlicer version.
+  Keep the regular build identity and qualify the exact release candidate.

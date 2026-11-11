@@ -6931,6 +6931,8 @@ bool Sidebar::sync_ha_material_demo(bool report_error, const std::string &select
             }
             if (selection.profile_only) continue;
             staged_bundle.project_config.option<ConfigOptionStrings>("filament_colour")->values[index] = staged.colors[index];
+            if (index < staged_bundle.ams_multi_color_filment.size())
+                staged_bundle.ams_multi_color_filment[index].clear();
             for (const auto *key : {"filament_colour_type", "filament_multi_colour"}) {
                 auto *option = staged_bundle.project_config.option<ConfigOptionStrings>(key);
                 if (!option || option->values.size() != staged.presets.size())
@@ -6961,7 +6963,12 @@ bool Sidebar::sync_ha_material_demo(bool report_error, const std::string &select
         }
         const bool reload_material = profiles_changed && active_index < original.presets.size() &&
             staged.presets[active_index] != original.presets[active_index];
+        auto flush_updates = HaProjectMaterialSync::flushing_volume_updates(
+            original, staged, selections, bundle->ams_multi_color_filment, wxGetApp().app_config->get("auto_calculate_flush"));
         const auto slot_moves = HaProjectMaterialSync::normalize_slot_order(staged_bundle);
+        for (int &index : flush_updates)
+            if (const auto moved = slot_moves.find(index); moved != slot_moves.end())
+                index = moved->second;
         HaProjectMaterialSync::remap_material_references(staged_bundle.prints.get_edited_preset().config, slot_moves);
         if (active_index < staged_bundle.filament_presets.size())
             if (const auto moved = slot_moves.find(int(active_index)); moved != slot_moves.end())
@@ -7045,6 +7052,8 @@ bool Sidebar::sync_ha_material_demo(bool report_error, const std::string &select
                 plate.plate->update_slice_result_valid_state(false);
             }
             if (!slot_moves.empty()) wxGetApp().get_tab(Preset::TYPE_PRINT)->update();
+            if (!flush_updates.empty())
+                recalculate_flushing_volumes(flush_updates);
             p->plater->on_config_change(bundle->full_config());
             p->plater->update_filament_colors_in_full_config();
             obj_list()->update_filament_colors();
@@ -7052,6 +7061,10 @@ bool Sidebar::sync_ha_material_demo(bool report_error, const std::string &select
             for (auto *combo : p->combos_filament) combo->update();
             p->plater->update_project_dirty_from_presets();
             Layout();
+            if (!flush_updates.empty()) {
+                bundle->export_selections(*wxGetApp().app_config);
+                set_flushing_volume_warning(is_flush_config_modified());
+            }
         } catch (...) {
             // Restore model state before any GUI callback can persist selections.
             if (original_model) p->plater->model() = *original_model;
@@ -7935,12 +7948,10 @@ void Sidebar::update_printer_thumbnail()
 void Sidebar::auto_calc_flushing_volumes(const int filament_idx, const int extruder_id) {
 
     std::vector<int> filament_indices;
-    std::vector<int> extruder_indices;
 
     auto& preset_bundle = wxGetApp().preset_bundle;
     auto filament_ptr = preset_bundle->project_config.option<ConfigOptionStrings>("filament_colour");
     int filament_count = filament_ptr ? filament_ptr->size() : 0;
-    int extruder_count = preset_bundle->get_printer_extruder_count();
 
     if (filament_idx < 0) {
         filament_indices.resize(filament_count);
@@ -7950,19 +7961,7 @@ void Sidebar::auto_calc_flushing_volumes(const int filament_idx, const int extru
         filament_indices.emplace_back(filament_idx);
     }
 
-    if (extruder_id < 0) {
-        extruder_indices.resize(extruder_count);
-        std::iota(extruder_indices.begin(), extruder_indices.end(), 0);
-    }
-    else {
-        extruder_indices.emplace_back(extruder_id);
-    }
-
-    for (auto eidx : extruder_indices) {
-        for (auto fidx : filament_indices) {
-            auto_calc_flushing_volumes_internal(fidx, eidx);
-        }
-    }
+    recalculate_flushing_volumes(filament_indices, extruder_id);
 
     wxGetApp().preset_bundle->export_selections(*wxGetApp().app_config);
     wxGetApp().plater()->update_project_dirty_from_presets();
@@ -7972,6 +7971,14 @@ void Sidebar::auto_calc_flushing_volumes(const int filament_idx, const int extru
     p->plater->update();
 }
 
+void Sidebar::recalculate_flushing_volumes(const std::vector<int> &filament_indices, int extruder_id)
+{
+    const int begin = extruder_id < 0 ? 0 : extruder_id;
+    const int end = extruder_id < 0 ? wxGetApp().preset_bundle->get_printer_extruder_count() : extruder_id + 1;
+    for (int nozzle = begin; nozzle < end; ++nozzle)
+        for (int filament : filament_indices)
+            auto_calc_flushing_volumes_internal(filament, nozzle);
+}
 
 void Sidebar::auto_calc_flushing_volumes_internal(const int modify_id, const int extruder_id)
 {
@@ -8066,9 +8073,8 @@ void Sidebar::auto_calc_flushing_volumes_internal(const int modify_id, const int
                     }
                     if (is_from_support)
                         flushing_volume = std::max(flushing_volume, Slic3r::g_min_flush_volume_from_support);
-
-                    matrix[m_number_of_extruders * modify_id + to_idx] = flushing_volume;
                 }
+                matrix[m_number_of_extruders * modify_id + to_idx] = flushing_volume;
             }
         }
     }

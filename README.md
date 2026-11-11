@@ -74,6 +74,78 @@ separate maintainers and release channels.
 
 ## Development progress and open tasks
 
+### QuackSlicer 2.5.26
+
+- [x] User-confirm the Home Assistant flushing-volume fix in the local build.
+- [x] Carry the HA fix, three-layer support-interface correction, and shared
+  Orca paint and brim paths into the regular patch candidate.
+- [ ] Qualify the regular candidate with the full hosted build and test matrix.
+
+See the [2.5.26 release notes](docs/releases/2.5.26.md).
+
+### Local 2.5.25 HA Flush Test
+
+- HA-to-project material synchronization applies the Orca automatic flushing
+  preference to the changed slots. `All` includes preset changes, `Color`
+  includes color changes, and `None` keeps the existing flushing volumes.
+- The automatic path recalculates each affected physical slot on each nozzle
+  and keeps the multiplier and pairs between untouched slots. Explicit HA
+  color selections replace stale AMS multicolor data for those slots.
+- Start the separate Windows build with
+  `build-test/Start-Quack-HA-Flush-Test.cmd`. It uses a copied installed
+  profile and a separate credential namespace. Connect HA from this profile
+  when testing against a real installation.
+- Windows x64 verification passed 160 targeted native cases, 436 HA Python
+  cases, 11 HA dashboard suites, and three profile snapshot cases.
+- In the packaged GUI, a loopback HA color import under `All` replaced the
+  white/red pair with black/white. The persisted matrix changed from
+  `[0, 293, 679, 0]` to `[0, 635, 183, 0]` without a manual recalculation.
+  The three preference modes and preset-only changes are covered by the
+  targeted native tests.
+
+### Local 2.5.25 Native Test
+
+- Route standard top and bottom paint penetration through Orca's shared
+  segmentation entry point and keep one preset registration per setting.
+- Use Orca's typed nullable speed lookup for auto brim while retaining the
+  fallback for missing and legacy options.
+- Retain Projected and surface-normal paint, per-object prime towers, Wave
+  Overhangs, grouped 3MF handling, the interface fix and HA material management.
+- Start the separate Windows build with `build-test/Start-Quack-Native-Test.cmd`.
+  Its profile is copied from the installed QuackSlicer profile. HA and cloud
+  credentials use separate storage and connections are disabled in the snapshot.
+- See the [Orca standard comparison](docs/upstream/quack-orca-standard-comparison.md#local-native-test)
+  for the scope and verification.
+
+### Local 2.5.25 support interface test build
+
+- [x] Reproduce the missing interface-filament layer in normal and organic
+  support using a three-layer bridge project and checking the emitted tool and Z.
+- [x] Stop replacing a configured interface layer with base material for
+  non-soluble interfaces. Retain the soluble zero-gap adhesion treatment.
+- [x] Add a G-code regression for top interface material, layer count and
+  contact height. Update the organic bottom-contact regression for the full count.
+- [x] Build the isolated Windows x64 runtime from `v2.5.25` and pass all 29
+  support cases (758 assertions). The bridge emits three layers on the
+  selected interface tool with normal and organic support. The organic clip
+  emits three lower interface layers at Z 2.36, 2.48 and 2.60 mm.
+- [x] Seed the local launcher with a separate copy of installed printer and
+  preset settings. Verify startup with the selected P2S 0.4 mm and Smooth
+  Surface process.
+- [x] Slice a copy of the support test in the GUI with Generic PLA and Generic
+  PETG using the copied configuration. Both the Smooth Surface and stock
+  0.12 mm High Quality processes produced a preview. The saved Generic project
+  also completed three CLI runs.
+- [x] User confirmed the Generic-profile slicing issue is resolved after the
+  local configuration handoff.
+- [x] Compare stock Orca 2.5.0 with Quack on paint penetration, auto brim,
+  support interfaces and a standard 3MF round trip. See the
+  [stable-release assessment](docs/upstream/quack-orca-standard-comparison.md#official-orca-250-comparison-2026-11-09).
+- [ ] Investigate the separate CLI access violation when Quack exports the
+  config-free colored 3MF fixture.
+- [x] Apply the verified paint and brim changes in a separate local build.
+- [ ] Check physical adhesion with the intended filament pair.
+
 ### QuackSlicer 2.5.25 release validation
 
 The user authorized release publication after final validation. The candidate

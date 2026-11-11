@@ -3671,12 +3671,17 @@ double Model::findMaxSpeed(const ModelObject* object) {
     double supportSpeedObj = Model::printSpeedMap.supportSpeed;
     double smallPerimeterSpeedObj = Model::printSpeedMap.smallPerimeterSpeed;
     double smallSupportPerimeterSpeedObj = Model::printSpeedMap.smallSupportPerimeterSpeed;
-    const auto float_or_percent_speed = [&object](const std::string &key, double ratio_over, double fallback) {
-        const ConfigOption *option = object->config.get().option(key);
+    const auto &config = object->config.get();
+    const auto float_or_percent_speed = [&config](const std::string &key, double ratio_over, double fallback) {
+        const ConfigOption *option = config.option(key);
         const auto *speeds = dynamic_cast<const ConfigOptionVector<FloatOrPercent> *>(option);
-        if (speeds == nullptr || speeds->values.empty() || std::isnan(speeds->get_at(0).value))
+        if (speeds == nullptr || speeds->values.empty() || std::isnan(speeds->values.front().value))
             return fallback;
-        return speeds->get_at(0).get_abs_value(ratio_over);
+        // Legacy in-memory configurations can still contain non-nullable vectors.
+        const FloatOrPercent &speed = dynamic_cast<const ConfigOptionFloatsOrPercentsNullable *>(speeds)
+            ? config.opt_float_or_percent_nullable(key, 0)
+            : speeds->values.front();
+        return speed.get_abs_value(ratio_over);
     };
     for (std::string objectKey : objectKeys) {
         if (objectKey == "inner_wall_speed"){
