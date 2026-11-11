@@ -462,6 +462,7 @@ public:
     std::vector<int> get_used_tpu_filaments(const std::vector<int> &used_filaments);
     // Orca: update selected filament and print
     void           update_selections(AppConfig &config, bool preserve_project_filament_colors = false);
+    void           update_selections_after_printer_switch(AppConfig &config, const Preset &previous_printer);
     void set_calibrate_printer(std::string name);
 
     void set_is_validation_mode(bool mode) { validation_mode = mode; }

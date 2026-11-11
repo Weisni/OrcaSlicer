@@ -81,6 +81,8 @@ separate maintainers and release channels.
   Orca paint and brim paths into the regular patch candidate.
 - [x] Limit the default release build to Windows x64 and reuse its packages for
   publication.
+- [x] Preserve project filament slots and HA roll bindings during a P2S
+  nozzle diameter change. Cover the 0.4 to 0.6 mm switch with A4 and A1.
 - [ ] Qualify the exact regular candidate with the hosted Windows x64 build and
   test gates.
 
