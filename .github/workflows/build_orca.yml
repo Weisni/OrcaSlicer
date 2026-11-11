@@ -160,26 +160,27 @@ jobs:
         if: runner.os == 'Windows'
         run: |
           $date = Get-Date -Format 'yyyyMMdd'
-          $ref = "${{ github.ref }}"
           $eventName = "${{ github.event_name }}"
           $prNumber = "${{ github.event.number }}"
+          $versionContent = Get-Content version.inc -Raw
+          if ($versionContent -notmatch 'set\(SoftFever_VERSION "(.*?)"\)') {
+              throw 'Cannot read SoftFever_VERSION from version.inc.'
+          }
+          $verPure = $Matches[1]
 
           if ($eventName -eq 'pull_request') {
               $ver = "PR" + $prNumber
               $git_commit_hash = "${{ github.event.pull_request.head.sha }}"
           } else {
-              $versionContent = Get-Content version.inc -Raw
-              if ($versionContent -match 'set\(SoftFever_VERSION "(.*?)"\)') {
-                  $ver = $matches[1]
-              }
-              $ver = "V$ver"
+              $ver = "V$verPure"
               $git_commit_hash = ""
           }
 
           echo "ver=$ver" | Out-File -Append -FilePath $env:GITHUB_ENV -Encoding utf8
+          echo "ver_pure=$verPure" | Out-File -Append -FilePath $env:GITHUB_ENV -Encoding utf8
           echo "date=$date" | Out-File -Append -FilePath $env:GITHUB_ENV -Encoding utf8
           echo "git_commit_hash=$git_commit_hash" | Out-File -Append -FilePath $env:GITHUB_ENV -Encoding utf8
-          echo "date: ${{ env.date }} version: ${{ env.ver }}"
+          echo "Windows package version $ver ($date)"
         shell: pwsh
 
 #   Mac
