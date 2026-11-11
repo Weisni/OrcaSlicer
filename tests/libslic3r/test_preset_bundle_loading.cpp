@@ -19,6 +19,7 @@
 
 #include "libslic3r/AppConfig.hpp"
 #include "libslic3r/CustomGCode.hpp"
+#include "libslic3r/HaMaterialBinding.hpp"
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
@@ -1714,6 +1715,59 @@ TEST_CASE("Switching printers preserves project filament colors", "[Preset][Proj
     CHECK(bundle.project_config.option<ConfigOptionStrings>("filament_multi_colour")->values == multi_colors);
     CHECK(bundle.project_config.option<ConfigOptionStrings>("filament_colour_type")->values == color_types);
     CHECK(bundle.project_config.option<ConfigOptionInts>("filament_map")->values == maps);
+}
+
+TEST_CASE("Switching a P2S from 0.4 to 0.6 mm keeps the A4 and A1 project slots", "[Preset][ProjectColors][Regression]")
+{
+    PresetBundle bundle;
+    AppConfig app_config;
+    const std::string from = "Bambu Lab P2S 0.4 nozzle";
+    const std::string to = "Bambu Lab P2S 0.6 nozzle";
+    for (const auto &[name, diameter] : {std::pair{from, 0.4}, std::pair{to, 0.6}}) {
+        auto &preset = add_inmemory_preset(bundle.printers, name);
+        preset.config.option<ConfigOptionString>("printer_model")->value = "N7";
+        preset.config.option<ConfigOptionFloats>("nozzle_diameter")->values = {diameter};
+        preset.config.option<ConfigOptionBool>("single_extruder_multi_material")->value = true;
+    }
+    const std::vector<std::string> project_presets = {"Rapid PETG A4", "PLA A1"};
+    for (const auto &name : {project_presets[0], project_presets[1], std::string("Spare PLA")})
+        add_inmemory_preset(bundle.filaments, name);
+
+    REQUIRE(bundle.printers.select_preset_by_name(from, false));
+    REQUIRE(bundle.filaments.select_preset_by_name(project_presets[1], false));
+    bundle.filament_presets = project_presets;
+    const std::vector<std::string> colors = {"#222222", "#FFFFFF"};
+    bundle.project_config.option<ConfigOptionStrings>("filament_colour")->values = colors;
+    const HaMaterialBinding::Binding a4 = {"00000000-0000-4000-8000-000000000004", "http://ha.test", "p2s"};
+    const HaMaterialBinding::Binding a1 = {"00000000-0000-4000-8000-000000000001", "http://ha.test", "p2s"};
+    HaMaterialBinding::write(bundle.project_config, {a4, a1});
+
+    app_config.set_printer_setting(to, PRESET_FILAMENT_NAME, "Spare PLA");
+    app_config.set_printer_setting(to, "filament_01", project_presets[0]);
+    app_config.set_printer_setting(to, "filament_02", project_presets[1]);
+    const Preset previous_printer = bundle.printers.get_edited_preset();
+
+    SECTION("Same printer model") {
+        REQUIRE(bundle.printers.select_preset_by_name(to, false));
+        bundle.update_selections_after_printer_switch(app_config, previous_printer);
+
+        CHECK(bundle.filament_presets == project_presets);
+        CHECK(bundle.filaments.get_selected_preset_name() == project_presets[1]);
+        CHECK(bundle.project_config.option<ConfigOptionStrings>("filament_colour")->values == colors);
+        const auto bindings = HaMaterialBinding::read(bundle.project_config, bundle.filament_presets.size());
+        REQUIRE(bindings.size() == 2);
+        CHECK(bindings[0].spool_uuid == a4.spool_uuid);
+        CHECK(bindings[1].spool_uuid == a1.spool_uuid);
+    }
+    SECTION("Different printer model") {
+        bundle.printers.find_preset(to)->config.option<ConfigOptionString>("printer_model")->value = "Other";
+        REQUIRE(bundle.printers.select_preset_by_name(to, false));
+        bundle.update_selections_after_printer_switch(app_config, previous_printer);
+
+        const std::vector<std::string> saved_presets = {"Spare PLA", project_presets[0], project_presets[1]};
+        CHECK(bundle.filament_presets == saved_presets);
+        CHECK(bundle.filaments.get_selected_preset_name() == "Spare PLA");
+    }
 }
 
 TEST_CASE("Every printer variant has a compatible default material", "[Preset][Validate][DefaultMaterials]")

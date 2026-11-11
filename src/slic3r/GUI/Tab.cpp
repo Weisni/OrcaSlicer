@@ -123,6 +123,7 @@
 
 #include <algorithm>
 #include <cstdlib>
+#include <optional>
 #include <unordered_set>
 #include "slic3r/GUI/GUI_Utils.hpp"
 
@@ -7889,6 +7890,9 @@ bool Tab::select_preset(
         on_presets_changed();
     } else {
         BOOST_LOG_TRIVIAL(info) << boost::format("successfully delete, will update compatibility");
+        const bool remember_printer = printer_tab && wxGetApp().app_config->get_bool("remember_printer_config");
+        const std::optional<Preset> previous_printer = remember_printer && !delete_current ?
+            std::optional<Preset>(m_presets->get_edited_preset()) : std::nullopt;
         if (current_dirty)
             m_presets->discard_current_changes();
 
@@ -7931,8 +7935,11 @@ bool Tab::select_preset(
         apply_config_from_cache();
 
         // Orca: update presets for the selected printer
-        if (m_type == Preset::TYPE_PRINTER && wxGetApp().app_config->get_bool("remember_printer_config")) {
-            m_preset_bundle->update_selections(*wxGetApp().app_config, true);
+        if (remember_printer) {
+            if (previous_printer)
+                m_preset_bundle->update_selections_after_printer_switch(*wxGetApp().app_config, *previous_printer);
+            else
+                m_preset_bundle->update_selections(*wxGetApp().app_config, true);
             wxGetApp().plater()->sidebar().on_filament_count_change(m_preset_bundle->filament_presets.size());
         }
         load_current_preset();

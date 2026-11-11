@@ -3932,6 +3932,29 @@ static void load_mixed_filament_settings(DynamicPrintConfig &project_config, App
     }
 }
 
+void PresetBundle::update_selections_after_printer_switch(AppConfig &config, const Preset &previous_printer)
+{
+    const Preset &current = printers.get_edited_preset();
+    if (previous_printer.printer_technology() == ptFFF && current.printer_technology() == ptFFF) {
+        const auto &model = current.config.opt_string("printer_model");
+        const auto &previous_diameters = previous_printer.config.option<ConfigOptionFloats>("nozzle_diameter")->values;
+        const auto &current_diameters = current.config.option<ConfigOptionFloats>("nozzle_diameter")->values;
+        if (!model.empty() && model == previous_printer.config.opt_string("printer_model") &&
+            current.vendor == previous_printer.vendor &&
+            previous_diameters.size() == 1 && current_diameters.size() == 1 &&
+            previous_diameters != current_diameters &&
+            current.config.opt_bool("single_extruder_multi_material") ==
+                previous_printer.config.opt_bool("single_extruder_multi_material")) {
+            // A nozzle variant has its own process preset. The open project's
+            // slots, colors, flush settings and physical-roll bindings travel together.
+            prints.select_preset_by_name_strict(config.get_printer_setting(current.name, PRESET_PRINT_NAME));
+            update_compatible(PresetSelectCompatibleType::Always);
+            return;
+        }
+    }
+    update_selections(config, true);
+}
+
 void PresetBundle::update_selections(AppConfig &config, bool preserve_project_filament_colors)
 {
     const std::vector<std::string> project_filament_colors =

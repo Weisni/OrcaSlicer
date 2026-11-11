@@ -170,3 +170,7 @@ Source: user instructions and the root `AGENTS.md`, recorded 2026-09-24.
 - Build Windows x64 by default. Keep additional platform builds available on
   explicit selection. Build and test release packages once on `main`, then
   use that exact run's artifacts for draft upload and authorized publication.
+
+- Keep the open project's filament slots and HA roll bindings when changing
+  nozzle diameter on the same single-extruder printer model. Cover the P2S
+  0.4 to 0.6 mm switch with Rapid PETG in A4 and PLA in A1.
