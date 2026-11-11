@@ -37,8 +37,6 @@ jobs:
       # Override this repository variable when QuackSlicer starts changing the
       # profile schema independently from upstream.
       PROFILE_VALIDATOR_URL: ${{ vars.PROFILE_VALIDATOR_URL || 'https://github.com/OrcaSlicer/OrcaSlicer/releases/download/nightly-builds/OrcaSlicer_profile_validator_Linux_Ubuntu2404_nightly' }}
-    # approve_pr_checks.yml starts first-time contributors' runs without a maintainer looking
-    # at the pull request first. A run takes 2-6 minutes; this bounds a runaway one.
     timeout-minutes: 30
     steps:
       - name: Checkout repository
@@ -53,8 +51,6 @@ jobs:
       # it never notices a profile no <vendor>.json indexes, a preset name two files claim,
       # an id that is not the mint of its own triple, or a file that normalize and
       # update-index would still rewrite.
-      # The step id is the handle the PR comment and the failure gate below use; renaming it
-      # silently disables them.
       - name: Check profiles (orca_profile_tool.py)
         id: profile_tool
         continue-on-error: true
@@ -88,9 +84,10 @@ jobs:
         run: |
           set -o pipefail
           base="${{ runner.temp }}/v2.4.2"
-          git fetch --no-tags --depth=1 origin refs/tags/v2.4.2:refs/tags/v2.4.2
+          # OrcaSlicer v2.4.2 is an upstream tag, absent from the Quack fork.
+          git fetch --no-tags --depth=1 https://github.com/OrcaSlicer/OrcaSlicer.git 8500fcdccaa10b5099ac20d252af3a7c560046f1
           mkdir -p "$base"
-          git archive v2.4.2 resources/profiles | tar -x -C "$base"
+          git archive FETCH_HEAD resources/profiles | tar -x -C "$base"
           python3 ./scripts/orca_profile_tool.py legacy-compat --base "$base/resources/profiles" --check 2>&1 | tee ${{ runner.temp }}/legacy_compat.log
 
       # download
@@ -109,9 +106,8 @@ jobs:
           ./OrcaSlicer_profile_validator -p ${{ github.workspace }}/resources/profiles -l 2 2>&1 | tee ${{ runner.temp }}/validate_system.log
           exit ${PIPESTATUS[0]}
       # The validator above is the nightly build of main, so it cannot slice profiles that use
-      # settings a PR adds to the engine: it reports their placeholders as undefined. A PR that
-      # changes src/ also runs Build all, whose Slice check runs this same sweep with the
-      # validator built from the PR, so the sweep below only runs for the other PRs.
+      # settings a PR adds to the engine: it reports their placeholders as undefined.
+      # A manual all-platform build can slice using a validator built from the PR.
       - name: Detect engine changes
         id: engine_changes
         if: ${{ github.event_name == 'pull_request' }}
@@ -119,7 +115,7 @@ jobs:
           base=${{ github.event.pull_request.base.sha }}
           if git fetch --no-tags --depth=1 origin "$base" && ! git diff --quiet "$base" HEAD -- src/; then
             echo "changed=true" >> "$GITHUB_OUTPUT"
-            echo "::notice::This PR changes src/, so Build all's Slice check slices the profiles with the PR-built validator."
+            echo "::notice::This PR changes src/. To slice the profiles with this revision's validator, run the optional all-platform build."
           fi
       # Slice a two-colour cube through every printer, and through every system process/filament whose
       # templates no printer's own slice reaches, so every custom g-code and filename_format shipped is
