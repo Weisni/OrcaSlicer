@@ -79,9 +79,29 @@ separate maintainers and release channels.
 - [x] User-confirm the Home Assistant flushing-volume fix in the local build.
 - [x] Carry the HA fix, three-layer support-interface correction, and shared
   Orca paint and brim paths into the regular patch candidate.
-- [ ] Qualify the regular candidate with the full hosted build and test matrix.
+- [x] Limit the default release build to Windows x64 and reuse its packages for
+  publication.
+- [ ] Qualify the exact regular candidate with the hosted Windows x64 build and
+  test gates.
 
 See the [2.5.26 release notes](docs/releases/2.5.26.md).
+
+### Building and publishing releases
+
+- Merge the version change in `version.inc` into `main` to start **Build
+  QuackSlicer**. Pull requests run targeted checks without building packages.
+  The default build tests Windows x64 and produces the installer, portable ZIP,
+  and installer checksum in the same run. The HA regression gate also runs.
+- For a multi-platform release, set the repository Actions variable
+  `QUACK_RELEASE_PLATFORMS` to `all` before merging the version change, so the
+  first build includes every platform. For manual builds, choose `all` in
+  **Build QuackSlicer**. Reset or remove the variable for Windows-only releases.
+- Create a release draft whose tag matches the source version and whose target
+  is the exact successful `main` build SHA. Run **Publish to draft release** on
+  `main` with that tag and build run ID. The workflow uses the existing
+  artifacts, verifies SHA-256 checksums, and uploads them to the draft. Enable
+  `publish` to publish the verified draft in the same run. The build run's
+  artifacts must still be available.
 
 ### Local 2.5.25 HA Flush Test
 
@@ -699,7 +719,5 @@ project copies. See the [updated local handoff](docs/QUACK_BETA_LOCAL_TEST_2026-
 - [x] Reproduce the sole Flatpak test-asset failure on both architectures and
   retain the real Windows resource template required by the version regression.
   The actual packaging-block fixture fails before and passes after correction.
-- [ ] Correct draft discovery in `verify_release_target.py` before the next
-  automated release: GitHub's by-tag endpoint returns 404 for an unpublished
-  draft. This release uses an authenticated release-ID lookup while retaining
-  the same source/tag, complete-matrix and SHA-256 checks; no gate is skipped.
+- [x] Use authenticated release-ID lookup for subsequent draft uploads.
+  GitHub's by-tag endpoint can return 404 for an unpublished draft.

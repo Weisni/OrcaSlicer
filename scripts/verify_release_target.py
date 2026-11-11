@@ -27,13 +27,17 @@ def gh_api(endpoint, fields=None):
     return json.loads(result.stdout)
 
 
-def verify(api, repository, tag, head, create_tag=False, require_tag=False):
+def verify(api, repository, tag, head, release_id, create_tag=False, require_tag=False):
     prefix = f'repos/{repository}'
-    release = api(f'{prefix}/releases/tags/{quote(tag, safe="")}')
+    release = api(f'{prefix}/releases/{release_id}')
+    if release.get('id') != release_id:
+        raise ValueError('Release ID changed')
     if release.get('draft') is not True:
         raise ValueError('Release is no longer a draft; refusing mutation')
     if release.get('tag_name') != tag:
         raise ValueError('Release tag changed')
+    if release.get('prerelease') is not ('-' in tag):
+        raise ValueError('Release prerelease status must match the tag')
     target = api(f'{prefix}/commits/{quote(release["target_commitish"], safe="")}')['sha']
     if target != head:
         raise ValueError('Draft target differs from the reviewed source SHA')
@@ -44,7 +48,7 @@ def verify(api, repository, tag, head, create_tag=False, require_tag=False):
             # POST creates only an absent ref. Never patch, replace or force an
             # existing tag; a concurrent creation fails rather than moving it.
             api(f'{prefix}/git/refs', {'ref': f'refs/tags/{tag}', 'sha': head})
-            return verify(api, repository, tag, head, require_tag=True)
+            return verify(api, repository, tag, head, release_id, require_tag=True)
         if require_tag:
             raise ValueError('Release tag is missing before publication')
         return
@@ -63,10 +67,11 @@ if __name__ == '__main__':
     parser.add_argument('--repo', required=True)
     parser.add_argument('--tag', required=True)
     parser.add_argument('--head', required=True)
+    parser.add_argument('--release-id', type=int, required=True)
     parser.add_argument('--create-tag', action='store_true')
     parser.add_argument('--require-tag', action='store_true')
     args = parser.parse_args()
     try:
-        verify(gh_api, args.repo, args.tag, args.head, args.create_tag, args.require_tag)
+        verify(gh_api, args.repo, args.tag, args.head, args.release_id, args.create_tag, args.require_tag)
     except (RuntimeError, ValueError, KeyError) as error:
         parser.exit(1, f'{error}\n')

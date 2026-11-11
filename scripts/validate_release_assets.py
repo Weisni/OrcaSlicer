@@ -6,7 +6,14 @@ import re
 from pathlib import Path
 
 
-def expected_assets(version, self_hosted):
+def expected_assets(version, self_hosted, platforms='all'):
+    if platforms == 'windows-x64':
+        return {
+            f'QuackSlicer_Windows_Installer_V{version}_x64.exe',
+            f'QuackSlicer_Windows_V{version}_x64_portable.zip',
+        }
+    if platforms != 'all':
+        raise ValueError('Unknown release platform selection')
     names = {
         f'QuackSlicer_Mac_universal_V{version}.dmg',
         f'QuackSlicer_Linux_AppImage_Ubuntu2404_V{version}.AppImage',
@@ -25,14 +32,14 @@ def expected_assets(version, self_hosted):
     return names
 
 
-def validate(directory, tag, version, self_hosted):
+def validate(directory, tag, version, self_hosted, platforms='all'):
     if self_hosted:
         raise ValueError('Self-hosted builds have an incomplete supported-platform release matrix')
     if '.local' in version:
         raise ValueError('A local test version cannot be released')
     if not re.fullmatch(r'\d+\.\d+\.\d+(?:-[A-Za-z0-9]+(?:[.-][A-Za-z0-9]+)*)?', version) or tag != 'v' + version:
         raise ValueError('Release tag and source version must match exactly')
-    expected = expected_assets(version, self_hosted)
+    expected = expected_assets(version, self_hosted, platforms)
     checksums = {name + '.sha256' for name in expected if name.endswith('.exe')}
     actual = {p.name for p in directory.iterdir() if p.is_file()} - {'SHA256SUMS'}
     missing = (expected | checksums) - actual
@@ -53,7 +60,7 @@ def validate(directory, tag, version, self_hosted):
             if digest != recorded:
                 raise ValueError('Checksum mismatch: ' + name)
         rows.append(f'{digest}  {name}\n')
-    (directory / 'SHA256SUMS').write_text(''.join(rows), encoding='utf-8')
+    (directory / 'SHA256SUMS').write_text(''.join(rows), encoding='utf-8', newline='\n')
     # Read every assembled asset again against the final manifest before upload.
     for row in rows:
         digest, name = row.rstrip('\n').split('  ', 1)
@@ -90,7 +97,8 @@ if __name__ == '__main__':
         matrix = json.loads(args.matrix_file.read_text())
         if matrix.get('head_sha') != args.head or type(matrix.get('self_hosted')) is not bool:
             raise ValueError('Source matrix does not match the reviewed build SHA')
-        validate(args.directory, args.tag, match[1], matrix['self_hosted'])
+        # Historical builds declared only the full-platform matrix.
+        validate(args.directory, args.tag, match[1], matrix['self_hosted'], matrix.get('platforms', 'all'))
         if args.remote_json:
             validate_remote(args.directory, json.loads(args.remote_json.read_text()))
     except ValueError as error:

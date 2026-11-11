@@ -1,11 +1,6 @@
 name: Check profiles
 on:
-  # approve_pr_checks.yml approves these runs for first-time contributors and finds this
-  # workflow by its file name.
   pull_request:
-    # release/* is included because pr-merge-bot.yml lets delegates merge into
-    # it, and it gates on this workflow's result. Without it a delegated merge
-    # into a release branch would run no profile validation at all.
     branches:
     - main
     - release/*
@@ -16,7 +11,8 @@ on:
     # this workflow.
     - 'resources/printers/**'
     - 'resources/info/legacy_compatible_printers.json'
-    - 'scripts/**'
+    - 'scripts/orca_profile_tool.py'
+    - 'scripts/tests/**'
     # orca_profile_tool.py reads the variant key sets from PrintConfig.cpp, and its
     # tests the obsolete keys, so a PR changing either must be checked against the profiles.
     - 'src/libslic3r/PrintConfig.cpp'
@@ -35,8 +31,6 @@ permissions:
 
 jobs:
   check_profiles:
-    # This job name is the check-run name pr-merge-bot.yml requires before a
-    # delegated merge. Renaming it silently disables that gate.
     name: Check profiles
     runs-on: ubuntu-24.04
     env:
@@ -250,124 +244,12 @@ jobs:
 
           exit "${status}"
 
-      - name: Prepare PR number for comment workflow
-        if: ${{ always() && github.event_name == 'pull_request' }}
-        run: |
-          mkdir -p ${{ runner.temp }}/profile-check-results
-          echo "${{ github.event.pull_request.number }}" > ${{ runner.temp }}/profile-check-results/pr_number.txt
-
-      # Builds a readable diff of the custom G-code the PR changes, which GitHub shows as
-      # one long line per setting, for check_profiles_comment.yml to post.
-      - name: Diff custom G-code
-        if: ${{ always() && github.event_name == 'pull_request' }}
+      - name: Summarize changed profile G-code
+        if: github.event_name == 'pull_request'
         continue-on-error: true
-        env:
-          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           git fetch --no-tags --depth=2 origin "$(git rev-parse HEAD)"
-          results=${{ runner.temp }}/profile-check-results
-          diff=${{ runner.temp }}/gcode_diff.md
-          # HEAD is the PR's merge commit, so HEAD^1 is the base it merges onto.
-          python3 ./scripts/orca_profile_tool.py gcode-diff --base HEAD^1 --head HEAD > "$diff"
-          if [ -s "$diff" ]; then
-            {
-              echo "<!-- profile-gcode-diff-comment -->"
-              cat "$diff"
-              echo ""
-              # The comment workflow finds this line as the only one starting with <sub>.
-              echo "<sub>For commit ${PR_HEAD_SHA} of this PR.</sub>"
-            } > "$results/gcode_diff.md"
-          fi
-          # Tells the comment workflow that a missing gcode_diff.md means no G-code changed.
-          touch "$results/gcode_diff_done.txt"
-
-      - name: Prepare comment artifact
-        if: ${{ always() && github.event_name == 'pull_request' && (steps.profile_tool.outcome == 'failure' || steps.version_bump.outcome == 'failure' || steps.legacy_compat.outcome == 'failure' || steps.validate_system.outcome == 'failure' || steps.validate_slice.outcome == 'failure' || steps.validate_filament_subtypes.outcome == 'failure' || steps.validate_custom.outcome == 'failure') }}
-        run: |
-          {
-            # Marker matched by check_profiles_comment.yml to delete prior comments.
-            echo "<!-- profile-validation-comment -->"
-            echo "## :x: Profile Validation Errors"
-            echo ""
-
-            if [ "${{ steps.profile_tool.outcome }}" = "failure" ]; then
-              echo "### Profile Check Failed (orca_profile_tool.py)"
-              echo ""
-              echo '```'
-              head -c 30000 ${{ runner.temp }}/profile_tool.log || echo "No output captured"
-              echo '```'
-              echo ""
-            fi
-
-            if [ "${{ steps.version_bump.outcome }}" = "failure" ]; then
-              echo "### Profile Version Not Bumped"
-              echo ""
-              echo '```'
-              head -c 30000 ${{ runner.temp }}/version_bump.log || echo "No output captured"
-              echo '```'
-              echo ""
-              echo 'Every changed bundle needs a newer `version` in its `resources/profiles/<Vendor>.json`, or the app never installs the change.'
-              echo ""
-            fi
-
-            if [ "${{ steps.legacy_compat.outcome }}" = "failure" ]; then
-              echo "### Legacy Compatible Printers Map Out of Date"
-              echo ""
-              echo '```'
-              head -c 30000 ${{ runner.temp }}/legacy_compat.log || echo "No output captured"
-              echo '```'
-              echo ""
-              echo 'Regenerate it: `git archive v2.4.2 resources/profiles | tar -x -C /tmp/v2.4.2`, then `python3 scripts/orca_profile_tool.py legacy-compat --base /tmp/v2.4.2/resources/profiles`.'
-              echo ""
-            fi
-
-            if [ "${{ steps.validate_system.outcome }}" = "failure" ]; then
-              echo "### System Profile Validation Failed"
-              echo ""
-              echo '```'
-              head -c 30000 ${{ runner.temp }}/validate_system.log || echo "No output captured"
-              echo '```'
-              echo ""
-            fi
-
-            if [ "${{ steps.validate_slice.outcome }}" = "failure" ]; then
-              echo "### Slice Validation Failed (custom g-code expansion)"
-              echo ""
-              echo '```'
-              head -c 30000 ${{ runner.temp }}/validate_slice.log || echo "No output captured"
-              echo '```'
-              echo ""
-            fi
-
-            if [ "${{ steps.validate_filament_subtypes.outcome }}" = "failure" ]; then
-              echo "### Filament Subtype Validation Failed"
-              echo ""
-              echo '```'
-              head -c 30000 ${{ runner.temp }}/validate_filament_subtypes.log || echo "No output captured"
-              echo '```'
-              echo ""
-            fi
-
-            if [ "${{ steps.validate_custom.outcome }}" = "failure" ]; then
-              echo "### Custom Preset Validation Failed"
-              echo ""
-              echo '```'
-              head -c 30000 ${{ runner.temp }}/validate_custom.log || echo "No output captured"
-              echo '```'
-              echo ""
-            fi
-
-            echo "---"
-            echo '*Fix the errors above and push a new commit. To reproduce this run locally: `scripts/check_profile.sh`, or `scripts\check_profile.bat` on Windows.*'
-          } > ${{ runner.temp }}/profile-check-results/pr_comment.md
-
-      - name: Upload comment artifact
-        if: ${{ always() && github.event_name == 'pull_request' }}
-        uses: actions/upload-artifact@v7
-        with:
-          name: profile-check-results
-          path: ${{ runner.temp }}/profile-check-results/
-          retention-days: 1
+          python3 ./scripts/orca_profile_tool.py gcode-diff --base HEAD^1 --head HEAD >> "$GITHUB_STEP_SUMMARY"
 
       - name: Fail if any check failed
         if: ${{ always() && (steps.profile_tool.outcome == 'failure' || steps.version_bump.outcome == 'failure' || steps.legacy_compat.outcome == 'failure' || steps.validate_system.outcome == 'failure' || steps.validate_slice.outcome == 'failure' || steps.validate_filament_subtypes.outcome == 'failure' || steps.validate_custom.outcome == 'failure') }}

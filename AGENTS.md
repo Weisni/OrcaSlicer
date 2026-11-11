@@ -38,7 +38,7 @@ ctest --test-dir ./tests/fff_print -C Release
 
 - C++17, selective C++20. PascalCase classes, snake_case functions/variables
 - `#pragma once` for headers. Smart pointers and RAII preferred
-- Include what you use: include the header for every symbol a file uses, and keep headers compilable on their own. Never rely on the precompiled header or a transitive include. The `clang-tidy` CI job enforces this on changed lines; run the same check locally with `scripts/run_clang_tidy.sh` (`scripts\run_clang_tidy.ps1` on Windows), which sets up everything it needs
+- Include what you use: include the header for every symbol a file uses, and keep headers compilable on their own. Never rely on the precompiled header or a transitive include. The manual `clang-tidy` CI job checks changed lines. Run the same check locally with `scripts/run_clang_tidy.sh` (`scripts\run_clang_tidy.ps1` on Windows), which sets up everything it needs.
 - Parallelization via TBB — be mindful of shared state
 - Always use `SetSizerAndFit(sizer)` instead of `SetSizer(sizer)` on top level window. Unless `SetSizer` must be called before the full layout is built, call `sizer->SetSizeHints(window)` afterwards in this case.
 
@@ -232,10 +232,10 @@ Nozzle-context changes must not silently pick a different roll/profile.
 - Keep software, GUI, external cloud/agent, installed HA and physical acceptance
   evidence separate. Source inspection/builds do not prove hardware safety,
   P2S compatibility, print quality or performance improvements.
-- Preserve Windows/macOS/Linux and all supported architecture/package lanes.
-  Full CI must pass at the reviewed head before release qualification. If
-  publication is authorized later, verify the matching main build, tag,
-  embedded executable versions and every delivered asset/hash.
+- Windows x64 is the default release build. Preserve all supported platform
+  lanes as opt-in and require the selected matrix and tests at the reviewed head.
+  If publication is authorized, reuse the matching main build and verify the
+  tag, embedded executable versions and every delivered asset/hash.
 - Update README, release notes and both ledgers with actual results/blockers.
   Never mark planned work or unperformed live/device tests as complete.
 
@@ -270,11 +270,10 @@ and matching main run `41162263408` pass; all 13 release assets were independent
 downloaded and hash-verified. Do not move the tag. Read the final qualification
 in `docs/RELEASE_ACCEPTANCE_2.5.25_DE.md` and retain its external/physical limits.
 
-Before the next automated release, correct draft discovery in
-`scripts/verify_release_target.py`: GitHub's by-tag endpoint returns 404 for
-unpublished drafts. This release used its authenticated release ID with the same
-immutable-source/tag, complete asset matrix and digest validators. Never publish
-an empty draft to work around this lookup issue.
+This release used authenticated draft discovery by release ID because the
+by-tag endpoint can return 404 for unpublished drafts. The release workflow
+uses the numeric ID for subsequent releases and verifies the exact source and
+asset digests before publication.
 
 ### Superseding 2.5.25 release authorization
 

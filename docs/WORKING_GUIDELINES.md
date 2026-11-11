@@ -166,3 +166,7 @@ Source: user instructions and the root `AGENTS.md`, recorded 2026-09-24.
 - The user confirmed the HA flushing fix and requested it together with the
   preceding test-build changes for the next regular QuackSlicer version.
   Keep the regular build identity and qualify the exact release candidate.
+
+- Build Windows x64 by default. Keep additional platform builds available on
+  explicit selection. Build and test release packages once on `main`, then
+  use that exact run's artifacts for draft upload and authorized publication.

@@ -49,6 +49,28 @@ class ReleaseAssetsTests(unittest.TestCase):
             path.rename(path.with_name(path.name.replace('2.5.25-beta', '2.5.25')))
         module.validate(self.path, 'v2.5.25', '2.5.25', False)
 
+    def test_windows_x64_release_requires_only_the_selected_windows_assets(self):
+        version = '2.5.25-beta'
+        installer = f'QuackSlicer_Windows_Installer_V{version}_x64.exe'
+        expected = {installer, f'QuackSlicer_Windows_V{version}_x64_portable.zip'}
+        self.assertEqual(module.expected_assets(version, False, 'windows-x64'), expected)
+        for path in self.path.iterdir():
+            if path.name not in expected | {installer + '.sha256'}:
+                path.unlink()
+        module.validate(self.path, 'v' + version, version, False, 'windows-x64')
+        manifest = (self.path / 'SHA256SUMS').read_bytes()
+        self.assertEqual(manifest.count(b'\n'), 3)
+        self.assertNotIn(b'\r', manifest)
+        with self.assertRaisesRegex(ValueError, 'Missing'):
+            module.validate(self.path, 'v' + version, version, False, 'all')
+        (self.path / (installer + '.sha256')).unlink()
+        with self.assertRaisesRegex(ValueError, 'Missing'):
+            module.validate(self.path, 'v' + version, version, False, 'windows-x64')
+
+    def test_unknown_release_platform_selection_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, 'platform'):
+            module.validate(self.path, 'v2.5.25-beta', '2.5.25-beta', False, 'unknown')
+
     def test_missing_architecture_is_rejected(self):
         (self.path / 'QuackSlicer_Windows_V2.5.25-beta_arm64_portable.zip').unlink()
         with self.assertRaisesRegex(ValueError, 'Missing'):
