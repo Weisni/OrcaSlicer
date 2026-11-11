@@ -1,158 +1,98 @@
 name: Publish to draft release
 
-# Pulls the platform binaries produced by a successful main build and uploads
-# them to the matching DRAFT release. Completed main builds are published
-# automatically when their exact commit has a prepared draft release. Manual
-# dispatch remains available for explicitly selected historical runs.
-#
-# Trigger: Actions tab -> "Publish to draft release" -> Run workflow.
-# Locked to a single person: the first step aborts unless the actor matches the
-# `RELEASE_PUBLISHER` repo variable (set to "Weisni"). To allow someone else,
-# change that variable: gh variable set RELEASE_PUBLISHER --body "<login>".
-
+# Reuse the artifacts of a successful Build QuackSlicer run on main.
 on:
-  workflow_run:
-    workflows: ["Build QuackSlicer"]
-    types: [completed]
-    branches: [main]
   workflow_dispatch:
     inputs:
       run_id:
-        description: 'Run ID of the "Build all" workflow to pull binaries from (the number in the Actions run URL)'
+        description: Successful main build run ID
         required: true
         type: string
       tag:
-        description: 'Tag of the draft release to upload to (e.g. v2.4.0-beta)'
+        description: Tag of the existing draft release
         required: true
         type: string
+      publish:
+        description: Publish after verifying the uploaded draft assets
+        type: boolean
+        default: false
 
-# One publisher for the repository, across manual and workflow-run triggers.
-# Never cancel a publisher halfway through a release mutation.
 concurrency:
   group: release-publisher
   cancel-in-progress: false
 
 permissions:
-  contents: write   # upload release assets
-  actions: read     # download artifacts from another run
+  contents: write
+  actions: read
 
 jobs:
   publish:
-    name: Publish binaries to draft release
-    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    name: Upload verified release assets
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      RUN_ID: ${{ inputs.run_id }}
+      TAG: ${{ inputs.tag }}
     steps:
-      - name: Resolve source run and release tag
-        env:
-          DISPATCH_RUN_ID: ${{ inputs.run_id }}
-          DISPATCH_TAG: ${{ inputs.tag }}
-          COMPLETED_RUN_ID: ${{ github.event.workflow_run.id }}
-          COMPLETED_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
-        run: |
-          set -euo pipefail
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            run_id="$DISPATCH_RUN_ID"
-            tag="$DISPATCH_TAG"
-          else
-            run_id="$COMPLETED_RUN_ID"
-            tag=$(gh api "repos/$GITHUB_REPOSITORY/releases" --paginate \
-              --jq ".[] | select(.draft == true and .target_commitish == \"$COMPLETED_HEAD_SHA\") | .tag_name" \
-              | head -n 1)
-            if [ -z "$tag" ]; then
-              echo "No draft release targets $COMPLETED_HEAD_SHA; nothing to publish."
-              echo "PUBLISH=false" >> "$GITHUB_ENV"
-              exit 0
-            fi
-          fi
-          echo "PUBLISH=true" >> "$GITHUB_ENV"
-          echo "RUN_ID=$run_id" >> "$GITHUB_ENV"
-          echo "TAG=$tag" >> "$GITHUB_ENV"
-          echo "Resolved build run #$run_id and release $tag"
-
       - name: Restrict to the release publisher
-        if: ${{ env.PUBLISH == 'true' && github.event_name == 'workflow_dispatch' }}
         env:
           PUBLISHER: ${{ vars.RELEASE_PUBLISHER }}
         run: |
-          if [ -z "$PUBLISHER" ]; then
-            echo "::error::RELEASE_PUBLISHER repo variable is not set."
-            exit 1
-          fi
-          if [ "${{ github.actor }}" != "$PUBLISHER" ]; then
-            echo "::error::Only @$PUBLISHER may run this workflow (you are @${{ github.actor }})."
-            exit 1
-          fi
-          echo "Authorized: @${{ github.actor }}"
-
-      - name: Verify target is a draft release
-        if: ${{ env.PUBLISH == 'true' }}
-        run: |
-          if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft >/dev/null 2>&1; then
-            echo "::error::Release '$TAG' not found. Create the draft (with this tag) first."
-            exit 1
-          fi
-          is_draft=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq '.isDraft')
-          if [[ "$TAG" == *-* ]] && [ "$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isPrerelease --jq '.isPrerelease')" != true ]; then
-            echo "::error::A prerelease version requires a prerelease draft."
-            exit 1
-          fi
-          if [ "$is_draft" != "true" ]; then
-            echo "::error::Release '$TAG' is published, not a draft. Aborting to avoid touching a live release."
+          if [[ -z "$PUBLISHER" || "$GITHUB_ACTOR" != "$PUBLISHER" ]]; then
+            echo "::error::Only the configured RELEASE_PUBLISHER may run this workflow."
             exit 1
           fi
 
-      - name: Verify source build run
-        if: ${{ env.PUBLISH == 'true' }}
+      - name: Find the successful main build and the draft release
         run: |
-          info=$(gh run view "$RUN_ID" --repo "$GITHUB_REPOSITORY" --json workflowName,conclusion,headBranch,headSha)
-          name=$(echo "$info" | jq -r '.workflowName')
-          conclusion=$(echo "$info" | jq -r '.conclusion')
-          branch=$(echo "$info" | jq -r '.headBranch')
-          head_sha=$(echo "$info" | jq -r '.headSha')
-          release_target=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" \
-            --json targetCommitish --jq '.targetCommitish')
-          release_target_sha=$(gh api \
-            "repos/$GITHUB_REPOSITORY/commits/$release_target" --jq '.sha')
-          echo "Source run #$RUN_ID: '$name' on '$branch' at $head_sha (conclusion: $conclusion)"
-          if [ "$name" != "Build QuackSlicer" ] || [ "$branch" != "main" ]; then
-            echo "::error::Source run must be the 'Build QuackSlicer' workflow on main."
+          set -euo pipefail
+          if [[ ! "$RUN_ID" =~ ^[1-9][0-9]*$ || ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9]+([.-][A-Za-z0-9]+)*)?$ ]]; then
+            echo "::error::Provide a numeric build run ID and a version tag such as v2.5.26."
             exit 1
           fi
-          if [ "$conclusion" != "success" ]; then
-            echo "::error::Source run did not conclude 'success' ($conclusion). Refusing to publish an incomplete release."
+          repo="repos/$GITHUB_REPOSITORY"
+          workflow_id=$(gh api "$repo/actions/workflows/build_all.yml" --jq '.id')
+          source=$(gh api "$repo/actions/runs/$RUN_ID")
+          head_sha=$(jq -er --arg repo "$GITHUB_REPOSITORY" --argjson workflow "$workflow_id" '
+            select(.workflow_id == $workflow and .head_repository.full_name == $repo
+                   and .head_branch == "main" and .conclusion == "success"
+                   and (.event == "push" or .event == "workflow_dispatch")) | .head_sha' <<< "$source") || {
+            echo "::error::Source run must be a successful Build QuackSlicer push or manual run on main."
             exit 1
-          fi
-          # The HA job belongs to this exact source run, so an unrelated green
-          # workflow or a historical build without the gate cannot qualify.
-          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/jobs?filter=latest&per_page=100" --paginate \
-            --jq '.jobs[] | select(.name | startswith("Home Assistant materials regression gate /")) | .conclusion' > ha-gate-results
-          if [ "$(cat ha-gate-results)" != success ]; then
-            echo "::error::The exact source build lacks a successful HA materials gate."
+          }
+          gh api --paginate --slurp "$repo/actions/runs/$RUN_ID/jobs?filter=latest&per_page=100" > build-jobs.json
+          jq -e '
+            [.[] | .jobs[] | select(.name | startswith("Home Assistant materials regression gate /")) | .conclusion] == ["success"]
+            and ([.[] | .jobs[] | select(.name | startswith("Windows x64 /")) | .conclusion] == ["success"])
+          ' build-jobs.json >/dev/null || {
+            echo "::error::The exact build requires successful HA and Windows x64 unit tests."
             exit 1
-          fi
+          }
+          # The REST endpoint by tag can return 404 for an unpublished draft.
+          release_id=$(gh api --paginate --slurp "$repo/releases?per_page=100" |
+            jq -er --arg tag "$TAG" '
+              [.[][] | select(.draft == true and .tag_name == $tag)] |
+              if length == 1 then .[0].id else error("Expected one matching release draft") end')
           echo "RELEASE_HEAD_SHA=$head_sha" >> "$GITHUB_ENV"
-          if [ "$head_sha" != "$release_target_sha" ]; then
-            echo "::error::Source run SHA $head_sha does not match draft release target $release_target_sha ($release_target)."
-            exit 1
-          fi
+          echo "RELEASE_ID=$release_id" >> "$GITHUB_ENV"
 
-      - name: Checkout verified release source
-        if: ${{ env.PUBLISH == 'true' }}
+      - name: Checkout the publisher at the workflow SHA
         uses: actions/checkout@v7
         with:
-          ref: ${{ env.RELEASE_HEAD_SHA }}
+          ref: ${{ github.workflow_sha }}
           persist-credentials: false
 
-      - name: Verify existing immutable tag
-        if: ${{ env.PUBLISH == 'true' }}
-        run: python3 scripts/verify_release_target.py --repo "$GITHUB_REPOSITORY" --tag "$TAG" --head "$RELEASE_HEAD_SHA"
-
-      - name: Download release artifacts from build run
-        if: ${{ env.PUBLISH == 'true' }}
+      - name: Read version.inc at the build SHA
         run: |
-          # Windows_V* (not Windows_*) keeps the MSIX Store artifact out: it goes to Partner Center, not GitHub releases.
+          gh api -H 'Accept: application/vnd.github.raw+json' \
+            "repos/$GITHUB_REPOSITORY/contents/version.inc?ref=$RELEASE_HEAD_SHA" > release-version.inc
+
+      - name: Verify draft target and immutable tag
+        run: python3 scripts/verify_release_target.py --repo "$GITHUB_REPOSITORY" --release-id "$RELEASE_ID" --tag "$TAG" --head "$RELEASE_HEAD_SHA"
+
+      - name: Download the existing build artifacts
+        run: |
           gh run download "$RUN_ID" --repo "$GITHUB_REPOSITORY" --dir artifacts \
             -p 'QuackSlicer_Windows_V*' \
             -p 'QuackSlicer_Mac_universal_*' \
@@ -160,84 +100,62 @@ jobs:
             -p 'QuackSlicer-Linux-flatpak_*' \
             -p 'PDB' \
             -p 'release-matrix'
-          echo "Downloaded artifact folders:"
-          ls -1 artifacts
 
-      - name: Assemble release assets
-        if: ${{ env.PUBLISH == 'true' }}
+      - name: Assemble and verify the selected asset matrix
         run: |
           set -euo pipefail
-          mkdir -p upload
-
-          # gh run download auto-extracts each artifact into a folder, so the inner
-          # binaries are already unzipped. Copy the inner binary for each platform.
-          # -type f is required (some artifact *folders* are named "*.flatpak").
-
-          # Windows installers (x64 + arm64): the .exe inside each installer
-          # artifact, NOT the quack-slicer.exe in the portable app folder. CPack
-          # bakes the arch into the filename, so
-          # copy them straight through.
-          find artifacts -type f \( -name '*.exe' -o -name '*.exe.sha256' \) -path '*QuackSlicer_Windows_*' ! -path '*_portable*' -exec cp -v {} upload/ \;
-          # macOS universal DMG (profile-validator DMG isn't downloaded).
-          find artifacts -type f -name '*.dmg' -path '*QuackSlicer_Mac_universal_*' -exec cp -v {} upload/ \;
-          # Linux AppImage.
-          find artifacts -type f \( -name '*.AppImage' -o -name '*.flatpak' \) -exec cp -v {} upload/ \;
-          # Windows debug symbols (PDB archive, for developers).
-          find artifacts -type f -name 'Debug_PDB_*.7z' -exec cp -v {} upload/ \;
-
-          # Portable Windows builds (x64 + arm64) are unzipped folder artifacts;
-          # re-zip each to its released filename (these stay .zip on the release).
-          mapfile -t portable_dirs < <(find artifacts -maxdepth 1 -type d -name 'QuackSlicer_Windows_*_portable')
-          if [ ${#portable_dirs[@]} -eq 0 ]; then
-            echo "::warning::Windows portable artifact not found."
-          fi
-          for portable_dir in "${portable_dirs[@]}"; do
-            ( cd "$portable_dir" && zip -qr "$GITHUB_WORKSPACE/upload/$(basename "$portable_dir").zip" . )
-            echo "Zipped portable -> $(basename "$portable_dir").zip"
+          mkdir upload
+          find artifacts -type f \( -name '*.exe' -o -name '*.exe.sha256' \) \
+            -path '*QuackSlicer_Windows_*' ! -path '*_portable*' -exec cp -v {} upload/ \;
+          find artifacts -type f \( -name 'QuackSlicer_Windows_*_portable.zip' -o -name '*.dmg' \
+            -o -name '*.AppImage' -o -name '*.flatpak' -o -name 'Debug_PDB_*.7z' \) -exec cp -v {} upload/ \;
+          # Older builds stored the portable application tree instead of the final ZIP.
+          for dir in artifacts/QuackSlicer_Windows_*_portable; do
+            [[ -d "$dir" ]] || continue
+            archive="$GITHUB_WORKSPACE/upload/$(basename "$dir").zip"
+            if [[ ! -f "$archive" ]]; then
+              (cd "$dir" && zip -qr "$archive" .)
+            fi
           done
-
-          echo "Assets to upload:"
-          ls -lh upload
-          if [ -z "$(ls -A upload)" ]; then
-            echo "::error::No assets assembled. Check the run_id and that its artifacts haven't expired."
-            exit 1
-          fi
-
-      - name: Verify complete asset matrix and SHA-256 checksums
-        if: ${{ env.PUBLISH == 'true' }}
-        run: |
           python3 scripts/validate_release_assets.py upload --tag "$TAG" \
-            --matrix-file artifacts/release-matrix/release-matrix.json --head "$RELEASE_HEAD_SHA"
+            --version-file release-version.inc --matrix-file artifacts/release-matrix/release-matrix.json \
+            --head "$RELEASE_HEAD_SHA"
           (cd upload && sha256sum --check SHA256SUMS)
 
-      - name: Upload assets to draft release
-        if: ${{ env.PUBLISH == 'true' }}
+      - name: Upload and verify draft assets
         run: |
-          python3 scripts/verify_release_target.py --repo "$GITHUB_REPOSITORY" --tag "$TAG" --head "$RELEASE_HEAD_SHA" --create-tag
-          gh release upload "$TAG" upload/* --repo "$GITHUB_REPOSITORY" --clobber
-          echo "Uploaded to draft release: $TAG"
-          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name'
-
-      - name: Verify uploaded asset digests
-        if: ${{ env.PUBLISH == 'true' }}
-        run: |
-          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" > release-assets.json
-          python3 scripts/validate_release_assets.py upload --tag "$TAG" \
-            --matrix-file artifacts/release-matrix/release-matrix.json --head "$RELEASE_HEAD_SHA" \
-            --remote-json release-assets.json
-
-      - name: Publish verified release
-        if: ${{ env.PUBLISH == 'true' && github.event_name == 'workflow_run' }}
-        run: |
-          is_prerelease=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isPrerelease --jq '.isPrerelease')
-          latest=true
-          if [[ "$TAG" == *-* ]]; then
-            if [ "$is_prerelease" != true ]; then
-              echo "::error::A prerelease version requires a prerelease draft."
+          set -euo pipefail
+          release="repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID"
+          python3 scripts/verify_release_target.py --repo "$GITHUB_REPOSITORY" --release-id "$RELEASE_ID" --tag "$TAG" --head "$RELEASE_HEAD_SHA"
+          gh api "$release" > draft.json
+          for asset in upload/*; do
+            name=${asset##*/}
+            digest=$(sha256sum "$asset" | cut -d' ' -f1)
+            existing=$(jq -r --arg name "$name" '.assets[] | select(.name == $name) | .digest // "unverified"' draft.json)
+            if [[ "$existing" == "sha256:$digest" ]]; then
+              continue
+            fi
+            if [[ -n "$existing" ]]; then
+              echo "::error::Draft already has a different or incomplete $name."
               exit 1
             fi
-          fi
-          if [ "$is_prerelease" = true ]; then latest=false; fi
-          python3 scripts/verify_release_target.py --repo "$GITHUB_REPOSITORY" --tag "$TAG" --head "$RELEASE_HEAD_SHA" --require-tag
-          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest="$latest"
-          echo "Published release: $TAG"
+            query=$(jq -rn --arg name "$name" '$name | @uri')
+            curl --silent --show-error --fail-with-body --output /dev/null \
+              -H "Authorization: Bearer $GH_TOKEN" -H "Content-Type: application/octet-stream" \
+              --data-binary "@$asset" "https://uploads.github.com/$release/assets?name=$query"
+          done
+          gh api "$release" > release-assets.json
+          python3 scripts/validate_release_assets.py upload --tag "$TAG" \
+            --version-file release-version.inc --matrix-file artifacts/release-matrix/release-matrix.json \
+            --head "$RELEASE_HEAD_SHA" --remote-json release-assets.json
+
+      - name: Publish verified release
+        if: inputs.publish
+        run: |
+          set -euo pipefail
+          python3 scripts/verify_release_target.py --repo "$GITHUB_REPOSITORY" --release-id "$RELEASE_ID" \
+            --tag "$TAG" --head "$RELEASE_HEAD_SHA" --create-tag --require-tag
+          latest=true
+          if [[ "$TAG" == *-* ]]; then latest=false; fi
+          gh api --method PATCH "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" \
+            -F draft=false -f "make_latest=$latest" --jq '.html_url'

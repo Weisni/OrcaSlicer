@@ -17,9 +17,7 @@
 #include "Geometry/VoronoiUtils.hpp"
 #include "MutablePolygon.hpp"
 #include "TriangleMesh.hpp"
-#include "TriangleMeshSlicer.hpp"
 #include "format.hpp"
-
 #include "Utils.hpp"
 #include "PrintConfig.hpp"
 #include "TriangleMeshSlicer.hpp"
@@ -2320,34 +2318,21 @@ static std::vector<std::vector<ExPolygons>> segmentation_by_surface_normal(
     return result;
 }
 
-static std::vector<std::vector<ExPolygons>> segmentation_by_painting_impl(const PrintObject                                               &print_object,
-                                                                          const std::function<ModelVolumeFacetsInfo(const ModelVolume &)> &extract_facets_info,
-                                                                          const size_t                                                     num_facets_states,
-                                                                          const float                                                      segmentation_max_width,
-                                                                          const float                                                      segmentation_interlocking_depth,
-                                                                          const bool                                                       segmentation_interlocking_beam,
-                                                                          const IncludeTopAndBottomLayers                                  include_top_and_bottom_layers,
-                                                                          const float                                                      surface_normal_penetration_depth,
-                                                                          const std::function<void()>                                     &throw_on_cancel_callback)
+static std::vector<ExPolygons> prepare_paint_slices(const PrintObject &print_object,
+                                                  const std::function<void()> &throw_on_cancel_callback,
+                                                  [[maybe_unused]] int debug_run = 0)
 {
-    const size_t                          num_layers    = print_object.layers().size();
-    std::vector<std::vector<ExPolygons>>  segmented_regions(num_layers);
-    segmented_regions.assign(num_layers, std::vector<ExPolygons>(num_facets_states));
-    std::vector<std::vector<PaintedLine>> painted_lines(num_layers);
-    std::array<std::mutex, 64>            painted_lines_mutex;
-    std::vector<EdgeGrid::Grid>           edge_grids(num_layers);
-    const ConstLayerPtrsAdaptor           layers = print_object.layers();
-    std::vector<ExPolygons>               input_expolygons(num_layers);
-
-    throw_on_cancel_callback();
-
-#ifdef MM_SEGMENTATION_DEBUG
-    static int iRun = 0;
-#endif // MM_SEGMENTATION_DEBUG
+    const ConstLayerPtrsAdaptor layers = print_object.layers();
+    const size_t num_layers = layers.size();
+    std::vector<ExPolygons> input_expolygons(num_layers);
 
     // Merge all regions and remove small holes
     BOOST_LOG_TRIVIAL(debug) << "Print object segmentation - Slices preprocessing in parallel - Begin";
-    tbb::parallel_for(tbb::blocked_range<size_t>(0, num_layers), [&layers, &input_expolygons, &throw_on_cancel_callback](const tbb::blocked_range<size_t> &range) {
+    tbb::parallel_for(tbb::blocked_range<size_t>(0, num_layers), [&layers, &input_expolygons, &throw_on_cancel_callback
+#ifdef MM_SEGMENTATION_DEBUG_INPUT
+                                                               , debug_run
+#endif
+                                                               ](const tbb::blocked_range<size_t> &range) {
         for (size_t layer_idx = range.begin(); layer_idx < range.end(); ++layer_idx) {
             throw_on_cancel_callback();
             ExPolygons ex_polygons;
@@ -2369,15 +2354,39 @@ static std::vector<std::vector<ExPolygons>> segmentation_by_painting_impl(const 
             input_expolygons[layer_idx] = remove_duplicates(expolygons_simplify(offset_ex(ex_polygons, -10.f * float(SCALED_EPSILON)), 5 * SCALED_EPSILON), scaled<coord_t>(0.01), PI/6);
 
 #ifdef MM_SEGMENTATION_DEBUG_INPUT
-            export_processed_input_expolygons_to_svg(debug_out_path("mm-input-%d-%d.svg", layer_idx, iRun), layers[layer_idx]->regions(), input_expolygons[layer_idx]);
+            export_processed_input_expolygons_to_svg(debug_out_path("mm-input-%d-%d.svg", layer_idx, debug_run), layers[layer_idx]->regions(), input_expolygons[layer_idx]);
 #endif // MM_SEGMENTATION_DEBUG_INPUT
         }
     }); // end of parallel_for
     BOOST_LOG_TRIVIAL(debug) << "Print object segmentation - Slices preprocessing in parallel - End";
+    return input_expolygons;
+}
 
-    if (surface_normal_penetration_depth > 0.f)
-        return segmentation_by_surface_normal(print_object, input_expolygons, extract_facets_info, num_facets_states,
-                                              surface_normal_penetration_depth, throw_on_cancel_callback);
+std::vector<std::vector<ExPolygons>> segmentation_by_painting(const PrintObject                                               &print_object,
+                                                                          const std::function<ModelVolumeFacetsInfo(const ModelVolume &)> &extract_facets_info,
+                                                                          const size_t                                                     num_facets_states,
+                                                                          const float                                                      segmentation_max_width,
+                                                                          const float                                                      segmentation_interlocking_depth,
+                                                                          const bool                                                       segmentation_interlocking_beam,
+                                                                          const IncludeTopAndBottomLayers                                  include_top_and_bottom_layers,
+                                                                          const std::function<void()>                                     &throw_on_cancel_callback)
+{
+    const size_t                          num_layers    = print_object.layers().size();
+    std::vector<std::vector<ExPolygons>>  segmented_regions(num_layers);
+    segmented_regions.assign(num_layers, std::vector<ExPolygons>(num_facets_states));
+    std::vector<std::vector<PaintedLine>> painted_lines(num_layers);
+    std::array<std::mutex, 64>            painted_lines_mutex;
+    std::vector<EdgeGrid::Grid>           edge_grids(num_layers);
+    const ConstLayerPtrsAdaptor           layers = print_object.layers();
+
+    throw_on_cancel_callback();
+
+#ifdef MM_SEGMENTATION_DEBUG
+    static int iRun = 0;
+    auto input_expolygons = prepare_paint_slices(print_object, throw_on_cancel_callback, iRun);
+#else
+    auto input_expolygons = prepare_paint_slices(print_object, throw_on_cancel_callback);
+#endif
 
     std::vector<BoundingBox> layer_bboxes(num_layers);
     for (size_t layer_idx = 0; layer_idx < num_layers; ++layer_idx) {
@@ -2607,20 +2616,6 @@ static std::vector<std::vector<ExPolygons>> segmentation_by_painting_impl(const 
     return segmented_regions_merged;
 }
 
-std::vector<std::vector<ExPolygons>> segmentation_by_painting(const PrintObject                                               &print_object,
-                                                               const std::function<ModelVolumeFacetsInfo(const ModelVolume &)> &extract_facets_info,
-                                                               const size_t                                                     num_facets_states,
-                                                               const float                                                      segmentation_max_width,
-                                                               const float                                                      segmentation_interlocking_depth,
-                                                               const bool                                                       segmentation_interlocking_beam,
-                                                               const IncludeTopAndBottomLayers                                  include_top_and_bottom_layers,
-                                                               const std::function<void()>                                     &throw_on_cancel_callback)
-{
-    return segmentation_by_painting_impl(print_object, extract_facets_info, num_facets_states, segmentation_max_width,
-                                         segmentation_interlocking_depth, segmentation_interlocking_beam,
-                                         include_top_and_bottom_layers, 0.f, throw_on_cancel_callback);
-}
-
 // Returns multi-material segmentation based on painting in multi-material segmentation gizmo
 std::vector<std::vector<ExPolygons>> multi_material_segmentation_by_painting(const PrintObject &print_object, const std::function<void()> &throw_on_cancel_callback) {
     // apply_mm_segmentation() reads one entry per filament_diameter, and filament_colour can be shorter.
@@ -2634,8 +2629,15 @@ std::vector<std::vector<ExPolygons>> multi_material_segmentation_by_painting(con
         return {mv.mmu_segmentation_facets, mv.is_mm_painted(), false};
     };
 
-    return segmentation_by_painting_impl(print_object, extract_facets_info, num_facets_states, max_width, interlocking_depth,
-                                         interlocking_beam, IncludeTopAndBottomLayers::Yes, normal_depth, throw_on_cancel_callback);
+    if (normal_depth > 0.f) {
+        throw_on_cancel_callback();
+        const auto input_expolygons = prepare_paint_slices(print_object, throw_on_cancel_callback);
+        return segmentation_by_surface_normal(print_object, input_expolygons, extract_facets_info, num_facets_states,
+                                              normal_depth, throw_on_cancel_callback);
+    }
+
+    return segmentation_by_painting(print_object, extract_facets_info, num_facets_states, max_width, interlocking_depth,
+                                    interlocking_beam, IncludeTopAndBottomLayers::Yes, throw_on_cancel_callback);
 }
 
 // Returns fuzzy skin segmentation based on painting in fuzzy skin segmentation gizmo

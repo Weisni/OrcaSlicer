@@ -6,6 +6,7 @@
 #include <boost/dll/runtime_symbol_info.hpp>
 #include <boost/filesystem.hpp>
 #include <boost/log/trivial.hpp>
+#include <boost/nowide/convert.hpp>
 
 #ifdef _WIN32
 
@@ -206,7 +207,8 @@ void repair_shortcuts_in(const fs::path &directory, const fs::path &previous_bui
 void initialize_process_app_id()
 {
 #ifdef QUACK_LOCAL_TEST
-    SetCurrentProcessExplicitAppUserModelID(L"QuackSlicer.BetaTest");
+    const std::wstring test_app_id = boost::nowide::widen("QuackSlicer." QUACK_LOCAL_TEST_VARIANT "Test");
+    SetCurrentProcessExplicitAppUserModelID(test_app_id.c_str());
     return;
 #endif
     g_executable = boost::dll::program_location();

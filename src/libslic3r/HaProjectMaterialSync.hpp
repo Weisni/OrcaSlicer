@@ -9,6 +9,7 @@
 #include <set>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <vector>
 #include "Config.hpp"
 #include "FilamentMixer.hpp"
@@ -41,6 +42,34 @@ struct Project {
     // Missing entries describe physical slots, including legacy project snapshots.
     std::vector<unsigned char> is_mixed;
 };
+
+// Compare the reviewed slots before normalization can change their indices.
+inline std::vector<int> flushing_volume_updates(const Project &original, const Project &staged,
+                                                const std::vector<Selection> &selections,
+                                                const std::vector<std::vector<std::string>> &ams_colors,
+                                                std::string_view auto_flush)
+{
+    std::vector<int> updates;
+    if (auto_flush == "disabled") return updates;
+
+    for (const auto &selection : selections) {
+        const size_t index = selection.project_index;
+        if (index >= original.presets.size()) {
+            updates.push_back(int(index));
+            continue;
+        }
+        bool color_changed = false;
+        if (!selection.profile_only) {
+            const auto &new_color = staged.colors[index];
+            color_changed = index < ams_colors.size() && !ams_colors[index].empty()
+                ? ams_colors[index].size() != 1 || ams_colors[index].front() != new_color
+                : original.colors[index] != new_color;
+        }
+        if (color_changed || (auto_flush == "all" && original.presets[index] != staged.presets[index]))
+            updates.push_back(int(index));
+    }
+    return updates;
+}
 
 inline std::vector<Selection> all_occupied_selections(const std::vector<Row> &rows)
 {

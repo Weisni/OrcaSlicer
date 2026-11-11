@@ -342,6 +342,7 @@ public:
     }
 
 private:
+    void  recalculate_flushing_volumes(const std::vector<int> &filament_indices, int extruder_id = -1);
     void  auto_calc_flushing_volumes_internal(const int filament_id, const int extruder_id);
 
 private:

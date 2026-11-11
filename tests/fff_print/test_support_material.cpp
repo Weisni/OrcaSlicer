@@ -166,8 +166,6 @@ TEST_CASE("Organic support prints its bottom contact with the interface material
 
     const PrintObject &object = *print.objects().front();
     const int requested_layers = bottom_layers < 0 ? top_layers : bottom_layers;
-    const int expected_interface_layers = requested_layers -
-        (separate_interface_material && requested_layers > 1 ? 1 : 0);
     size_t bottom_interface_count = 0;
     const SupportLayer *contact = nullptr;
     for (const SupportLayer *layer : object.support_layers()) {
@@ -180,7 +178,7 @@ TEST_CASE("Organic support prints its bottom contact with the interface material
         }
     }
     CAPTURE(bottom_layers, separate_interface_material, bottom_gap);
-    CHECK(bottom_interface_count == expected_interface_layers);
+    CHECK(bottom_interface_count == size_t(requested_layers));
     if (requested_layers > 0) {
         REQUIRE(contact != nullptr);
         CHECK_THAT(contact->bottom_z(), Catch::Matchers::WithinAbs(floor_z + bottom_gap, 1e-4));
@@ -581,6 +579,44 @@ TEST_CASE("Support top interface layer count matches the configured value", "[Su
     CAPTURE(top);
     REQUIRE(support_base_layer_count(g)      > 0);          // support actually formed
     REQUIRE(support_interface_layer_count(g) == size_t(top));
+}
+
+TEST_CASE("A separate filament prints all configured top interface layers", "[SupportMaterial][Regression]")
+{
+    const int top = GENERATE(1, 3);
+    const bool organic = GENERATE(false, true);
+    constexpr double gap = 0.2;
+    DynamicPrintConfig config = organic_bridge_config(false, gap, top, 2);
+    config.set_deserialize_strict({
+        { "support_type", organic ? "tree(auto)" : "normal(auto)" },
+        { "support_style", organic ? "organic" : "default" },
+        { "support_interface_bottom_layers", 0 },
+        { "support_filament", 1 },
+        { "support_interface_filament", 2 },
+        { "filament_soluble", "0,0" },
+        { "gcode_comments", true },
+    });
+    const std::string g = slice({ TestMesh::bridge }, config);
+    REQUIRE(support_base_layer_count(g) > 0);
+
+    std::set<double> interface_layers;
+    std::set<double> wrong_tool_layers;
+    bool on_interface_filament = false;
+    GCodeReader reader;
+    reader.apply_config(config);
+    reader.parse_buffer(g, [&](GCodeReader &parser, const GCodeReader::GCodeLine &line) {
+        if (line.cmd_is("T0"))
+            on_interface_filament = false;
+        else if (line.cmd_is("T1"))
+            on_interface_filament = true;
+        if (line.extruding(parser) && line.comment().find("support material interface") != std::string_view::npos) {
+            (on_interface_filament ? interface_layers : wrong_tool_layers).insert(parser.z());
+        }
+    });
+    CAPTURE(top, organic);
+    CHECK(wrong_tool_layers.empty());
+    REQUIRE(interface_layers.size() == size_t(top));
+    CHECK_THAT(*interface_layers.rbegin(), Catch::Matchers::WithinAbs(bridge_underside_z - gap, 1e-4));
 }
 
 // A rotated cube-with-hole is a horizontal tunnel whose ceiling and floor both receive support, so top

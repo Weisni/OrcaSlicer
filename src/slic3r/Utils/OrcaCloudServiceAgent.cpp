@@ -8,6 +8,7 @@
 #include "slic3r/GUI/I18N.hpp"
 #include "libslic3r/AppConfig.hpp"
 #include "libslic3r/CloudCredentialPolicy.hpp"
+#include "libslic3r_version.h"
 
 #include <atomic>
 #include <boost/algorithm/string/predicate.hpp>
@@ -123,7 +124,7 @@ constexpr const char* CONFIG_ORCA_CLOUD_URL = "orca_cloud_url";
 constexpr const char* CONFIG_ORCA_PUB_KEY   = "orca_pub_key";
 
 #ifdef QUACK_LOCAL_TEST
-constexpr const char* SECRET_STORE_SERVICE = CloudCredentialPolicy::service_name(true);
+constexpr const char* SECRET_STORE_SERVICE = CloudCredentialPolicy::service_name(true, SLIC3R_APP_KEY "/Auth");
 #else
 constexpr const char* SECRET_STORE_SERVICE = CloudCredentialPolicy::service_name(false);
 #endif

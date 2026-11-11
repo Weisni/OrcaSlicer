@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 import sqlite3
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -25,7 +26,11 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--variant", default="Beta")
+    parser.add_argument("--version", default="2.5.24")
     args = parser.parse_args()
+    if not re.fullmatch(r"[A-Za-z0-9]+", args.variant):
+        parser.error("Variant must be alphanumeric")
     source, output = args.source.resolve(), args.output.resolve()
     if source == output or source in output.parents or output in source.parents:
         parser.error("Source and output must be separate directory trees")
@@ -53,17 +58,19 @@ def main():
         "associate_drc": False, "installed_networking": False,
         "stealth_mode": True, "show_home_page": False, "show_daily_tips": False,
         "show_hints": False, "show_splash_screen": False,
-        "single_instance": False, "default_page": "0", "version": "2.5.24",
+        "single_instance": False, "default_page": "0", "version": args.version,
     })
     config["firstguide"] = {"finish": "1"}
-    config["header"] = "Isolated local Quack Beta test profile; production credentials excluded"
+    config["header"] = f"Isolated local Quack {args.variant} test profile; production credentials excluded"
     body = json.dumps(config, ensure_ascii=False, indent="\t", sort_keys=True)
     checksum = hashlib.md5(body.encode()).hexdigest().upper()
-    (output / "QuackSlicerBetaTest.conf").write_text(body + "\n# MD5 checksum " + checksum + "\n", encoding="utf-8", newline="\n")
+    config_path = output / f"QuackSlicer{args.variant}Test.conf"
+    config_path.write_text(body + "\n# MD5 checksum " + checksum + "\n", encoding="utf-8", newline="\n")
     # Merge saved profiles into the offline/default account, excluding account state.
     count = 0
     user = source / "user"
-    for account in sorted(user.iterdir(), key=lambda p: p.name == "default"):
+    active_account = original.get("app", {}).get("preset_folder", "") or "default"
+    for account in sorted(user.iterdir(), key=lambda p: (p.name == active_account, p.name == "default", p.name)):
         if not account.is_dir():
             continue
         for kind in ("machine", "filament", "process"):

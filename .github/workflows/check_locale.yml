@@ -1,8 +1,6 @@
 name: Check locale
 
 on: 
-    # approve_pr_checks.yml approves these runs for first-time contributors and finds this
-    # workflow by its file name.
     pull_request:
       branches: 
        - main 

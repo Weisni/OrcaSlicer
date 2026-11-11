@@ -2,96 +2,52 @@ name: Build QuackSlicer
 
 on:
   push:
-    branches:
-     - main
-     - release/*
-    paths:
-     - 'deps/**'
-     - 'deps_src/**'
-     - 'cmake/**'
-     - 'src/**'
-     - '**/CMakeLists.txt'
-     - 'version.inc'
-     - 'localization/**'
-     - 'resources/**'
-     - ".github/workflows/build_*.yml"
-     - ".github/workflows/unit_tests*.yml"
-     - 'build_linux.sh'
-     - 'build_win.bat'
-     - 'scripts/test_build_win.ps1'
-     - 'scripts/check_exception_throw_info.ps1'
-     - 'scripts/test_check_exception_throw_info.ps1'
-     - 'build_release_macos.sh'
-     - 'scripts/build_preset_cache.*'
-     - 'scripts/flatpak/**'
-     - 'scripts/msix/**'
-     - 'tests/**'
-     - 'tools/ha-material-demo/**'
-     - 'scripts/*release_assets.py'
-     - 'scripts/*release_target.py'
-     - '.github/workflows/ha-materials-tests.yml'
-     - '.github/workflows/publish_release.yml'
+    branches: [main]
+    paths: [version.inc]
 
-  pull_request:
-    branches:
-     - main
-     - release/*
-    paths:
-     - 'deps/**'
-     - 'deps_src/**'
-     - 'cmake/**'
-     - 'src/**'
-     - '**/CMakeLists.txt'
-     - 'version.inc'
-     - ".github/workflows/build_*.yml"
-     - ".github/workflows/unit_tests*.yml"
-     - 'build_linux.sh'
-     - 'build_win.bat'
-     - 'scripts/test_build_win.ps1'
-     - 'scripts/check_exception_throw_info.ps1'
-     - 'scripts/test_check_exception_throw_info.ps1'
-     - 'build_release_macos.sh'
-     - 'scripts/build_preset_cache.*'
-     - 'scripts/flatpak/**'
-     - 'scripts/msix/**'
-     - 'tests/**'
-     - 'tools/ha-material-demo/**'
-     - 'scripts/*release_assets.py'
-     - 'scripts/*release_target.py'
-     - '.github/workflows/ha-materials-tests.yml'
-     - '.github/workflows/publish_release.yml'
-
-
-  workflow_dispatch: # allows for manual dispatch
+  workflow_dispatch:
     inputs:
+      platforms:
+        description: Application build platforms
+        type: choice
+        options: [windows-x64, all]
+        default: windows-x64
       build-deps-only:
-        description: 'Only build dependencies (bypasses caching)'
+        description: Only build dependencies (bypasses caching)
         type: boolean
         default: false
 
+permissions:
+  contents: read
+  actions: read
+
 concurrency:
-  # cancel_closed_pr_builds.yml joins this group by name, so update that file
-  # with any change here.
-  group: build-all-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
-  # Pushes don't cancel a running build, because only a finished branch build
-  # saves caches every pull request can restore.
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
-  
+  group: build-all-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   release_gate_tests:
     name: Release asset gate tests
     runs-on: ubuntu-latest
+    outputs:
+      platforms: ${{ steps.matrix.outputs.platforms }}
     steps:
       - uses: actions/checkout@v7
       - run: |
           python3 scripts/test_validate_release_assets.py
           python3 scripts/test_verify_release_target.py
       - name: Record the source build matrix
+        id: matrix
         env:
           SELF_HOSTED: ${{ vars.SELF_HOSTED }}
+          PLATFORMS: ${{ inputs.platforms || vars.QUACK_RELEASE_PLATFORMS || 'windows-x64' }}
         run: |
-          python3 -c 'import json, os; from pathlib import Path; Path("release-matrix.json").write_text(json.dumps({"head_sha": os.environ["GITHUB_SHA"], "self_hosted": bool(os.environ["SELF_HOSTED"])}))'
+          case "$PLATFORMS" in
+            windows-x64|all) ;;
+            *) echo "::error::Use windows-x64 or all for QUACK_RELEASE_PLATFORMS."; exit 1 ;;
+          esac
+          echo "platforms=$PLATFORMS" >> "$GITHUB_OUTPUT"
+          python3 -c 'import json, os; from pathlib import Path; Path("release-matrix.json").write_text(json.dumps({"head_sha": os.environ["GITHUB_SHA"], "self_hosted": bool(os.environ["SELF_HOSTED"]), "platforms": os.environ["PLATFORMS"]}))'
       - uses: actions/upload-artifact@v7
         with:
           name: release-matrix
@@ -122,6 +78,10 @@ jobs:
         run: .\scripts\test_check_exception_throw_info.ps1
 
   build_linux:
+    permissions:
+      contents: read
+      actions: write # Prune superseded compiler cache entries.
+    needs: release_gate_tests
     strategy:
       fail-fast: false
       # SELF_HOSTED skips arm64 (no arm self-hosted server). amd64's empty arch
@@ -131,7 +91,7 @@ jobs:
         include: ${{ fromJSON(vars.SELF_HOSTED
           && '[{"arch":"","os":"orca-lnx-server"}]'
           || '[{"arch":"","os":"ubuntu-24.04"},{"arch":"aarch64","os":"ubuntu-24.04-arm"}]') }}
-    if: ${{ !cancelled() }}
+    if: needs.release_gate_tests.outputs.platforms == 'all'
     uses: ./.github/workflows/build_check_cache.yml
     with:
       os: ${{ matrix.os }}
@@ -139,6 +99,9 @@ jobs:
       build-deps-only: ${{ inputs.build-deps-only || false }}
     secrets: inherit
   build_windows:
+    permissions:
+      contents: read
+      actions: write # Prune superseded compiler cache entries.
     name: Build Windows ${{ matrix.arch }}
     strategy:
       fail-fast: false
@@ -146,32 +109,34 @@ jobs:
       matrix:
         include: ${{ fromJSON(vars.SELF_HOSTED
           && '[{"arch":"x64","os":"orca-win-server","compiler":"clang"}]'
-          || '[{"arch":"x64","os":"windows-latest","compiler":"clang"},{"arch":"arm64","os":"windows-11-vs2026-arm","compiler":"clang"}]') }}
-    needs: check_build_script
-    # Don't run scheduled builds on forks:
-    if: ${{ !cancelled() && needs.check_build_script.result == 'success' && (github.event_name != 'schedule' || github.repository == 'OrcaSlicer/OrcaSlicer') }}
+          || (needs.release_gate_tests.outputs.platforms == 'all'
+            && '[{"arch":"x64","os":"windows-latest","compiler":"clang"},{"arch":"arm64","os":"windows-11-vs2026-arm","compiler":"clang"}]'
+            || '[{"arch":"x64","os":"windows-latest","compiler":"clang"}]')) }}
+    needs: [release_gate_tests, check_build_script]
     uses: ./.github/workflows/build_check_cache.yml
     with:
       os: ${{ matrix.os }}
       arch: ${{ matrix.arch }}
       compiler: ${{ matrix.compiler }}
       build-deps-only: ${{ inputs.build-deps-only || false }}
-      force-build: ${{ github.event_name == 'schedule' }}
     secrets: inherit
   build_macos_arch:
+    permissions:
+      contents: read
+      actions: write # Prune superseded compiler cache entries.
+    needs: release_gate_tests
     strategy:
       fail-fast: false
       matrix:
         arch:
           - arm64
           - x86_64
-    if: ${{ !cancelled() }}
+    if: needs.release_gate_tests.outputs.platforms == 'all'
     uses: ./.github/workflows/build_check_cache.yml
     with:
       os: ${{ vars.SELF_HOSTED && 'orca-macos-arm64' || 'macos-15' }}
       arch: ${{ matrix.arch }}
       build-deps-only: ${{ inputs.build-deps-only || false }}
-      force-build: ${{ github.event_name == 'schedule' }}
     secrets: inherit
   build_macos_universal:
     name: Build macOS Universal
@@ -187,7 +152,7 @@ jobs:
   unit_tests_linux_x86_64:
     name: Linux x86_64
     needs: build_linux
-    if: ${{ !cancelled() && success() }}
+    if: ${{ !cancelled() && success() && !inputs.build-deps-only }}
     uses: ./.github/workflows/unit_tests.yml
     with:
       os: ${{ vars.SELF_HOSTED && 'orca-lnx-server' || 'ubuntu-24.04' }}
@@ -195,7 +160,7 @@ jobs:
   unit_tests_linux_aarch64:
     name: Linux aarch64
     needs: build_linux
-    if: ${{ !cancelled() && success() && !vars.SELF_HOSTED }}
+    if: ${{ !cancelled() && success() && !inputs.build-deps-only && !vars.SELF_HOSTED }}
     uses: ./.github/workflows/unit_tests.yml
     with:
       os: ubuntu-24.04-arm
@@ -203,15 +168,15 @@ jobs:
   unit_tests_windows_x64:
     name: Windows x64
     needs: build_windows
-    if: ${{ !cancelled() && success() }}
+    if: ${{ !cancelled() && success() && !inputs.build-deps-only }}
     uses: ./.github/workflows/unit_tests.yml
     with:
       os: ${{ vars.SELF_HOSTED && 'orca-win-server' || 'windows-latest' }}
       artifact: ${{ github.sha }}-tests-windows-x64
   unit_tests_windows_arm64:
     name: Windows arm64
-    needs: build_windows
-    if: ${{ !cancelled() && success() && !vars.SELF_HOSTED }}
+    needs: [release_gate_tests, build_windows]
+    if: ${{ !cancelled() && success() && !inputs.build-deps-only && !vars.SELF_HOSTED && needs.release_gate_tests.outputs.platforms == 'all' }}
     uses: ./.github/workflows/unit_tests.yml
     with:
       os: windows-11-vs2026-arm
@@ -220,7 +185,7 @@ jobs:
   unit_tests_macos_arm64:
     name: macOS arm64
     needs: build_macos_arch
-    if: ${{ !cancelled() && success() }}
+    if: ${{ !cancelled() && success() && !inputs.build-deps-only }}
     uses: ./.github/workflows/unit_tests.yml
     with:
       os: ${{ vars.SELF_HOSTED && 'orca-macos-arm64' || 'macos-15' }}
@@ -231,12 +196,12 @@ jobs:
   # every custom g-code and filename_format shipped is expanded (names in {if}
   # branches not taken included) - catches slicing regressions the static
   # profile checks and unit tests can't see.
-  # Profile-only PRs are covered by check_profiles.yml's nightly binary; this
-  # covers src/engine PRs with the PR-built binary.
+  # Profile PRs use check_profiles.yml. The full release build tests these
+  # templates against its own source revision.
   slice_check_linux:
     name: Slice check (Linux ${{ vars.SELF_HOSTED && 'x86_64' || 'aarch64' }})
     needs: build_linux
-    if: ${{ !cancelled() && success() }}
+    if: ${{ !cancelled() && success() && !inputs.build-deps-only }}
     # Follows whichever Linux leg built the validator.
     runs-on: ${{ vars.SELF_HOSTED && 'orca-lnx-server' || 'ubuntu-24.04-arm' }}
     steps:
@@ -252,32 +217,12 @@ jobs:
         run: |
           chmod +x validator-bin/OrcaSlicer_profile_validator
           ./validator-bin/OrcaSlicer_profile_validator -p "${{ github.workspace }}/resources/profiles" -s -l 2
-  publish_test_results:
-    name: Publish Test Results
-    needs: [unit_tests_linux_x86_64, unit_tests_linux_aarch64, unit_tests_windows_x64, unit_tests_windows_arm64, unit_tests_macos_arm64, unit_tests_flatpak_x86_64, unit_tests_flatpak_aarch64]
-    if: ${{ !cancelled() }}
-    runs-on: ubuntu-latest
-    steps:
-      - name: Download Test Results
-        uses: actions/download-artifact@v8
-        with:
-          pattern: test-results-*
-          path: test-results
-      # Best-effort: a read-only token (e.g. fork PRs) can't write the check, so
-      # don't let a publish failure fail the run. The test jobs gate correctness.
-      - name: Publish Test Results
-        continue-on-error: true
-        uses: EnricoMi/publish-unit-test-result-action@v2
-        with:
-          files: "test-results/**/*.xml"
-      - name: Delete Test Results
-        if: success()
-        uses: geekyeggo/delete-artifact@v6
-        with:
-          name: test-results-*
-          failOnError: false
   flatpak:
+    permissions:
+      contents: read
+      actions: write # Prune superseded compiler cache entries.
     name: "Flatpak"
+    needs: release_gate_tests
     container:
       image: ghcr.io/flathub-infra/flatpak-github-actions:gnome-50
       options: --privileged
@@ -296,7 +241,7 @@ jobs:
           - arch: aarch64
             runner: ubuntu-24.04-arm
     # Skip entirely on self-hosted runners.
-    if: ${{ !cancelled() && !vars.SELF_HOSTED }}
+    if: ${{ !vars.SELF_HOSTED && !inputs.build-deps-only && needs.release_gate_tests.outputs.platforms == 'all' }}
 
     runs-on: ${{ matrix.variant.runner }}
     env:
@@ -311,35 +256,17 @@ jobs:
     - name: Get the version and date
       run: |
         ver_pure=$(grep 'set(SoftFever_VERSION' version.inc | cut -d '"' -f2)
-        if [[ "${{ github.event_name }}" == "pull_request" ]]; then
-          ver="PR-${{ github.event.number }}"
-          git_commit_hash="${{ github.event.pull_request.head.sha }}"
-        else
-          ver=V$ver_pure
-          git_commit_hash="${{ github.sha }}"
-        fi
-        echo "ver=$ver" >> $GITHUB_ENV
-        echo "ver_pure=$ver_pure" >> $GITHUB_ENV
-        echo "date=$(date +'%Y%m%d')" >> $GITHUB_ENV
-        echo "git_commit_hash=$git_commit_hash" >> $GITHUB_ENV
+        echo "ver=V$ver_pure" >> "$GITHUB_ENV"
+        echo "ver_pure=$ver_pure" >> "$GITHUB_ENV"
+        echo "date=$(date +'%Y%m%d')" >> "$GITHUB_ENV"
+        echo "git_commit_hash=$GITHUB_SHA" >> "$GITHUB_ENV"
       shell: bash
     - name: Compute the flatpak-builder cache key
       id: fp_cache_key
       run: echo "key=flatpak-builder-${{ matrix.variant.arch }}-${{ hashFiles('deps/**', 'scripts/flatpak/com.orcaslicer.OrcaSlicer.yml', 'scripts/flatpak/make_deps_tar.sh') }}" >> "$GITHUB_OUTPUT"
       shell: bash
-    # Manage flatpak-builder cache externally so PRs restore but never upload.
-    # The compiler cache under it is keyed per run below, so it is left out.
-    - name: Restore flatpak-builder cache
-      if: github.event_name == 'pull_request'
-      uses: actions/cache/restore@v6
-      with:
-        path: |
-          .flatpak-builder/*
-          !.flatpak-builder/ccache
-        key: ${{ steps.fp_cache_key.outputs.key }}
-        restore-keys: flatpak-builder-${{ matrix.variant.arch }}-
+    # The compiler cache is keyed per run below, so it is left out here.
     - name: Save/restore flatpak-builder cache
-      if: github.event_name != 'pull_request'
       uses: actions/cache@v6
       with:
         path: |
@@ -347,9 +274,8 @@ jobs:
           !.flatpak-builder/ccache
         key: ${{ steps.fp_cache_key.outputs.key }}
         restore-keys: flatpak-builder-${{ matrix.variant.arch }}-
-    # Compiler cache for the OrcaSlicer module, as in build_orca.yml. Pull
-    # requests only restore it; every other run (main, release branches, the
-    # nightly, a dispatch) saves it. orca_deps stays on the state cache above.
+    # Compiler cache for the OrcaSlicer module, as in build_orca.yml.
+    # orca_deps stays on the state cache above.
     - name: Name the compiler cache leg
       run: |
         leg="Flatpak-${{ matrix.variant.arch }}"
@@ -440,7 +366,7 @@ jobs:
     # that did not finish does not, since the directory may be a truncated copy.
     - name: Save compiler cache
       id: ccache_save
-      if: ${{ always() && steps.ccache_restore.outcome == 'success' && github.event_name != 'pull_request' }}
+      if: ${{ always() && steps.ccache_restore.outcome == 'success' }}
       uses: actions/cache/save@v6
       with:
         path: .flatpak-builder/ccache
@@ -477,12 +403,6 @@ jobs:
         name: QuackSlicer-Linux-flatpak_${{ env.ver }}_${{ matrix.variant.arch }}.flatpak
         if-no-files-found: error
         path: '/__w/OrcaSlicer/OrcaSlicer/QuackSlicer-Linux-flatpak_${{ env.ver }}_${{ matrix.variant.arch }}.flatpak'
-    - name: Deploy Flatpak to nightly release
-      if: github.repository == 'OrcaSlicer/OrcaSlicer' && github.ref == 'refs/heads/main'
-      uses: ./.github/actions/deploy-nightly
-      with:
-        asset_path: /__w/OrcaSlicer/OrcaSlicer/QuackSlicer-Linux-flatpak_${{ env.ver }}_${{ matrix.variant.arch }}.flatpak
-        asset_name: QuackSlicer-Linux-flatpak_nightly_${{ matrix.variant.arch }}.flatpak
     # The asset is /app (the exes link it at runtime) plus the build tree
     # slimmed to what ctest needs.
     - name: Package flatpak test asset

@@ -7,11 +7,6 @@ on:
     paths:
       - 'tools/ha-material-demo/**'
       - '.github/workflows/ha-materials-tests.yml'
-  push:
-    branches: [main]
-    paths:
-      - 'tools/ha-material-demo/**'
-      - '.github/workflows/ha-materials-tests.yml'
 
 permissions:
   contents: read

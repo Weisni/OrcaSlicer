@@ -16,6 +16,38 @@ static std::vector<Row> ha_project_rows()
             {{"A2", "roll-b", "Vendor", "PETG", "PETG", "#123456", "", 4}, "Generic PETG"}};
 }
 
+TEST_CASE("HA color changes request flushing volume updates according to the preference", "[HaProjectMaterialSync][Regression]")
+{
+    const Project original{{"Generic PLA", "Generic PETG"}, {"#FFFFFF", "#9d0000"}};
+    auto rows = ha_project_rows();
+    rows[0].assignment.color = "#161616";
+    rows[1].assignment.color = "#FFFFFF";
+    const std::vector<Selection> selections{{0, 0, false}, {1, 1, false}};
+    const auto staged = stage(original, rows, rows, selections);
+
+    CHECK(flushing_volume_updates(original, staged, selections, {}, "all") == std::vector<int>{0, 1});
+    CHECK(flushing_volume_updates(original, staged, selections, {}, "color change") == std::vector<int>{0, 1});
+    CHECK(flushing_volume_updates(original, staged, selections, {}, "disabled").empty());
+}
+
+TEST_CASE("HA flush updates preserve untouched pairs and handle profile and multicolor changes", "[HaProjectMaterialSync][Regression]")
+{
+    const Project original{{"Generic PLA", "Generic PETG", "Generic PETG", "Mixed"},
+                           {"#FFFFFF", "#123456", "#123456", "#999999"}, {}, {false, false, false, true}};
+    auto rows = ha_project_rows();
+    rows.push_back(rows[1]);
+    rows.back().assignment.spool_uuid = "roll-c";
+    rows.push_back(rows[0]);
+    rows.back().assignment.spool_uuid = "roll-d";
+    const std::vector<Selection> selections{{0, 0, false, true}, {1, 1, false}, {2, 2, true}, {3, 4, false}};
+    const auto staged = stage(original, rows, rows, selections);
+    const std::vector<std::vector<std::string>> ams_colors{{"#FFFFFF", "#ABABAB"}, {"#123456"}, {"#123456", "#000000"}};
+
+    CHECK(flushing_volume_updates(original, staged, selections, ams_colors, "all") == std::vector<int>{0, 2, 4});
+    CHECK(flushing_volume_updates(original, staged, selections, ams_colors, "color change") == std::vector<int>{2, 4});
+    CHECK(flushing_volume_updates(original, staged, selections, ams_colors, "disabled").empty());
+}
+
 TEST_CASE("Physical HA rolls cannot replace virtual project materials", "[HaProjectMaterialSync][Regression]")
 {
     const Project project{{"Physical", "Mixed"}, {"#112233", "#79879E"}, {}, {false, true}};

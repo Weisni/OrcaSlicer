@@ -1,8 +1,4 @@
 on:
-  push:
-    paths:
-      - '**.sh'
-      - 'scripts/linux.d/*'
   pull_request:
     paths:
       - '**.sh'

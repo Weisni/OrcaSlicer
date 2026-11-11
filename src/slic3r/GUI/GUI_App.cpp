@@ -6936,7 +6936,7 @@ std::string checksum_from_file_body(std::string body)
 void GUI_App::download_and_install_update()
 {
 #ifdef QUACK_LOCAL_TEST
-    wxMessageBox(_L("Update installation is disabled in this local test build."), _L("QuackSlicer Beta Test"), wxOK | wxICON_INFORMATION);
+    wxMessageBox(_L("Update installation is disabled in this local test build."), wxString::FromUTF8(SLIC3R_APP_NAME), wxOK | wxICON_INFORMATION);
     return;
 #endif
 #ifndef _WIN32

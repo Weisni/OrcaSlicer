@@ -9,15 +9,17 @@ SPEC.loader.exec_module(module)
 class ReleaseTargetTests(unittest.TestCase):
     def setUp(self):
         self.head = 'a' * 40
+        self.release_id = 1234
         self.tag = 'v2.5.25-beta'
         self.target_sha = self.head
-        self.release = {'draft': True, 'tag_name': self.tag, 'target_commitish': self.head}
+        self.release = {'id': self.release_id, 'draft': True, 'tag_name': self.tag,
+                        'target_commitish': self.head, 'prerelease': True}
         self.ref = {'object': {'type': 'commit', 'sha': self.head}}
         self.tag_objects = {}
         self.mutations = []
 
     def api(self, endpoint, fields=None):
-        if endpoint.endswith('/releases/tags/' + self.tag):
+        if endpoint.endswith(f'/releases/{self.release_id}'):
             return self.release
         if '/commits/' in endpoint:
             return {'sha': self.target_sha}
@@ -34,7 +36,7 @@ class ReleaseTargetTests(unittest.TestCase):
         self.fail(endpoint)
 
     def verify(self, **kwargs):
-        return module.verify(self.api, 'Weisni/OrcaSlicer', self.tag, self.head, **kwargs)
+        return module.verify(self.api, 'Weisni/OrcaSlicer', self.tag, self.head, self.release_id, **kwargs)
 
     def test_matching_existing_tag_is_accepted_without_mutation(self):
         self.verify(require_tag=True)
@@ -43,7 +45,21 @@ class ReleaseTargetTests(unittest.TestCase):
     def test_regular_release_target_is_accepted(self):
         self.tag = 'v2.5.25'
         self.release['tag_name'] = self.tag
+        self.release['prerelease'] = False
         self.verify(require_tag=True)
+
+    def test_wrong_draft_id_is_rejected_before_creating_tag(self):
+        self.release['id'] += 1
+        self.ref = None
+        with self.assertRaisesRegex(ValueError, 'ID'):
+            self.verify(create_tag=True)
+        self.assertEqual(self.mutations, [])
+
+    def test_prerelease_draft_must_match_version(self):
+        self.release['prerelease'] = False
+        with self.assertRaisesRegex(ValueError, 'prerelease'):
+            self.verify(create_tag=True)
+        self.assertEqual(self.mutations, [])
 
     def test_wrong_existing_tag_is_rejected_even_with_correct_target_commitish(self):
         self.ref['object']['sha'] = 'b' * 40
@@ -95,7 +111,7 @@ class ReleaseTargetTests(unittest.TestCase):
                 self.release['draft'] = False
             return result
         with self.assertRaisesRegex(ValueError, 'draft'):
-            module.verify(racing_api, 'Weisni/OrcaSlicer', self.tag, self.head, create_tag=True)
+            module.verify(racing_api, 'Weisni/OrcaSlicer', self.tag, self.head, self.release_id, create_tag=True)
 
 if __name__ == '__main__':
     unittest.main()
